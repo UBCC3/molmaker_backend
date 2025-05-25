@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey
+from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -34,6 +34,8 @@ class Job(Base):
     calculation_type = Column(String, nullable=False)
     method = Column(String, nullable=False)
     basis_set = Column(String, nullable=False)
+    charge = Column(Integer, nullable=False)
+    multiplicity = Column(Integer, nullable=False)
     submitted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     user_sub = Column(String, nullable=False)
