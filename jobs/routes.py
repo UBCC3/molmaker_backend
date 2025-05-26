@@ -1,4 +1,3 @@
-from enum import Enum
 import os
 import uuid
 import shutil
@@ -22,12 +21,7 @@ from dependencies import get_db
 from auth import verify_token
 
 from utils import serialize_job, get_user_sub
-
-class CalculationType(str, Enum):
-    energy = "energy"
-    geometry = "geometry"
-    optimization = "optimization"
-    frequency = "frequency"
+from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"

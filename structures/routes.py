@@ -15,7 +15,7 @@ s3 = boto3.client("s3")
 BUCKET = "molmaker"
 
 @router.get("/")
-def list_structures(user=Depends(verify_token), db: Session = Depends(get_db)):
+def get_all_structures(user=Depends(verify_token), db: Session = Depends(get_db)):
     """
     List all structures in the database.
     :param user: Current user dependency, verified via token.
@@ -31,7 +31,7 @@ def list_structures(user=Depends(verify_token), db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/")
-def create_structure(
+def create_and_upload_structure(
     name: str = Form(...),
     file: UploadFile = File(...),
     user=Depends(verify_token),
@@ -50,7 +50,7 @@ def create_structure(
 
         # Create directory for the structure
         structure_id = str(uuid.uuid4())
-        structure_path = os.path.join(os.getenv("STRUCTURE_DIR", "./structures"), structure_id)
+        structure_path = os.path.join(JOB_DIR, structure_id)
         os.makedirs(structure_path, exist_ok=True)
 
         # Save the uploaded file
@@ -58,12 +58,14 @@ def create_structure(
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
+        s3_link = upload_structure_to_s3(file_path, structure_id)
+
         # Create and save the structure in the database
         structure = Structure(
             structure_id=structure_id,
             user_sub=user_id,
             name=name,
-            location=file_path
+            location=s3_link
         )
 
         db.add(structure)
@@ -91,7 +93,7 @@ def upload_structure_to_s3(local_file_path: str, structure_id: str):
         raise
 
 @router.get("/presigned/{structure_id}")
-def get_presigned_url(structure_id: str):
+def get_presigned_url_for_structure(structure_id: str):
     """
     Generate a presigned URL for downloading a structure file from S3.
     :param structure_id: The ID of the structure to generate the URL for.
