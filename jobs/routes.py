@@ -23,6 +23,8 @@ from auth import verify_token
 from utils import serialize_job, get_user_sub
 from enum_types import CalculationType
 
+import subprocess
+
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
 
@@ -180,3 +182,64 @@ def update_job_status(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
 
     return {"job_id": job.job_id, "status": job.status, "message": f"Job status updated to {job.status}"}
+
+router.post("/advanced_analysis")
+def run_advanced_analysis(
+    file: UploadFile = File(...),
+    calculation_type: CalculationType = Form(...),
+    method: str = Form(...),
+    basis_set: str = Form(...),
+    charge: int = Form(...),
+    multiplicity: int = Form(...),
+):
+    """
+    Run an advanced analysis on a job by uploading a file and providing job details.
+    :param file: Upload file containing the job structure (must be .xyz format).
+    :param calculation_type: Type of calculation to be performed (energy, geometry, optimization, frequency).
+    :param method: Computational method to be used for the job.
+    :param basis_set: Basis set to be used for the job.
+    :param charge: Charge of the system for the job.
+    :param multiplicity: Multiplicity of the system for the job.
+    :return: JSONResponse with status code 200 OK and message indicating success.
+    """
+    #  generate a unique job ID
+    job_id = str(uuid.uuid4())
+
+    # create a directory for the job
+    upload_path = f"uploads/{job_id}.xyz"
+    os.makedirs(os.path.dirname(upload_path), exist_ok=True)
+    # save the uploaded file
+    with open(upload_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # copy the file to the cluster
+    subprocess.run(
+        ["scp", upload_path, f"cluster:uploads/{job_id}.xyz"],
+        check=True
+    )
+
+    # run the analysis on the cluster
+    result = subprocess.run(
+        [
+            "ssh", "cluster",
+            "python3 advance_analysis.py submit",
+            job_id,
+            f"uploads/{job_id}.xyz",
+            calculation_type,
+            method,
+            basis_set,
+            str(charge),
+            str(multiplicity)
+        ],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+
+    slurm_id = result.stdout.strip()
+
+    return {
+        "job_id": job_id,
+        "slurm_id": slurm_id,
+        "message": f"Advanced analysis started successfully with SLURM ID {slurm_id}."
+    }
