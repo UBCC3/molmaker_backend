@@ -75,6 +75,7 @@ def get_job_by_id(
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_job(
     file: UploadFile = File(...),
+    job_id: str = Form(...),
     job_name: str = Form(...),
     method: str = Form(...),
     basis_set: str = Form(...),
@@ -89,6 +90,7 @@ def create_job(
     """
     Create a new job by uploading a file and providing job details.
     :param file: Upload file containing the job structure (must be .xyz format).
+    :param job_id: Unique ID for the job (UUID format).
     :param job_name: Name of the job.
     :param method: Computational method to be used for the job.
     :param basis_set: Basis set to be used for the job.
@@ -106,7 +108,6 @@ def create_job(
     if not file.filename.lower().endswith(".xyz"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file format. Only .xyz allowed.")
 
-    job_id = str(uuid.uuid4())
     job_path = os.path.join(JOB_DIR, job_id)
     os.makedirs(job_path, exist_ok=True)
     file_path = os.path.join(job_path, file.filename)

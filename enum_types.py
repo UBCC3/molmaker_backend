@@ -6,12 +6,12 @@ class CalculationType(str, Enum):
     optimization = "optimization"
     frequency = "frequency"
 
-calculation_types = [
-    'Molecular Energy',
-	'Geometric Optimization',
-	'Vibrational Frequency',
-	'Molecular Orbitals',
-]
+calculation_types = {
+    'Molecular Energy': 'energy',
+	'Geometric Optimization': 'optimization',
+	'Vibrational Frequency': 'frequency',
+	'Molecular Orbitals': 'orbitals',
+}
 
 wave_functional_theories = {
     'Hartree-Fock': 'scf',

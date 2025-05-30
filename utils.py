@@ -11,7 +11,7 @@ def serialize_structure(s: Structure) -> Dict[str, Any]:
 
 def serialize_job(job: Job) -> Dict[str, Any]:
     return {
-        "job_id": job.job_id,
+        "job_id": str(job.job_id),
         "job_name": job.job_name,
         "filename": job.filename,
         "status": job.status,
@@ -23,7 +23,7 @@ def serialize_job(job: Job) -> Dict[str, Any]:
         "submitted_at": job.submitted_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "user_sub": job.user_sub,
-        "slurm_id": job.slurm_id,
+        "slurm_id": job.slurm_id and str(job.slurm_id),
         "structures": [serialize_structure(s) for s in job.structures],
     }
 
