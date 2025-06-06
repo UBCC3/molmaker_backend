@@ -1,7 +1,7 @@
 import os
 import uuid
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import (
     APIRouter,
@@ -124,7 +124,7 @@ def create_job(
         charge=charge,
         multiplicity=multiplicity,
         slurm_id=slurm_id,
-        submitted_at=datetime.utcnow(),
+        submitted_at=datetime.now(timezone.utc),
         user_sub=user_sub,
         status="pending",
     )
@@ -173,7 +173,7 @@ def update_job_status(
 
     job.status = new_status
     if new_status in {"completed", "failed"}:
-        job.completed_at = datetime.utcnow()
+        job.completed_at = datetime.now(timezone.utc)
 
     try:
         db.commit()

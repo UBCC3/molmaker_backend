@@ -18,7 +18,7 @@ wave_functional_theories = {
 	'MP2': 'mp2',
 	'MP4': 'mp4',
 	'CCSD': 'ccsd',
-	'CCSD(T)': 'ccsd(t)'
+	'CCSD(T)': r'ccsd\(t\)'
 }
 
 density_functional_theories = [
@@ -33,22 +33,21 @@ density_functional_theories = [
 	'PBE-D',
 ]
 
-basis_sets = [
-    'STO-3G',
-    '6-31G',
-    '6-31G(d)',
-    '6-311G(2d,p)',
-    'cc-pVDZ',
-    'cc-pVTZ',
-    'cc-pVDZ',
-    'cc-pCVQZ',
-    'cc-pCVTZ',
-    'cc-pVQZ',
-    'jun-cc-pVDZ',
-    'aug-cc-pVDZ',
-    'aug-cc-pVTZ',
-    'aug-cc-pVQZ',
-]
+basis_sets = {
+    'STO-3G': 'sto-3g',
+    '6-31G': '6-31g',
+    '6-31G(d)': r'6-31G\(d\)',
+    '6-311G(2d,p)': r'6-311G\(2d,p\)',
+    'cc-pVDZ': 'cc-pvdz',
+    'cc-pVTZ': 'cc-pvtz',
+    'cc-pCVQZ': 'cc-pcvqz',
+    'cc-pCVTZ': 'cc-pcvtz',
+    'cc-pVQZ': 'cc-pvqz',
+    'jun-cc-pVDZ': 'jun-cc-pvdz',
+    'aug-cc-pVDZ': 'aug-cc-pvdz',
+    'aug-cc-pVTZ': 'aug-cc-pvtz',
+    'aug-cc-pVQZ': 'aug-cc-pvqz',
+}
 
 multiplicities = {
 	'Singlet': 1,

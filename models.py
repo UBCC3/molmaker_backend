@@ -5,7 +5,7 @@ from sqlalchemy.orm import relationship
 
 from database import Base
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 job_structures = Table(
     'jobs_structures',
@@ -36,7 +36,7 @@ class Job(Base):
     basis_set = Column(String, nullable=False)
     charge = Column(Integer, nullable=False)
     multiplicity = Column(Integer, nullable=False)
-    submitted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    submitted_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
     completed_at = Column(DateTime(timezone=True), nullable=True)
     user_sub = Column(String, nullable=False)
     slurm_id = Column(String, nullable=True)
