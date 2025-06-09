@@ -29,6 +29,7 @@ class Job(Base):
 
     job_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     job_name = Column(Text, nullable=True)
+    job_notes = Column(Text, nullable=True)
     filename = Column(Text, nullable=False)
     status = Column(String, nullable=False)
     calculation_type = Column(String, nullable=False)
@@ -55,6 +56,7 @@ class Structure(Base):
     user_sub = Column(String, nullable=False)
     name = Column(Text, nullable=False)
     location = Column(Text, nullable=False)
+    notes = Column(Text, nullable=True)
 
     jobs = relationship(
         'Job',

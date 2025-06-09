@@ -77,6 +77,7 @@ def create_job(
     file: UploadFile = File(...),
     job_id: str = Form(...),
     job_name: str = Form(...),
+    job_notes: Optional[str] = Form(None),
     method: str = Form(...),
     basis_set: str = Form(...),
     calculation_type: CalculationType = Form(...),
@@ -92,6 +93,7 @@ def create_job(
     :param file: Upload file containing the job structure (must be .xyz format).
     :param job_id: Unique ID for the job (UUID format).
     :param job_name: Name of the job.
+    :param job_notes: Optional notes for the job.
     :param method: Computational method to be used for the job.
     :param basis_set: Basis set to be used for the job.
     :param calculation_type: Type of calculation to be performed (energy, geometry, optimization, frequency).
@@ -117,6 +119,7 @@ def create_job(
     new_job = Job(
         job_id=job_id,
         job_name=job_name,
+        job_notes=job_notes,
         filename=file.filename,
         method=method,
         basis_set=basis_set,
@@ -156,7 +159,7 @@ def update_job_status(
     """
     Update the status of a job by its ID for the current authenticated user.
     :param job_id: ID of the job to update.
-    :param new_status: New status to set for the job (pending, running, completed, failed).
+    :param new_status: New status to set for the job (pending, running, completed, failed, cancelled).
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
@@ -167,7 +170,7 @@ def update_job_status(
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
-    allowed = {"pending", "running", "completed", "failed"}
+    allowed = {"pending", "running", "completed", "failed", "cancelled"}
     if new_status not in allowed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
 

@@ -33,12 +33,14 @@ def get_all_structures(user=Depends(verify_token), db: Session = Depends(get_db)
 @router.post("/")
 def create_and_upload_structure(
     name: str = Form(...),
+    notes: str = Form(None),
     file: UploadFile = File(...),
     user=Depends(verify_token),
     db: Session = Depends(get_db)
 ):
     """
     Create a new structure by uploading a file.
+    :param notes: Optional notes for the structure.
     :param name: Name of the structure.
     :param file: File containing the structure data.
     :param user: Current user dependency, verified via token.
@@ -65,7 +67,8 @@ def create_and_upload_structure(
             structure_id=structure_id,
             user_sub=user_id,
             name=name,
-            location=s3_link
+            location=s3_link,
+            notes=notes,
         )
 
         db.add(structure)
