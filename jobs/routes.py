@@ -175,7 +175,7 @@ def update_job_status(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
 
     job.status = new_status
-    if new_status in {"completed", "failed"}:
+    if new_status in {"completed", "failed", "cancelled"}:
         job.completed_at = datetime.now(timezone.utc)
 
     try:

@@ -7,7 +7,7 @@ from database import Base
 import uuid
 from datetime import datetime, timezone
 
-job_structures = Table(
+jobs_structures = Table(
     'jobs_structures',
     Base.metadata,
     Column(
@@ -20,6 +20,40 @@ job_structures = Table(
         'structure_id',
         UUID(as_uuid=True),
         ForeignKey('structures.structure_id', ondelete='CASCADE'),
+        primary_key=True
+    ),
+)
+
+structures_tags = Table(
+    'structures_tags',
+    Base.metadata,
+    Column(
+        'structure_id',
+        UUID(as_uuid=True),
+        ForeignKey('structures.structure_id', ondelete='CASCADE'),
+        primary_key=True
+    ),
+    Column(
+        'tag_id',
+        UUID(as_uuid=True),
+        ForeignKey('tags.tag_id', ondelete='CASCADE'),
+        primary_key=True
+    ),
+)
+
+jobs_tags = Table(
+    'jobs_tags',
+    Base.metadata,
+    Column(
+        'job_id',
+        UUID(as_uuid=True),
+        ForeignKey('jobs.job_id', ondelete='CASCADE'),
+        primary_key=True
+    ),
+    Column(
+        'tag_id',
+        UUID(as_uuid=True),
+        ForeignKey('tags.tag_id', ondelete='CASCADE'),
         primary_key=True
     ),
 )
@@ -44,7 +78,14 @@ class Job(Base):
 
     structures = relationship(
         'Structure',
-        secondary=job_structures,
+        secondary=jobs_structures,
+        back_populates='jobs',
+        cascade="all, delete"
+    )
+
+    tags = relationship(
+        'Tags',
+        secondary=jobs_tags,
         back_populates='jobs',
         cascade="all, delete"
     )
@@ -57,9 +98,36 @@ class Structure(Base):
     name = Column(Text, nullable=False)
     location = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
+    uploaded_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
 
     jobs = relationship(
         'Job',
-        secondary=job_structures,
+        secondary=jobs_structures,
         back_populates='structures'
+    )
+
+    tags = relationship(
+        'Tags',
+        secondary=structures_tags,
+        back_populates='structures',
+        cascade="all, delete"
+    )
+
+class Tags(Base):
+    __tablename__ = "tags"
+
+    tag_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_sub = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+
+    jobs = relationship(
+        'Job',
+        secondary=jobs_tags,
+        back_populates='tags'
+    )
+
+    structures = relationship(
+        'Structure',
+        secondary=structures_tags,
+        back_populates='tags'
     )

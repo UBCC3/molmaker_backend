@@ -7,12 +7,15 @@ def serialize_structure(s: Structure) -> Dict[str, Any]:
         "structure_id": str(s.structure_id),
         "name": s.name,
         "location": s.location,
+        "notes": s.notes,
+        "uploaded_at": s.uploaded_at.isoformat(),
     }
 
 def serialize_job(job: Job) -> Dict[str, Any]:
     return {
         "job_id": str(job.job_id),
         "job_name": job.job_name,
+        "job_notes": job.job_notes,
         "filename": job.filename,
         "status": job.status,
         "calculation_type": job.calculation_type,
