@@ -49,7 +49,7 @@ def get_all_jobs(
         user_sub = get_user_sub(current_user)
 
         jobs = (db.query(Job)
-                .filter_by(user_sub=user_sub)
+                .filter_by(user_sub=user_sub, is_deleted=False)
                 .order_by(Job.submitted_at.desc())
                 .all())
 
