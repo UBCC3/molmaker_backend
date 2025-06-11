@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Integer, Interval
+from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Integer, Interval, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -76,6 +76,7 @@ class Job(Base):
     user_sub = Column(String, nullable=False)
     slurm_id = Column(String, nullable=True)
     runtime = Column(Interval, nullable=True)
+    is_deleted = Column(Boolean, nullable=False)
 
     structures = relationship(
         'Structure',

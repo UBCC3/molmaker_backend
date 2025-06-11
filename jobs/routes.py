@@ -81,6 +81,35 @@ def get_job_by_id(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Delete a job by its ID for the current authenticated user.
+    :param job_id: ID of the job to delete.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: No content response (204).
+    """
+    user_sub = get_user_sub(current_user)
+
+    job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job.is_deleted = True
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+
+    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_job(
     file: UploadFile = File(...),
