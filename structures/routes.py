@@ -31,6 +31,7 @@ def get_all_structures(
         user_id = get_user_sub(user)
         structures = (db.query(Structure)
                 .filter(Structure.user_sub == user_id)
+                .order_by(Structure.uploaded_at.desc())
                 .all())
 
         return [

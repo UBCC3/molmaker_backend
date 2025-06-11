@@ -28,6 +28,8 @@ def serialize_job(job: Job) -> Dict[str, Any]:
         "user_sub": job.user_sub,
         "slurm_id": job.slurm_id and str(job.slurm_id),
         "structures": [serialize_structure(s) for s in job.structures],
+        "tags": [t.name for t in job.tags],
+        "runtime": str(job.runtime) if job.runtime else None,
     }
 
 def get_user_sub(current_user) -> str:

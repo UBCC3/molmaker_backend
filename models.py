@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Integer
+from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Integer, Interval
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -75,6 +75,7 @@ class Job(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     user_sub = Column(String, nullable=False)
     slurm_id = Column(String, nullable=True)
+    runtime = Column(Interval, nullable=True)
 
     structures = relationship(
         'Structure',

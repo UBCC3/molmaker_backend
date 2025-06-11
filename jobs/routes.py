@@ -1,8 +1,8 @@
 import os
 import uuid
 import shutil
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List
 from fastapi import (
     APIRouter,
     UploadFile,
@@ -12,11 +12,12 @@ from fastapi import (
     Depends,
 )
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi import status
 
-from models import Job, Structure
+from models import Job, Structure, Tags
 from dependencies import get_db
 from auth import verify_token
 
@@ -27,6 +28,10 @@ import subprocess
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
+
+class JobUpdate(BaseModel):
+    runtime: Optional[str] = None   # "HH:MM:SS"
+    status:  Optional[str] = None
 
 @router.get("/")
 def get_all_jobs(
@@ -43,7 +48,11 @@ def get_all_jobs(
     try:
         user_sub = get_user_sub(current_user)
 
-        jobs = db.query(Job).filter_by(user_sub=user_sub).order_by(Job.submitted_at.desc()).all()
+        jobs = (db.query(Job)
+                .filter_by(user_sub=user_sub)
+                .order_by(Job.submitted_at.desc())
+                .all())
+
         return [serialize_job(job) for job in jobs]
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -78,6 +87,7 @@ def create_job(
     job_id: str = Form(...),
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
+    tags: List[str] = Form([]),
     method: str = Form(...),
     basis_set: str = Form(...),
     calculation_type: CalculationType = Form(...),
@@ -90,6 +100,7 @@ def create_job(
 ):
     """
     Create a new job by uploading a file and providing job details.
+    :param tags: List of tags to associate with the job.
     :param file: Upload file containing the job structure (must be .xyz format).
     :param job_id: Unique ID for the job (UUID format).
     :param job_name: Name of the job.
@@ -132,6 +143,14 @@ def create_job(
         status="pending",
     )
     db.add(new_job)
+
+    for tag_name in tags:
+        tag = db.query(Tags).filter_by(user_sub=user_sub, name=tag_name).one_or_none()
+        if not tag:
+            tag = Tags(user_sub=user_sub, name=tag_name)
+            db.add(tag)
+        new_job.tags.append(tag)
+
     try:
         db.commit()
         db.refresh(new_job)
@@ -149,17 +168,19 @@ def create_job(
     headers = {"Location": f"/jobs/{job_id}"}
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=serialize_job(new_job), headers=headers)
 
-@router.patch("/{job_id}/{new_status}", status_code=status.HTTP_200_OK)
-def update_job_status(
+@router.patch("/{job_id}", status_code=status.HTTP_200_OK)
+def update_job(
     job_id: str,
-    new_status: str,
+    state: Optional[str] = Form(None),
+    runtime: Optional[str] = Form(None),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
     """
     Update the status of a job by its ID for the current authenticated user.
+    :param state: Optional new status for the job (e.g., "pending", "running", "completed", "failed", "cancelled").
+    :param runtime: Optional runtime to set for the job (format: "HH:MM:SS").
     :param job_id: ID of the job to update.
-    :param new_status: New status to set for the job (pending, running, completed, failed, cancelled).
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
@@ -169,14 +190,30 @@ def update_job_status(
     job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    print(runtime)
+    if runtime is not None:
+        try:
+            h, m, s = map(int, runtime.split(":"))
+            job.runtime = timedelta(hours=h, minutes=m, seconds=s)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Invalid runtime format. Use HH:MM:SS."
+            )
 
-    allowed = {"pending", "running", "completed", "failed", "cancelled"}
-    if new_status not in allowed:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
+    if state is not None:
+        allowed = {"pending", "running", "completed", "failed", "cancelled"}
 
-    job.status = new_status
-    if new_status in {"completed", "failed", "cancelled"}:
-        job.completed_at = datetime.now(timezone.utc)
+        new_status = state.lower()
+        if new_status not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status. Allowed values are: {', '.join(allowed)}"
+            )
+        job.status = new_status
+
+        if new_status in {"completed", "failed", "cancelled"}:
+            job.completed_at = datetime.now(timezone.utc)
 
     try:
         db.commit()
@@ -185,7 +222,38 @@ def update_job_status(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
 
-    return {"job_id": job.job_id, "status": job.status, "message": f"Job status updated to {job.status}"}
+    return {"job_id": job.job_id, "status": job.status, "runtime": str(job.runtime), "message": "Job updated successfully."}
+
+# @router.patch("/{job_id}/{new_runtime}")
+# def update_job_runtime(
+#     job_id: str,
+#     new_runtime: str,
+#     current_user=Depends(verify_token),
+#     db: Session = Depends(get_db),
+# ):
+#     """
+#     Update the runtime of a job by its ID for the current authenticated user.
+#     :param job_id: ID of the job to update.
+#     :param new_runtime: New runtime to set for the job (format: HH:MM:SS).
+#     :param current_user: Current user dependency, verified via token.
+#     :param db: Database session dependency.
+#     :return: JSONResponse with updated job details and status code 200 OK.
+#     """
+#     user_sub = get_user_sub(current_user)
+#
+#     job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
+#     if not job:
+#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+#
+#     try:
+#         h, m, s = map(int, new_runtime.split(':'))
+#         job.runtime = timedelta(hours=h, minutes=m, seconds=s)
+#         db.commit()
+#         db.refresh(job)
+#     except ValueError:
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid runtime format. Use HH:MM:SS.")
+#
+#     return {"job_id": job.job_id, "runtime": str(job.runtime), "message": "Job runtime updated successfully."}
 
 router.post("/advanced_analysis")
 def run_advanced_analysis(

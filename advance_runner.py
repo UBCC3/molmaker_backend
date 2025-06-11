@@ -10,7 +10,7 @@ Usage:
     python3 advance_runner.py error  <job_id>
 	python3 advance_runner.py cancel <slurm_job_id>
 """
-
+import json
 import sys
 import subprocess
 import glob
@@ -52,13 +52,17 @@ python3 Cluster-API-QC/src/advance_analysis.py {job_id} {xyz_file} {analysis_typ
 def get_status(slurm_id):
     try:
         out = subprocess.check_output([
-            'sacct', '-n', '-j', slurm_id, '--format=State', '--parsable2'
+            'sacct', '-n', '-j', slurm_id, '--format=State,Elapsed', '--parsable2'
         ], text=True)
-        state = out.strip().split('\n')[0]
-        state = state.split(' ')[0]
-        print(state)
+        line = out.strip().split('\n')[0]
+        state, elapsed = line.split("|")
     except subprocess.CalledProcessError:
-        print('UNKNOWN')
+        state, elapsed = "UNKNOWN", "00:00:00"
+    print(json.dumps({
+        "slurm_id": slurm_id,
+        "state":     state,
+        "elapsed":   elapsed
+    }))
 
 def get_result(job_id):
     pattern = f"result/{job_id}/result.json"
