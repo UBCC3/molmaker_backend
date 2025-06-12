@@ -43,7 +43,15 @@ def get_all_structures(
                 "location": s.location,
                 "notes": s.notes,
                 "uploaded_at": s.uploaded_at,
-                "tags": [tag.name for tag in s.tags]
+                "tags": [tag.name for tag in s.tags],
+                "imageS3URL": s3.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": S3_BUCKET_NAME,
+                        "Key": f"structures/{s.structure_id}.png"
+                    },
+                    ExpiresIn=3600
+                )
             }
             for s in structures
         ]
