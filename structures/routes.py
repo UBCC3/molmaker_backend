@@ -13,8 +13,10 @@ from typing import List
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 JOB_DIR = "./results"
-s3 = boto3.client("s3")
-BUCKET = "molmaker"
+
+session = boto3.Session(profile_name='dev', region_name='ca-central-1')
+s3 = session.client('s3')
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
 @router.get("/")
 def get_all_structures(
@@ -197,6 +199,7 @@ def create_and_upload_structure(
     notes: str = Form(None),
     file: UploadFile = File(...),
     tags: List[str] = Form([]),
+    image: UploadFile = File(...),
     user=Depends(verify_token),
     db: Session = Depends(get_db)
 ):
@@ -225,6 +228,13 @@ def create_and_upload_structure(
 
         s3_link = upload_structure_to_s3(file_path, structure_id)
         uploaded_at = datetime.now(timezone.utc)
+
+        try:
+            image_key = f"structures/{structure_id}.png"
+            s3.upload_fileobj(image.file, S3_BUCKET_NAME, image_key)
+        except Exception as e:
+            print("Upload to s3 failed:", e)
+            raise
 
         # Create and save the structure in the database
         structure = Structure(
@@ -261,13 +271,12 @@ def create_and_upload_structure(
         raise HTTPException(status_code=500, detail=str(e))
 
 def upload_structure_to_s3(local_file_path: str, structure_id: str):
-    bucket = "molmaker"
     key = f"structures/{structure_id}.xyz"
 
     try:
-        s3.upload_file(local_file_path, bucket, key)
-        print(f"Uploaded to s3://{bucket}/{key}")
-        return f"s3://{bucket}/{key}"
+        s3.upload_file(local_file_path, S3_BUCKET_NAME, key)
+        print(f"Uploaded to s3://{S3_BUCKET_NAME}/{key}")
+        return f"s3://{S3_BUCKET_NAME}/{key}"
     except Exception as e:
         print("Upload to s3 failed:", e)
         raise
@@ -283,7 +292,7 @@ def get_presigned_url_for_structure(structure_id: str):
     try:
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
-            Params={"Bucket": BUCKET, "Key": key},
+            Params={"Bucket": S3_BUCKET_NAME, "Key": key},
             ExpiresIn=300
         )
         return JSONResponse({"url": url})
