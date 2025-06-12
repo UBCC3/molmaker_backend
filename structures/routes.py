@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse
@@ -30,7 +30,7 @@ def get_all_structures(
     try:
         user_id = get_user_sub(user)
         structures = (db.query(Structure)
-                .filter(Structure.user_sub == user_id)
+                .filter(Structure.user_sub == user_id, Structure.is_deleted == False)
                 .order_by(Structure.uploaded_at.desc())
                 .all())
 
@@ -158,6 +158,39 @@ def update_structure(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.delete("/{structure_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_structure(
+    structure_id: str,
+    user=Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a structure by its ID.
+    :param structure_id: ID of the structure to delete.
+    :param user: Current user dependency, verified via token.
+    :param db: Database session dependency.
+    :return: Success message if deletion is successful.
+    """
+    user_id = get_user_sub(user)
+
+    structure = db.query(Structure).filter(
+        Structure.structure_id == structure_id,
+        Structure.user_sub == user_id
+    ).first()
+
+    if not structure:
+        raise HTTPException(status_code=404, detail="Structure not found.")
+
+    # Mark as deleted
+    structure.is_deleted = True
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+
+    return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+
 @router.post("/")
 def create_and_upload_structure(
     name: str = Form(...),
@@ -201,6 +234,7 @@ def create_and_upload_structure(
             location=s3_link,
             notes=notes,
             uploaded_at=uploaded_at,
+            is_deleted=False
         )
         db.add(structure)
 

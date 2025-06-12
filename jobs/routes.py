@@ -170,6 +170,7 @@ def create_job(
         submitted_at=datetime.now(timezone.utc),
         user_sub=user_sub,
         status="pending",
+        is_deleted=False,
     )
     db.add(new_job)
 

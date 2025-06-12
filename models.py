@@ -101,6 +101,7 @@ class Structure(Base):
     location = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
     uploaded_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
+    is_deleted = Column(Boolean, nullable=False)
 
     jobs = relationship(
         'Job',
