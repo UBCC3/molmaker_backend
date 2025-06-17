@@ -10,11 +10,13 @@ import boto3
 from utils import get_user_sub
 from datetime import datetime, timezone
 from typing import List
+from ase.io import read
+from pymatgen.core import Molecule
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 JOB_DIR = "./results"
 
-session = boto3.Session(profile_name='dev', region_name='ca-central-1')
+session = boto3.Session()
 s3 = session.client('s3')
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 
@@ -40,6 +42,7 @@ def get_all_structures(
             {
                 "structure_id": s.structure_id,
                 "name": s.name,
+                "formula": s.formula,
                 "location": s.location,
                 "notes": s.notes,
                 "uploaded_at": s.uploaded_at,
@@ -57,6 +60,44 @@ def get_all_structures(
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/formula")
+async def get_structure_formula(
+        file: UploadFile = File(...)
+):
+    """
+    Calculate molecular formula from uploaded structure file.
+    :param file: Uploaded structure file.
+    :return: Dictionary containing the molecular formula.
+    """
+    try:
+        temp_file = f"temp_{uuid.uuid4()}.xyz"
+        try:
+            with open(temp_file, "wb") as f:
+                content = await file.read()
+                f.write(content)
+
+            # Try reading with ASE first
+            try:
+                atoms = read(temp_file)
+                chemical_formula = atoms.get_chemical_formula()
+            except:
+                # If ASE fails, try with Pymatgen
+                mol = Molecule.from_file(temp_file)
+                chemical_formula = mol.composition.reduced_formula
+
+            return {"formula": chemical_formula}
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not calculate formula: {str(e)}"
+        )
+
 
 @router.get("/tags")
 def get_user_tags(
@@ -104,6 +145,7 @@ def get_structure_by_id(
         return {
             "structure_id": structure.structure_id,
             "name": structure.name,
+            "formula": structure.formula,
             "location": structure.location,
             "notes": structure.notes,
             "uploaded_at": structure.uploaded_at,
@@ -116,6 +158,7 @@ def get_structure_by_id(
 def update_structure(
     structure_id: str,
     name: str = Form(...),
+    formula: str = Form(...),
     notes: str = Form(None),
     tags: List[str] = Form([]),
     user=Depends(verify_token),
@@ -126,6 +169,7 @@ def update_structure(
     :param tags: List of tags to associate with the structure.
     :param structure_id: ID of the structure to update.
     :param name: New name for the structure.
+    :param formula: Chemical formula of the structure.
     :param notes: Optional notes for the structure.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
@@ -143,6 +187,7 @@ def update_structure(
             raise HTTPException(404, "Structure not found.")
 
         structure.name = name
+        structure.formula = formula
         structure.notes = notes
 
         structure.tags.clear()
@@ -204,6 +249,7 @@ def delete_structure(
 @router.post("/")
 def create_and_upload_structure(
     name: str = Form(...),
+    formula: str = Form(...),
     notes: str = Form(None),
     file: UploadFile = File(...),
     tags: List[str] = Form([]),
@@ -213,6 +259,8 @@ def create_and_upload_structure(
 ):
     """
     Create a new structure by uploading a file.
+    :param formula: Chemical formula of the structure.
+    :param image: UploadFile containing the structure image.
     :param tags: List of tags to associate with the structure.
     :param notes: Optional notes for the structure.
     :param name: Name of the structure.
@@ -237,6 +285,7 @@ def create_and_upload_structure(
         s3_link = upload_structure_to_s3(file_path, structure_id)
         uploaded_at = datetime.now(timezone.utc)
 
+        print("FORMULA", formula)
         try:
             image_key = f"structures/{structure_id}.png"
             s3.upload_fileobj(image.file, S3_BUCKET_NAME, image_key)
@@ -249,6 +298,7 @@ def create_and_upload_structure(
             structure_id=structure_id,
             user_sub=user_id,
             name=name,
+            formula=formula,
             location=s3_link,
             notes=notes,
             uploaded_at=uploaded_at,

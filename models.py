@@ -98,6 +98,7 @@ class Structure(Base):
     structure_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_sub = Column(String, nullable=False)
     name = Column(Text, nullable=False)
+    formula = Column(Text, nullable=False)
     location = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
     uploaded_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
