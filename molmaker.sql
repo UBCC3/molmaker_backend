@@ -21,7 +21,7 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- Name: jobs; Type: TABLE; Schema: public; Owner: -
+-- Name: jobs; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.jobs (
@@ -44,8 +44,10 @@ CREATE TABLE public.jobs (
 );
 
 
+ALTER TABLE public.jobs OWNER TO sparshtrivedy;
+
 --
--- Name: jobs_structures; Type: TABLE; Schema: public; Owner: -
+-- Name: jobs_structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.jobs_structures (
@@ -54,8 +56,10 @@ CREATE TABLE public.jobs_structures (
 );
 
 
+ALTER TABLE public.jobs_structures OWNER TO sparshtrivedy;
+
 --
--- Name: jobs_tags; Type: TABLE; Schema: public; Owner: -
+-- Name: jobs_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.jobs_tags (
@@ -64,8 +68,10 @@ CREATE TABLE public.jobs_tags (
 );
 
 
+ALTER TABLE public.jobs_tags OWNER TO sparshtrivedy;
+
 --
--- Name: structures; Type: TABLE; Schema: public; Owner: -
+-- Name: structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.structures (
@@ -74,12 +80,16 @@ CREATE TABLE public.structures (
     name text NOT NULL,
     location text NOT NULL,
     notes text,
-    uploaded_at timestamp without time zone NOT NULL
+    uploaded_at timestamp without time zone NOT NULL,
+    is_deleted boolean DEFAULT false NOT NULL,
+    formula text NOT NULL
 );
 
 
+ALTER TABLE public.structures OWNER TO sparshtrivedy;
+
 --
--- Name: structures_tags; Type: TABLE; Schema: public; Owner: -
+-- Name: structures_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.structures_tags (
@@ -88,8 +98,10 @@ CREATE TABLE public.structures_tags (
 );
 
 
+ALTER TABLE public.structures_tags OWNER TO sparshtrivedy;
+
 --
--- Name: tags; Type: TABLE; Schema: public; Owner: -
+-- Name: tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
 --
 
 CREATE TABLE public.tags (
@@ -99,8 +111,10 @@ CREATE TABLE public.tags (
 );
 
 
+ALTER TABLE public.tags OWNER TO sparshtrivedy;
+
 --
--- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs
@@ -108,7 +122,7 @@ ALTER TABLE ONLY public.jobs
 
 
 --
--- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -116,7 +130,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -124,7 +138,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.structures
@@ -132,7 +146,7 @@ ALTER TABLE ONLY public.structures
 
 
 --
--- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -140,7 +154,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.tags
@@ -148,7 +162,7 @@ ALTER TABLE ONLY public.tags
 
 
 --
--- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -156,7 +170,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -164,7 +178,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -172,7 +186,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -180,7 +194,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -188,7 +202,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
 --
 
 ALTER TABLE ONLY public.structures_tags
