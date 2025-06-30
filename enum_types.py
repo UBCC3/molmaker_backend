@@ -3,7 +3,7 @@ from enum import Enum
 class CalculationType(str, Enum):
     energy = "energy"
     geometry = "geometry"
-    optimization = "optimization"
+    orbitals = "orbitals"
     frequency = "frequency"
 
 calculation_types = {
