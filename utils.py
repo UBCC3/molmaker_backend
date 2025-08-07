@@ -30,6 +30,8 @@ def serialize_job(job: Job) -> Dict[str, Any]:
         "structures": [serialize_structure(s) for s in job.structures],
         "tags": [t.name for t in job.tags],
         "runtime": str(job.runtime) if job.runtime else None,
+        "is_deleted": job.is_deleted,
+        "is_public": job.is_public,
     }
 
 def get_user_sub(current_user) -> str:

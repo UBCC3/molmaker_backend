@@ -198,11 +198,44 @@ def create_job(
     headers = {"Location": f"/jobs/{job_id}"}
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=serialize_job(new_job), headers=headers)
 
+@router.patch("/{job_id}/visibility", status_code=status.HTTP_200_OK)
+def update_job_visibility(
+    job_id: str,
+    is_public: bool = Form(...),
+    current_user=Depends(verify_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the visibility of a job by its ID for the current authenticated user.
+    :param job_id: ID of the job to update.
+    :param is_public: Boolean indicating whether the job should be public or private.
+    :param current_user: Current user dependency, verified via token.
+    :param db: Database session dependency.
+    :return: JSONResponse with updated job details and status code 200 OK.
+    """
+    user_sub = get_user_sub(current_user)
+
+    job = db.query(Job).filter_by(job_id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job.is_public = is_public
+
+    try:
+        db.commit()
+        db.refresh(job)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+
+    return {"job_id": job.job_id, "is_public": job.is_public, "message": "Job visibility updated successfully."}
+
 @router.patch("/{job_id}", status_code=status.HTTP_200_OK)
 def update_job(
     job_id: str,
     state: Optional[str] = Form(None),
     runtime: Optional[str] = Form(None),
+    user_sub: Optional[str] = Form(None),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -210,18 +243,17 @@ def update_job(
     Update the status of a job by its ID for the current authenticated user.
     :param state: Optional new status for the job (e.g., "pending", "running", "completed", "failed", "cancelled").
     :param runtime: Optional runtime to set for the job (format: "HH:MM:SS").
+    :param user_sub: Optional user subscription ID to update the job for a specific user (not typically used).
     :param job_id: ID of the job to update.
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    user_sub = get_user_sub(current_user)
-
-    job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
+    job = db.query(Job).filter_by(job_id=job_id).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    print(runtime)
-    if runtime is not None:
+
+    if runtime:
         try:
             h, m, s = map(int, runtime.split(":"))
             job.runtime = timedelta(hours=h, minutes=m, seconds=s)
@@ -244,6 +276,9 @@ def update_job(
 
         if new_status in {"completed", "failed", "cancelled"}:
             job.completed_at = datetime.now(timezone.utc)
+
+    if user_sub is not None:
+        job.user_sub = user_sub
 
     try:
         db.commit()

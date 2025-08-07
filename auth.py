@@ -43,6 +43,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer
             return payload
 
     except Exception as e:
+        print(f"Token verification failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid access token")
 
     raise HTTPException(status_code=401, detail="Authorization failed")
