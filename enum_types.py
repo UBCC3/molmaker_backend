@@ -2,15 +2,21 @@ from enum import Enum
 
 class CalculationType(str, Enum):
     energy = "energy"
-    geometry = "geometry"
+    geometry = "optimization"
     orbitals = "orbitals"
     frequency = "frequency"
+    standard = "standard"
+    transition = "transition"
+    irc = "irc"
 
 calculation_types = {
     'Molecular Energy': 'energy',
 	'Geometric Optimization': 'optimization',
 	'Vibrational Frequency': 'frequency',
 	'Molecular Orbitals': 'orbitals',
+    'Standard Analysis': 'standard',
+    'Transition State Optimization': 'transition',
+    'Intrinsic Reaction Coordinate': 'irc',
 }
 
 wave_functional_theories = {
@@ -56,4 +62,9 @@ multiplicities = {
 	'Quartet': 4,
 	'Quintet': 5,
 	'Sextet': 6,
+}
+
+optimization_types = {
+    'Ground State': 'ground',
+    'Transition State': 'ts',
 }

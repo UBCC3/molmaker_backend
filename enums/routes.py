@@ -4,6 +4,7 @@ from enum_types import wave_functional_theories
 from enum_types import density_functional_theories
 from enum_types import basis_sets
 from enum_types import multiplicities
+from enum_types import optimization_types
 
 router = APIRouter(prefix="/enums", tags=["enums"])
 
@@ -46,3 +47,11 @@ def get_multiplicities():
     :return: Dictionary of multiplicities.
     """
     return multiplicities
+
+@router.get("/optimization_types")
+def get_optimization_types():
+    """
+    Returns a dictionary of optimization types.
+    :return: Dictionary of optimization types.
+    """
+    return optimization_types
