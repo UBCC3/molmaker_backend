@@ -78,6 +78,7 @@ class Job(Base):
     runtime = Column(Interval, nullable=True)
     is_deleted = Column(Boolean, nullable=False)
     is_public = Column(Boolean, nullable=False, default=False)
+    is_uploaded = Column(Boolean, nullable=False)
 
     structures = relationship(
         'Structure',
