@@ -1,3 +1,5 @@
+import shutil
+from pathlib import Path
 from typing import Dict, Any
 from models import Job, Structure
 from fastapi import HTTPException, status
@@ -40,3 +42,8 @@ def get_user_sub(current_user) -> str:
         if user_sub:
             return user_sub
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+def clean_up_upload_cache(job_dir: str):
+    path = Path(job_dir)
+    if path.exists():
+        shutil.rmtree(path)

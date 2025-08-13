@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 server.py
 
@@ -8,14 +9,26 @@ Usage:
     uvicorn server:app --host 0.0.0.0 --port 8000
 Ensure your SSH key is loaded locally and `cluster` is in your SSH config.
 """
+import json
 import os
 import uuid
 import shutil
 import subprocess
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import (
+    # FastAPI,
+    HTTPException, 
+    UploadFile,
+    File,
+    Form
+)
 from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
+# from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+
+from s3 import construct_upload_script
+from main import WORK_DIR
+from utils import clean_up_upload_cache
+from main import app
 
 class SubmitResponse(BaseModel):
     job_id: str
@@ -32,28 +45,28 @@ class CancelResponse(BaseModel):
     slurm_id: str
     success: str
 
-app = FastAPI()
-app.add_middleware(
-  CORSMiddleware,
-  allow_origins=["http://localhost:5173"],
-  allow_methods=["*"],
-  allow_headers=["*"],
-)
+# app = FastAPI()
+# app.add_middleware(
+#   CORSMiddleware,
+#   allow_origins=["http://localhost:5173"],
+#   allow_methods=["*"],
+#   allow_headers=["*"],
+# )
 
 @app.post("/run_advance_analysis")
 def run_advance_analysis(
-        file: UploadFile = UploadFile(...),
+        file: UploadFile = File(...),
         calculation_type: str = Form(...),
         method: str = Form(...),
         basis_set: str = Form(...),
         charge: int = Form(...),
         multiplicity: int = Form(...),
+        opt_type: Optional[str] = Form(None),
         keywords: Optional[UploadFile] = File(None),
 ):
     """
     Endpoint to run advanced analysis on the cluster.
     This is a placeholder function and should be implemented with actual logic.
-    :param keywords: Optional file containing keywords for the analysis.
     :param file: The file to be analyzed.
     :param calculation_type: Type of calculation to be performed.
     :param method: Computational method to be used for the job.
@@ -63,38 +76,47 @@ def run_advance_analysis(
     :return: A message indicating the analysis has been initiated.
     """
     job_id = uuid.uuid4()
+    job_dir = f"jobs/{job_id}"
+    os.makedirs(job_dir, exist_ok=True)
 
-    upload_path = f"uploads/{job_id}.xyz"
-    os.makedirs("uploads", exist_ok=True)
-    with open(upload_path, "wb") as f:
+    xyz_file_path = job_dir + "/input.xyz"
+    with open(xyz_file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    subprocess.run(
-        ["scp", upload_path, f"cluster:uploads/{job_id}.xyz"],
-        check=True
-    )
+    urls_path = job_dir + "/urls.json"
+    urls = construct_upload_script(str(job_id), calculation_type)
+    with open(urls_path, "w") as f:
+        f.write(json.dumps(urls))
 
     ssh_cmd = [
-            "ssh", "cluster",
-            "python3 advance_runner.py submit",
-            f"uploads/{job_id}.xyz",
-            str(job_id),
-            calculation_type,
-            method,
-            basis_set,
-            str(charge),
-            str(multiplicity),
+        "ssh", "cluster",
+        f"python3 {WORK_DIR}/advance_runner.py submit",
+        f"{xyz_file_path}",
+        str(job_id),
+        calculation_type,
+        method,
+        basis_set,
+        str(charge),
+        str(multiplicity),
     ]
 
+    if opt_type is not None:
+        ssh_cmd.append(f"--opt-type {opt_type} ")
+
     if keywords is not None:
-        keywords_json_path = f"uploads/{job_id}_keywords.json"
+        keywords_json_path = job_dir +  "/keywords.json"
         with open(keywords_json_path, "wb") as f:
             shutil.copyfileobj(keywords.file, f)
-        subprocess.run(
-            ["scp", keywords_json_path, f"cluster:uploads/{job_id}_keywords.json"],
-            check=True
-        )
-        ssh_cmd.append(f"uploads/{job_id}_keywords.json")
+        ssh_cmd.append(f"--keywords-file {keywords_json_path}")
+
+    subprocess.run(
+        ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
+        check=True,
+    )
+    subprocess.run(
+        ["scp", "-r", job_dir, f"cluster:{WORK_DIR}/jobs"],
+        check=True
+    )
 
     result = subprocess.run(
         ssh_cmd,
@@ -104,13 +126,74 @@ def run_advance_analysis(
     )
 
     slurm_id = result.stdout.strip()
+    clean_up_upload_cache(job_dir)
+    return {"job_id":job_id, "slurm_id":slurm_id}
+
+@app.post("/run_standard_analysis")
+def run_standard_analysis(
+        file: UploadFile = File(...),
+        charge: int = Form(...),
+        multiplicity: int = Form(...),
+        opt_type: Optional[str] = Form(None),
+):
+    """
+    Endpoint to run advanced analysis on the cluster.
+    This is a placeholder function and should be implemented with actual logic.
+    :param file: The file to be analyzed.
+    :param charge: Charge of the system for the job.
+    :param multiplicity: Multiplicity of the system for the job.
+    :return: A message indicating the analysis has been initiated.
+    """
+    job_id = uuid.uuid4()
+    job_dir = f"jobs/{job_id}"
+    os.makedirs(job_dir, exist_ok=True)
+
+    xyz_file_path = job_dir + "/input.xyz"
+    with open(xyz_file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    urls_path = job_dir + "/urls.json"
+    urls = construct_upload_script(str(job_id), "standard")
+    with open(urls_path, "w") as f:
+        f.write(json.dumps(urls))
+
+    ssh_cmd = [
+        "ssh", "cluster",
+        f"python3 {WORK_DIR}/advance_runner.py submit",
+        f"{xyz_file_path}",
+        str(job_id),
+        str(charge),
+        str(multiplicity),
+    ]
+
+    if opt_type is not None:
+        ssh_cmd.append(f"--opt-type {opt_type} ")
+
+    subprocess.run(
+        ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
+        check=True,
+    )
+    subprocess.run(
+        ["scp", "-r", job_dir, f"cluster:{WORK_DIR}/jobs"],
+        check=True
+    )
+
+    result = subprocess.run(
+        ssh_cmd,
+        check=True,
+        capture_output=True,
+        text=True
+    )
+
+    slurm_id = result.stdout.strip()
+    clean_up_upload_cache(job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @app.get("/status/{slurm_id}", response_model=StatusResponse)
 def status(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 advance_runner.py status {slurm_id}"
+        f"python3 {WORK_DIR}/advance_runner.py status {slurm_id}"
     ]
     try:
         proc = subprocess.run(
@@ -132,7 +215,7 @@ class ResultResponse(BaseModel):
 def error_result(job_id):
     cmd = [
         "ssh", "cluster",
-        f"python3 advance_runner.py error {job_id}"
+        f"python3 {WORK_DIR}/advance_runner.py error {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -149,7 +232,7 @@ def error_result(job_id):
 def result(job_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 advance_runner.py result {job_id}"
+        f"python3 {WORK_DIR}/advance_runner.py result {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -166,7 +249,7 @@ def result(job_id: str):
 def cancel(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 advance_runner.py cancel {slurm_id}"
+        f"python3 {WORK_DIR}/advance_runner.py cancel {slurm_id}"
     ]
     try:
         proc = subprocess.run(
