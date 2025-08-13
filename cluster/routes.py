@@ -26,9 +26,11 @@ from pydantic import BaseModel
 from typing import Optional
 
 from s3 import construct_upload_script
-from main import WORK_DIR
 from utils import clean_up_upload_cache
 from main import app
+
+BACKEND_WORK_DIR = os.getenv("BACKEND_WORK_DIR")
+CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
 class SubmitResponse(BaseModel):
     job_id: str
@@ -76,22 +78,23 @@ def run_advance_analysis(
     :return: A message indicating the analysis has been initiated.
     """
     job_id = uuid.uuid4()
-    job_dir = f"jobs/{job_id}"
-    os.makedirs(job_dir, exist_ok=True)
+    backend_job_dir = f"{BACKEND_WORK_DIR}/jobs/{job_id}"
+    remote_cluster_job_dir = f"{CLUSTER_WORK_DIR}/jobs/{job_id}"
+    os.makedirs(backend_job_dir, exist_ok=True)
 
-    xyz_file_path = job_dir + "/input.xyz"
-    with open(xyz_file_path, "wb") as f:
+    xyz_file_path = "/input.xyz"
+    with open(backend_job_dir + xyz_file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    urls_path = job_dir + "/urls.json"
+    urls_path = "/urls.json"
     urls = construct_upload_script(str(job_id), calculation_type)
-    with open(urls_path, "w") as f:
+    with open(backend_job_dir + urls_path, "w") as f:
         f.write(json.dumps(urls))
 
     ssh_cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py submit",
-        f"{xyz_file_path}",
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py submit",
+        remote_cluster_job_dir + xyz_file_path,
         str(job_id),
         calculation_type,
         method,
@@ -104,17 +107,13 @@ def run_advance_analysis(
         ssh_cmd.append(f"--opt-type {opt_type} ")
 
     if keywords is not None:
-        keywords_json_path = job_dir +  "/keywords.json"
-        with open(keywords_json_path, "wb") as f:
+        keywords_json_path = "/keywords.json"
+        with open(backend_job_dir + keywords_json_path, "wb") as f:
             shutil.copyfileobj(keywords.file, f)
-        ssh_cmd.append(f"--keywords-file {keywords_json_path}")
+        ssh_cmd.append(f"--keywords-file {remote_cluster_job_dir + keywords_json_path}")
 
     subprocess.run(
-        ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
-        check=True,
-    )
-    subprocess.run(
-        ["scp", "-r", job_dir, f"cluster:{WORK_DIR}/jobs"],
+        ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
         check=True
     )
 
@@ -126,7 +125,7 @@ def run_advance_analysis(
     )
 
     slurm_id = result.stdout.strip()
-    clean_up_upload_cache(job_dir)
+    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @app.post("/run_standard_analysis")
@@ -145,22 +144,23 @@ def run_standard_analysis(
     :return: A message indicating the analysis has been initiated.
     """
     job_id = uuid.uuid4()
-    job_dir = f"jobs/{job_id}"
-    os.makedirs(job_dir, exist_ok=True)
+    backend_job_dir = f"{BACKEND_WORK_DIR}/jobs/{job_id}"
+    remote_cluster_job_dir = f"{CLUSTER_WORK_DIR}/jobs/{job_id}"
+    os.makedirs(backend_job_dir, exist_ok=True)
 
-    xyz_file_path = job_dir + "/input.xyz"
-    with open(xyz_file_path, "wb") as f:
+    xyz_file_path = "/input.xyz"
+    with open(backend_job_dir + xyz_file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    urls_path = job_dir + "/urls.json"
+    urls_path = "/urls.json"
     urls = construct_upload_script(str(job_id), "standard")
-    with open(urls_path, "w") as f:
+    with open(backend_job_dir + urls_path, "w") as f:
         f.write(json.dumps(urls))
 
     ssh_cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py submit",
-        f"{xyz_file_path}",
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py submit",
+        remote_cluster_job_dir + xyz_file_path,
         str(job_id),
         str(charge),
         str(multiplicity),
@@ -169,12 +169,12 @@ def run_standard_analysis(
     if opt_type is not None:
         ssh_cmd.append(f"--opt-type {opt_type} ")
 
+    # subprocess.run(
+    #     ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
+    #     check=True,
+    # )
     subprocess.run(
-        ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
-        check=True,
-    )
-    subprocess.run(
-        ["scp", "-r", job_dir, f"cluster:{WORK_DIR}/jobs"],
+        ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
         check=True
     )
 
@@ -186,14 +186,14 @@ def run_standard_analysis(
     )
 
     slurm_id = result.stdout.strip()
-    clean_up_upload_cache(job_dir)
+    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @app.get("/status/{slurm_id}", response_model=StatusResponse)
 def status(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py status {slurm_id}"
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py status {slurm_id}"
     ]
     try:
         proc = subprocess.run(
@@ -215,7 +215,7 @@ class ResultResponse(BaseModel):
 def error_result(job_id):
     cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py error {job_id}"
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py error {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -232,7 +232,7 @@ def error_result(job_id):
 def result(job_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py result {job_id}"
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py result {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -249,7 +249,7 @@ def result(job_id: str):
 def cancel(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {WORK_DIR}/advance_runner.py cancel {slurm_id}"
+        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py cancel {slurm_id}"
     ]
     try:
         proc = subprocess.run(

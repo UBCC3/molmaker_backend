@@ -23,12 +23,12 @@ from auth import verify_token
 
 from utils import serialize_job, get_user_sub
 from enum_types import CalculationType
-from main import WORK_DIR
 
 import subprocess
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
+CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
 class JobUpdate(BaseModel):
     runtime: Optional[str] = None   # "HH:MM:SS"
@@ -280,7 +280,7 @@ def update_job(
             job.completed_at = datetime.now(timezone.utc)
             if new_status in {"completed", "failed"}:
                 if not job.is_uploaded:
-                    cmd = [ "ssh", "cluster", f"python3 {WORK_DIR}/Cluster-API-QC/src/upload_result.py {job_id} {calculation} {success}"]
+                    cmd = [ "ssh", "cluster", f"python3 {CLUSTER_WORK_DIR}/Cluster-API-QC/src/upload_result.py {job.job_id} {job.calculation_type} {new_status == "completed"}"]
                     proc = subprocess.run(
                         cmd,
                         check=True,
