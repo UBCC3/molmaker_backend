@@ -25,9 +25,8 @@ from pydantic import BaseModel
 # from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 
-from s3 import construct_upload_script
+from storage import construct_upload_script
 from utils import clean_up_upload_cache
-from main import app
 
 BACKEND_WORK_DIR = os.getenv("BACKEND_WORK_DIR")
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
@@ -46,14 +45,6 @@ class RunJobResponse(BaseModel):
 class CancelResponse(BaseModel):
     slurm_id: str
     success: str
-
-# app = FastAPI()
-# app.add_middleware(
-#   CORSMiddleware,
-#   allow_origins=["http://localhost:5173"],
-#   allow_methods=["*"],
-#   allow_headers=["*"],
-# )
 
 router = APIRouter(prefix="/cluster", tags=["cluster"])
 

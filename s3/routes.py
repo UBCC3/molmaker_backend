@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from auth import verify_token
 from dependencies import get_db
 from models import Job
-from s3 import construct_fetch_script, presign_zip_download_url
+from storage import construct_fetch_script, presign_zip_download_url
 from utils import get_user_sub
 
-router = APIRouter(prefix="/s3", tags=["s3"])
+router = APIRouter(prefix="/storage", tags=["storage"])
 
 class JobFilesResponse(BaseModel):
     job_id: str
