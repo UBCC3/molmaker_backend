@@ -16,10 +16,10 @@ import shutil
 import subprocess
 from fastapi import (
     # FastAPI,
-    HTTPException, 
+    HTTPException,
     UploadFile,
     File,
-    Form
+    Form, APIRouter
 )
 from pydantic import BaseModel
 # from fastapi.middleware.cors import CORSMiddleware
@@ -55,8 +55,10 @@ class CancelResponse(BaseModel):
 #   allow_headers=["*"],
 # )
 
-@app.post("/run_advance_analysis")
-def run_advance_analysis(
+router = APIRouter(prefix="/cluster", tags=["cluster"])
+
+@router.post("/run_advanced_analysis")
+def run_advanced_analysis(
         file: UploadFile = File(...),
         calculation_type: str = Form(...),
         method: str = Form(...),
@@ -128,7 +130,7 @@ def run_advance_analysis(
     clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
-@app.post("/run_standard_analysis")
+@router.post("/run_standard_analysis")
 def run_standard_analysis(
         file: UploadFile = File(...),
         charge: int = Form(...),
@@ -189,7 +191,7 @@ def run_standard_analysis(
     clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
-@app.get("/status/{slurm_id}", response_model=StatusResponse)
+@router.get("/status/{slurm_id}", response_model=StatusResponse)
 def status(slurm_id: str):
     cmd = [
         "ssh", "cluster",
@@ -211,7 +213,7 @@ class ResultResponse(BaseModel):
     job_id: str
     output: str
 
-@app.get("/error/{job_id}", response_model=ResultResponse)
+@router.get("/error/{job_id}", response_model=ResultResponse)
 def error_result(job_id):
     cmd = [
         "ssh", "cluster",
@@ -228,7 +230,7 @@ def error_result(job_id):
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
 
-@app.get("/result/{job_id}", response_model=ResultResponse)
+@router.get("/result/{job_id}", response_model=ResultResponse)
 def result(job_id: str):
     cmd = [
         "ssh", "cluster",
@@ -245,7 +247,7 @@ def result(job_id: str):
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
 
-@app.post("/cancel/{slurm_id}", response_model=CancelResponse)
+@router.post("/cancel/{slurm_id}", response_model=CancelResponse)
 def cancel(slurm_id: str):
     cmd = [
         "ssh", "cluster",
