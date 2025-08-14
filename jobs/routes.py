@@ -25,10 +25,10 @@ from utils import serialize_job, get_user_sub
 from enum_types import CalculationType
 
 import subprocess
-import requests # TODO remove when use ssh with subprocess
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
+CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
 class JobUpdate(BaseModel):
     runtime: Optional[str] = None   # "HH:MM:SS"
@@ -278,11 +278,16 @@ def update_job(
 
         if new_status in {"completed", "failed", "cancelled"}:
             job.completed_at = datetime.now(timezone.utc)
-            # TODO trigger upload can be done directly via SSH cmd
             if new_status in {"completed", "failed"}:
                 if not job.is_uploaded:
-                    resp: requests.Response = requests.post(url=f"http://localhost:8000/upload/{job.job_id}/{job.calculation_type}/{new_status == "completed"}")
-                    if resp.ok:
+                    cmd = [ "ssh", "cluster", f"python3 {CLUSTER_WORK_DIR}/Cluster-API-QC/src/upload_result.py {job.job_id} {job.calculation_type} {new_status == "completed"}"]
+                    proc = subprocess.run(
+                        cmd,
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    if proc.returncode == 0:
                         job.is_uploaded = True
 
     if user_sub is not None:

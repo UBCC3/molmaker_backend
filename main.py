@@ -23,6 +23,7 @@ app.add_middleware(
 
 Job.__table__.create(bind=engine, checkfirst=True)
 
+
 app.include_router(jobs_router)
 app.include_router(structures_router)
 app.include_router(enums_router)
