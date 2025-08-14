@@ -15,7 +15,7 @@ http_bearer = HTTPBearer()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
     token = credentials.credentials
-    print(token)
+    # print(token)
     try:
         jwks_url = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
         jwks = requests.get(jwks_url).json()
