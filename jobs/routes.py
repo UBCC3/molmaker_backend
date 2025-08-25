@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-
 from fastapi import (
     APIRouter,
     UploadFile,
@@ -19,8 +18,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-from models import Job, Structure, Tags
+from models import Job, Structure, Tags, User
 from dependencies import get_db
 from auth import verify_token
 from utils import serialize_job, get_user_sub
@@ -30,6 +28,14 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
+def has_admin_permission(user):
+    return user.role == "admin"
+
+def has_group_admin_permission(db: Session, user, target_user_sub: str):
+    if user.role == "group_admin" and user.group_id:
+        target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
+        return target_user and target_user.group_id == user.group_id
+    return False
 
 @router.get("/")
 def get_all_jobs(
@@ -67,7 +73,7 @@ def get_job_by_id(
     :return: Serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
+    job = db.query(Job).filter_by(job_id=job_id).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return serialize_job(job)
@@ -87,9 +93,12 @@ def delete_job(
     :return: No content response (204).
     """
     user_sub = get_user_sub(current_user)
-    job = db.query(Job).filter_by(job_id=job_id, user_sub=user_sub).first()
+    job = db.query(Job).filter_by(job_id=job_id).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     job.is_deleted = True
     try:
@@ -238,6 +247,10 @@ def update_job_visibility(
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
+    user_sub = get_user_sub(current_user)
+    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
     job.is_public = is_public
     try:
         db.commit()
@@ -277,6 +290,9 @@ def update_job(
     job = db.query(Job).filter_by(job_id=job_id).first()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == get_user_sub(current_user)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     if runtime:
         try:
