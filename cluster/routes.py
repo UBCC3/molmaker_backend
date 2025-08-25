@@ -62,6 +62,8 @@ def run_advanced_analysis(
     """
     Endpoint to run advanced analysis on the cluster.
     This is a placeholder function and should be implemented with actual logic.
+    :param keywords: Optional file containing keywords for the job.
+    :param opt_type: Optional optimization type for the job.
     :param file: The file to be analyzed.
     :param calculation_type: Type of calculation to be performed.
     :param method: Computational method to be used for the job.
@@ -86,7 +88,7 @@ def run_advanced_analysis(
 
     ssh_cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py submit",
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py submit",
         remote_cluster_job_dir + xyz_file_path,
         str(job_id),
         calculation_type,
@@ -152,7 +154,7 @@ def run_standard_analysis(
 
     ssh_cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py submit",
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py submit",
         remote_cluster_job_dir + xyz_file_path,
         str(job_id),
         str(charge),
@@ -186,7 +188,7 @@ def run_standard_analysis(
 def status(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py status {slurm_id}"
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py status {slurm_id}"
     ]
     try:
         proc = subprocess.run(
@@ -208,7 +210,7 @@ class ResultResponse(BaseModel):
 def error_result(job_id):
     cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py error {job_id}"
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py error {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -225,7 +227,7 @@ def error_result(job_id):
 def result(job_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py result {job_id}"
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py result {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -242,7 +244,7 @@ def result(job_id: str):
 def cancel(slurm_id: str):
     cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/advance_runner.py cancel {slurm_id}"
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py cancel {slurm_id}"
     ]
     try:
         proc = subprocess.run(

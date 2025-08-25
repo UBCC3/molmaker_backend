@@ -19,7 +19,7 @@ from utils import serialize_job, get_user_sub
 router = APIRouter(prefix="/group", tags=["jobs"])
 JOB_DIR = "./results"
 
-def has_group_admin_permission(db: Session, user: User, target_user_sub: str):
+def has_permission(db: Session, user: User, target_user_sub: str):
     if user.role == "admin":
         return True
     if user.role == "group_admin" and user.group_id:
@@ -40,11 +40,9 @@ def get_all_jobs(
     :return: List of serialized job details.
     """
     user_sub = get_user_sub(current_user)
-
     user = db.query(User).filter_by(user_sub=user_sub).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
     if not user.group_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
 
@@ -61,7 +59,6 @@ def get_all_jobs(
             )
             .all()
         )
-        print(f"member_jobs: {member_jobs}")
         group_jobs.extend(member_jobs)
 
     if not group_jobs:
@@ -69,6 +66,7 @@ def get_all_jobs(
 
     try:
         serialized_jobs = [serialize_job(job) for job in group_jobs]
+        # If the user is not a group admin, filter out non-public jobs
         if user.role != "group_admin":
             serialized_jobs = [job for job in serialized_jobs if job["is_public"]]
         return serialized_jobs
@@ -90,7 +88,6 @@ def get_all_users(
     user = db.query(User).filter_by(user_sub=user_sub).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
     if not user.group_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
 
@@ -107,7 +104,6 @@ def update_group(
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
-    print(f"Updating group {group_id} with name {group_name}")
     """
     Update the name of a group.
     :param group_id: ID of the group to update.
@@ -118,18 +114,19 @@ def update_group(
     """
     user_sub = get_user_sub(current_user)
     user = db.query(User).filter_by(user_sub=user_sub).first()
-
-    if not user or not has_group_admin_permission(db, user, user_sub):
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not has_permission(db, user, user_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     group = db.query(Group).filter_by(group_id=group_id).first()
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-    if group_name:
-        group.name = group_name
+    if not group_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
 
     try:
+        group.name = group_name
         db.commit()
         return {"group_id": str(group.group_id), "name": group.name}
     except IntegrityError:
@@ -151,6 +148,8 @@ def get_group(
     """
     user_sub = get_user_sub(current_user)
     user = db.query(User).filter_by(user_sub=user_sub).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     group = db.query(Group).filter_by(group_id=group_id).first()
     if not group:
@@ -173,6 +172,10 @@ def delete_group(
     """
     user_sub = get_user_sub(current_user)
     user = db.query(User).filter_by(user_sub=user_sub).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     group = db.query(Group).filter_by(group_id=group_id).first()
     if not group:
