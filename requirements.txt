@@ -1,0 +1,9 @@
+sqlalchemy
+dotenv
+psycopg2
+requests
+python-jose[cryptography]
+python-multipart
+boto3
+ase
+pymatgen
