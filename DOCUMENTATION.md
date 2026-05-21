@@ -1,16 +1,29 @@
-Create virtual environment
+## Backend Setup
 
-- python -m venv venv
-- .\venv\Scripts\Activate.ps1
+### 1. Create and activate virtual environment
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
 
-Install the required module first
+For future runs, only need to run
 
-- python -m pip install uvicorn fastapi
+```powershell
+.\venv\Scripts\Activate.ps1
+```
 
-Install dependencies
+to activate virtual environment.
 
-- python -m pip install -r requirements.txt
+### 2. Install dependencies
+You need to install dependencies only once after creating the virtual environment.
+```powershell
+python -m pip install -r requirements.txt
+```
 
-Run with uvicorn
+### 3. Run the backend
+After dependencies are installed, you can run the backend with the following command.
+```powershell
+python -m uvicorn main:app --reload
+```
 
-- python -m uvicorn main:app --reload
+> **Note:** Always activate the virtual environment before running the backend.
