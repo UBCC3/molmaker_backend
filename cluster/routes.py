@@ -31,6 +31,9 @@ from utils import clean_up_upload_cache
 BACKEND_WORK_DIR = os.getenv("BACKEND_WORK_DIR")
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
+ENV = os.getenv("ENV")
+ANACONDA_DIR = os.getenv("ANACONDA_DIR")
+
 class SubmitResponse(BaseModel):
     job_id: str
 
@@ -152,15 +155,26 @@ def run_standard_analysis(
     with open(backend_job_dir + urls_path, "w") as f:
         f.write(json.dumps(urls))
 
-    ssh_cmd = [
-        "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/dispatch.py submit",
-        remote_cluster_job_dir + xyz_file_path,
-        str(job_id),
-        str(charge),
-        str(multiplicity),
-    ]
-
+    # Differentiate unix command for local and production environment
+    if (ENV == "local"):
+        ssh_cmd = [
+            f"{ANACONDA_DIR}",
+            f"{CLUSTER_WORK_DIR}/src/standard_analysis.py",
+            str(job_id),
+            remote_cluster_job_dir + xyz_file_path,
+            str(charge),
+            str(multiplicity),
+        ]
+    else:
+        ssh_cmd = [
+            "ssh", "cluster",
+            f"python3 {CLUSTER_WORK_DIR}/dispatch.py submit",
+            remote_cluster_job_dir + xyz_file_path,
+            str(job_id),
+            str(charge),
+            str(multiplicity),
+        ]
+    
     if opt_type is not None:
         ssh_cmd.append(f"--opt-type {opt_type} ")
 
@@ -168,19 +182,35 @@ def run_standard_analysis(
     #     ["ssh", "cluster", "mkdir", f"{WORK_DIR}/{job_dir}"],
     #     check=True,
     # )
-    subprocess.run(
-        ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-        check=True
-    )
+
+    # Local development, use shutil.copytree instead
+    if (ENV == "local"):
+        if os.path.exists(remote_cluster_job_dir):
+            shutil.rmtree(remote_cluster_job_dir)
+        shutil.copytree(backend_job_dir, remote_cluster_job_dir)
+    else:
+        subprocess.run(
+            ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
+            check=True
+        )
 
     result = subprocess.run(
         ssh_cmd,
         check=True,
         capture_output=True,
-        text=True
+        text=True,
+        # For local development, setting current working directory as local cluster working directory.
+        cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
     )
 
     slurm_id = result.stdout.strip()
+    # For local development, setting slurm ID to None
+    if (ENV == "local"):
+        try:
+            int(slurm_id)
+        except ValueError:
+            slurm_id = None
+
     clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
@@ -197,6 +227,7 @@ def status(slurm_id: str):
             capture_output=True,
             text=True
         )
+        # TODO: state here is still a raw output, hasn't captured the actual state in the JSON object result
         state = proc.stdout.strip()
         return StatusResponse(slurm_id=slurm_id, state=state)
     except subprocess.CalledProcessError as e:
