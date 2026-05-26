@@ -13,9 +13,12 @@ def generate_presigned_put_url(key: str):
     Returns a presigned URL which allows anyone (with that URL) to PUT a file into s3://bucket/key.
     - expires_in: time in seconds that the URL remains valid.
     """
+    # TODO: Fix the aws access later
     s3 = boto3.client(
         "s3",
         region_name=REGION,
+        aws_access_key_id="dummy",
+        aws_secret_access_key="dummy",
         config=Config(signature_version="s3v4")
     )
 
