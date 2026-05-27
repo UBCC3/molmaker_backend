@@ -27,3 +27,8 @@ python -m uvicorn main:app --reload
 ```
 
 > **Note:** Always activate the virtual environment before running the backend.
+
+## API Documentation
+
+To access the API documentation supported by FastAPI Swagger UI, you can access the local host port of the backend added with `/docs`. Example:
+- `localhost:8000/docs` (if it lives in port 8000)
