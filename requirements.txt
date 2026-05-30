@@ -9,3 +9,6 @@ python-multipart
 boto3
 ase
 pymatgen
+pytest
+pytest-asyncio
+httpx
