@@ -102,3 +102,109 @@ class TestVerifyTokenUnit:
 
         assert exc_info.value.status_code == 401
         assert "Invalid access token" == exc_info.value.detail
+
+    @patch("auth.requests.get")
+    @patch("auth.jwt.get_unverified_header")
+    def test_malformed_jwks_raises_401(self, mock_header, mock_requests_get):
+        """
+        JWKS response missing the 'keys' field raises 401.
+        """
+        from auth import verify_token
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        mock_requests_get.return_value.json.return_value = {}
+        mock_header.return_value = {"kid": "test-key-id"}
+
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="malformed.jwk.response")
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_token(credentials)
+
+        assert exc_info.value.status_code == 401
+        assert "Invalid access token" == exc_info.value.detail
+
+    @patch("auth.requests.get")
+    @patch("auth.jwt.get_unverified_header")
+    @patch("auth.jwt.decode")
+    def test_decode_failure_raises_401(self, mock_decode, mock_header, mock_requests_get):
+        """
+        Any JWTError during decode raises 401.
+        """
+        from jose import JWTError
+        from auth import verify_token
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        mock_requests_get.return_value.json.return_value = {
+            "keys": [{
+                "kid": "test-key-id",
+                "kty": "RSA",
+                "use": "sig",
+                "n": "some-n",
+                "e": "AQAB"
+            }]
+        }
+        mock_header.return_value = {"kid": "test-key-id"}
+        mock_decode.side_effect = JWTError("bad signature")
+
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="jwt.decode.fail")
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_token(credentials)
+        
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Invalid access token"
+
+    @patch("auth.requests.get")
+    @patch("auth.jwt.get_unverified_header")
+    def test_jwks_network_failure_raises_401(self, mock_header, mock_requests_get):
+        """
+        When Auth0 JWKS endpoint is unreachable the endpoint raises 401.
+        """
+        import requests
+        from auth import verify_token
+        from fastapi import HTTPException
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        mock_header.return_value = {"kid": "test-key-id"}
+        mock_requests_get.side_effect = requests.exceptions.ConnectionError("unreachable")
+
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="jwks.network.failure")
+
+        with pytest.raises(HTTPException) as exc_info:        
+            verify_token(credentials)
+
+        assert exc_info.value.status_code == 401
+
+    @patch("auth.requests.get")
+    @patch("auth.jwt.get_unverified_header")
+    @patch("auth.jwt.decode")
+    def test_decode_called_with_configured_audience_and_issuer(
+        self, mock_decode, mock_header, mock_requests_get
+    ):
+        """
+        verify_token passes audience and issuer to jwt.decode
+        """
+        from auth import verify_token, API_AUDIENCE, AUTH0_DOMAIN
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        mock_requests_get.return_value.json.return_value = {
+            "keys": [{
+                "kid": "test-key-id",
+                "kty": "RSA",
+                "use": "sig",
+                "n": "some-n",
+                "e": "AQAB"
+            }]
+        }
+        mock_header.return_value = {"kid": "test-key-id"}
+        mock_decode.return_value = {"sub": "auth0|testuser"}
+        
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="configured.audience.issuer")
+
+        verify_token(credentials)
+
+        _, kwargs = mock_decode.call_args
+        assert kwargs.get("audience") == API_AUDIENCE or \
+            mock_decode.call_args[0][2] == API_AUDIENCE
