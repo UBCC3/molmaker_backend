@@ -1,5 +1,8 @@
 .env
 /results
 /test
+/tests/Molmaker_Backend_Testing_Plan.docx
+/jobs/*/input.xyz
+/jobs/*/urls.json
 **/__pycache__
 venv
