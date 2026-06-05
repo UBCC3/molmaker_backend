@@ -17,8 +17,6 @@ def generate_presigned_put_url(key: str):
     s3 = boto3.client(
         "s3",
         region_name=REGION,
-        aws_access_key_id="dummy",
-        aws_secret_access_key="dummy",
         config=Config(signature_version="s3v4")
     )
 

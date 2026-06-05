@@ -29,12 +29,12 @@ JOB_DIR = "./results"
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
 def has_admin_permission(user):
-    return user.role == "admin"
+    return user.get("role") == "admin"
 
 def has_group_admin_permission(db: Session, user, target_user_sub: str):
-    if user.role == "group_admin" and user.group_id:
+    if user.get("role") == "group_admin" and user.get("group_id"):
         target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
-        return target_user and target_user.group_id == user.group_id
+        return target_user and target_user.group_id == user.get("group_id")
     return False
 
 @router.get("/")
@@ -331,7 +331,7 @@ def update_job(
                                 "cluster",
                                 "python3",
                                 f"{CLUSTER_WORK_DIR}/Cluster-API-QC/src/upload_result.py",
-                                job.job_id,
+                                job_id,
                                 str(job.calculation_type),
                                 is_success,
                             ],
@@ -356,7 +356,7 @@ def update_job(
         )
 
     return {
-        "job_id": job.job_id,
+        "job_id": job_id,
         "status": job.status,
         "runtime": (str(job.runtime) if job.runtime is not None else None),
         "message": "Job updated successfully.",
