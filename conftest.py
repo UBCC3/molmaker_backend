@@ -2,14 +2,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch
+from sqlalchemy.pool import StaticPool
 import uuid
 from datetime import datetime, timezone
 
 from database import Base
 from dependencies import get_db
-from models import User, Group, Job
-from main import app
+from auth import verify_token
+from models import User, Group
+from main import create_app
 
 # --- In-memory SQLite test database ---
 
@@ -17,9 +18,19 @@ SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///:memory:"
 
 engine = create_engine(
     SQLALCHEMY_TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+@pytest.fixture(scope="function")
+def app():
+    """
+    Creates a test app instance whose dependencies can be overridden per test.
+    """
+    app = create_app()
+    yield app
+    app.dependency_overrides.clear()
 
 @pytest.fixture(scope="function")
 def db():
@@ -36,9 +47,9 @@ def db():
         Base.metadata.drop_all(bind=engine)
 
 @pytest.fixture(scope="function")
-def client(db):
+def client(app, db):
     """
-    Test client with DB dependency overridden to use test DB.
+    Test client with DB and auth dependencies overridden for local tests.
     """
     def override_get_db():
         try:
@@ -47,9 +58,9 @@ def client(db):
             pass
     
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[verify_token] = lambda: make_auth0_payload("auth0|testuser")
     with TestClient(app) as c:
         yield c
-    app.dependency_overrides.clear()
 
 # --- Reusable mock payloads (what verify_token would return) ---
 
@@ -75,12 +86,12 @@ def test_group(db):
     return group
 
 @pytest.fixture
-def test_user(db):
+def test_user(db, test_group):
     user = User(
         user_sub="auth0|testuser",
         email="testuser@test.com",
         role="member",
-        group_id="test_group.group_id",
+        group_id=test_group.group_id,
         member_since=datetime.now(timezone.utc)
     )
     db.add(user)
@@ -93,7 +104,7 @@ def test_admin(db, test_group):
     admin = User(
         user_sub="auth0|adminuser",
         email="admin@test.com",
-        role="group_admin",
+        role="admin",
         group_id=test_group.group_id,
         member_since=datetime.now(timezone.utc)
     )
