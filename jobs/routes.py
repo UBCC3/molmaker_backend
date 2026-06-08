@@ -37,6 +37,17 @@ def has_group_admin_permission(db: Session, user, target_user_sub: str):
         return target_user and target_user.group_id == user.get("group_id")
     return False
 
+def get_job_or_404(db: Session, job_id: str):
+    try:
+        parsed_job_id = uuid.UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job = db.query(Job).filter_by(job_id=parsed_job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
+
 @router.get("/")
 def get_all_jobs(
     db: Session = Depends(get_db),
@@ -73,14 +84,7 @@ def get_job_by_id(
     :return: Serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    try:
-        parsed_job_id = uuid.UUID(job_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-
-    job = db.query(Job).filter_by(job_id=parsed_job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -102,9 +106,7 @@ def delete_job(
     :return: No content response (204).
     """
     user_sub = get_user_sub(current_user)
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -252,9 +254,7 @@ def update_job_visibility(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     user_sub = get_user_sub(current_user)
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
