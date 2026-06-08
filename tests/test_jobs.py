@@ -1,9 +1,29 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import uuid
 
 import pytest
 
 from conftest import make_auth0_payload
+
+
+def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
+    """
+    Configure the jobs route to use a fake cluster work dir and subprocess runner.
+    """
+    import jobs.routes as jobs_routes
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if side_effect:
+            raise side_effect
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(jobs_routes, "CLUSTER_WORK_DIR", "/cluster/work")
+    monkeypatch.setattr(jobs_routes.subprocess, "run", fake_run)
+    return calls
 
 
 class TestJobsAPI:
@@ -404,6 +424,134 @@ class TestJobsAPI:
         assert job.status == "completed"
         assert job.completed_at is not None
         assert job.is_uploaded is False
+
+    @pytest.mark.parametrize(
+        "state, expected_success_flag",
+        [
+            ("completed", "true"),
+            ("failed", "false"),
+        ],
+    )
+    def test_completed_or_failed_update_uploads_results_on_success(
+        self,
+        client,
+        db,
+        monkeypatch,
+        group_factory,
+        user_factory,
+        job_factory,
+        state,
+        expected_success_flag,
+    ):
+        """
+        Completed and failed jobs should try result upload and mark success.
+        """
+        calls = _mock_result_upload(monkeypatch, returncode=0)
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            status="pending",
+            calculation_type="energy",
+            is_uploaded=False,
+        )
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": state})
+
+        assert response.status_code == 200
+        db.refresh(job)
+        assert job.status == state
+        assert job.completed_at is not None
+        assert job.is_uploaded is True
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        assert args[0] == [
+            "ssh",
+            "cluster",
+            "python3",
+            "/cluster/work/Cluster-API-QC/src/upload_result.py",
+            str(job.job_id),
+            "energy",
+            expected_success_flag,
+        ]
+        assert kwargs == {
+            "check": True,
+            "capture_output": True,
+            "text": True,
+            "timeout": 120,
+        }
+
+    def test_cancelled_update_does_not_upload_results(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        Cancelled jobs should set completed_at without attempting result upload.
+        """
+        calls = _mock_result_upload(monkeypatch)
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "cancelled"})
+
+        assert response.status_code == 200
+        db.refresh(job)
+        assert job.status == "cancelled"
+        assert job.completed_at is not None
+        assert job.is_uploaded is False
+        assert calls == []
+
+    def test_result_upload_failure_marks_job_not_uploaded(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        CalledProcessError during result upload should not fail the request.
+        """
+        import jobs.routes as jobs_routes
+
+        side_effect = jobs_routes.subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["ssh", "cluster"],
+        )
+        calls = _mock_result_upload(monkeypatch, side_effect=side_effect)
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+
+        assert response.status_code == 200
+        db.refresh(job)
+        assert job.status == "completed"
+        assert job.completed_at is not None
+        assert job.is_uploaded is False
+        assert len(calls) == 1
+
+    def test_result_upload_timeout_marks_job_not_uploaded(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        TimeoutExpired during result upload should not fail the request.
+        """
+        import jobs.routes as jobs_routes
+
+        side_effect = jobs_routes.subprocess.TimeoutExpired(
+            cmd=["ssh", "cluster"],
+            timeout=120,
+        )
+        calls = _mock_result_upload(monkeypatch, side_effect=side_effect)
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+
+        assert response.status_code == 200
+        db.refresh(job)
+        assert job.status == "completed"
+        assert job.completed_at is not None
+        assert job.is_uploaded is False
+        assert len(calls) == 1
 
     def test_update_job_denies_unauthorized_user(
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
