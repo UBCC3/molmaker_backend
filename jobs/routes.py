@@ -296,9 +296,7 @@ def update_job(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == get_user_sub(current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")

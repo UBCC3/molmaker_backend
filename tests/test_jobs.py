@@ -1,5 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
+
+import pytest
 
 from conftest import make_auth0_payload
 
@@ -303,6 +305,131 @@ class TestJobsAPI:
         PATCH /jobs/{job_id}/visibility should return 404 when no job exists for the ID.
         """
         response = client.patch(f"/jobs/{uuid.uuid4()}/visibility", data={"is_public": "true"})
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+
+    @pytest.mark.parametrize("state", ["pending", "running", "completed", "failed", "cancelled"])
+    def test_owner_can_update_job_status(
+        self, client, db, group_factory, user_factory, job_factory, state
+    ):
+        """
+        PATCH /jobs/{job_id} should accept supported status values.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", completed_at=None)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": state})
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+        assert response.json()["status"] == state
+        db.refresh(job)
+        assert job.status == state
+
+        if state in {"completed", "failed", "cancelled"}:
+            assert job.completed_at is not None
+        else:
+            assert job.completed_at is None
+
+    def test_update_job_rejects_invalid_status(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
+        """
+        PATCH /jobs/{job_id} should reject unsupported status values.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending")
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "not-a-status"})
+
+        assert response.status_code == 400
+        assert "Invalid status" in response.json()["detail"]
+        db.refresh(job)
+        assert job.status == "pending"
+
+    def test_update_job_parses_valid_runtime(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
+        """
+        PATCH /jobs/{job_id} should parse HH:MM:SS runtime values.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, runtime=None)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"runtime": "01:02:03"})
+
+        assert response.status_code == 200
+        assert response.json()["runtime"] == "1:02:03"
+        db.refresh(job)
+        assert job.runtime == timedelta(hours=1, minutes=2, seconds=3)
+
+    def test_update_job_rejects_invalid_runtime(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
+        """
+        PATCH /jobs/{job_id} should reject runtime values that are not HH:MM:SS.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, runtime=None)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"runtime": "not-a-runtime"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid runtime format. Use HH:MM:SS."
+        db.refresh(job)
+        assert job.runtime is None
+
+    def test_completed_update_without_cluster_work_dir_does_not_crash(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        Completed/failed updates should not crash when result upload is not configured.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "CLUSTER_WORK_DIR", None)
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+
+        assert response.status_code == 200
+        db.refresh(job)
+        assert job.status == "completed"
+        assert job.completed_at is not None
+        assert job.is_uploaded is False
+
+    def test_update_job_denies_unauthorized_user(
+        self, client, db, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal users should not be able to update another user's job.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        viewer = user_factory(group=group, user_sub="auth0|viewer")
+        job = job_factory(user_sub=owner.user_sub, status="pending")
+        set_auth_user(make_auth0_payload(viewer.user_sub, role=viewer.role, group_id=viewer.group_id))
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+        db.refresh(job)
+        assert job.status == "pending"
+        assert job.completed_at is None
+
+    def test_update_job_returns_404_for_missing_job(self, client):
+        """
+        PATCH /jobs/{job_id} should return 404 when no job exists for the ID.
+        """
+        response = client.patch(f"/jobs/{uuid.uuid4()}", data={"state": "completed"})
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
