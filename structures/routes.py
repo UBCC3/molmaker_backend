@@ -12,13 +12,21 @@ from datetime import datetime, timezone
 from typing import List
 from ase.io import read
 from pymatgen.core import Molecule
+from botocore.client import Config
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 JOB_DIR = "./results"
 
-session = boto3.Session()
-s3 = session.client('s3')
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+# session = boto3.Session()
+# s3 = session.client('s3')
+BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+REGION: str = "ca-central-1"
+
+s3 = boto3.client(
+    "s3",
+    region_name=REGION,
+    config=Config(signature_version="s3v4")
+)
 
 @router.get("/")
 def get_all_structures(
@@ -50,7 +58,7 @@ def get_all_structures(
                 "imageS3URL": s3.generate_presigned_url(
                     "get_object",
                     Params={
-                        "Bucket": S3_BUCKET_NAME,
+                        "Bucket": BUCKET_NAME,
                         "Key": f"structures/{s.structure_id}.png"
                     },
                     ExpiresIn=3600
@@ -288,7 +296,7 @@ def create_and_upload_structure(
         print("FORMULA", formula)
         try:
             image_key = f"structures/{structure_id}.png"
-            s3.upload_fileobj(image.file, S3_BUCKET_NAME, image_key)
+            s3.upload_fileobj(image.file, BUCKET_NAME, image_key)
         except Exception as e:
             print("Upload to s3 failed:", e)
             raise
@@ -332,9 +340,9 @@ def upload_structure_to_s3(local_file_path: str, structure_id: str):
     key = f"structures/{structure_id}.xyz"
 
     try:
-        s3.upload_file(local_file_path, S3_BUCKET_NAME, key)
-        print(f"Uploaded to s3://{S3_BUCKET_NAME}/{key}")
-        return f"s3://{S3_BUCKET_NAME}/{key}"
+        s3.upload_file(local_file_path, BUCKET_NAME, key)
+        print(f"Uploaded to s3://{BUCKET_NAME}/{key}")
+        return f"s3://{BUCKET_NAME}/{key}"
     except Exception as e:
         print("Upload to s3 failed:", e)
         raise
@@ -350,7 +358,7 @@ def get_presigned_url_for_structure(structure_id: str):
     try:
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
-            Params={"Bucket": S3_BUCKET_NAME, "Key": key},
+            Params={"Bucket": BUCKET_NAME, "Key": key},
             ExpiresIn=300
         )
         return JSONResponse({"url": url})
