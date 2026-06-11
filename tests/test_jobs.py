@@ -47,6 +47,41 @@ def _upload_file(filename="input.xyz", content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
     return {"file": (filename, content, "chemical/x-xyz")}
 
 
+def _advanced_analysis_form_data(**overrides):
+    data = {
+        "calculation_type": "energy",
+        "method": "hf",
+        "basis_set": "sto-3g",
+        "charge": "0",
+        "multiplicity": "1",
+    }
+    data.update(overrides)
+    return data
+
+
+def _mock_advanced_analysis_subprocess(monkeypatch, side_effects=None, stdout="12345\n"):
+    """
+    Capture advanced-analysis subprocess calls without contacting the cluster.
+    """
+    import jobs.routes as jobs_routes
+
+    calls = []
+    side_effects = list(side_effects or [])
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if side_effects:
+            effect = side_effects.pop(0)
+            if effect:
+                raise effect
+        if command[0] == "ssh":
+            return SimpleNamespace(stdout=stdout)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(jobs_routes.subprocess, "run", fake_run)
+    return calls
+
+
 class TestJobsAPI:
     def test_list_jobs_returns_current_users_non_deleted_jobs_newest_first(
         self, client, group_factory, user_factory, job_factory
@@ -760,3 +795,198 @@ class TestJobsAPI:
         assert response.json()["detail"] == "Failed to create job"
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert not (tmp_path / str(job_id)).exists()
+
+    def test_advanced_analysis_saves_upload_transfers_and_submits(
+        self, client, monkeypatch, tmp_path
+    ):
+        """
+        POST /jobs/advanced_analysis should save the upload and submit it to the cluster.
+        """
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(monkeypatch, stdout="98765\n")
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(
+                method="b3lyp",
+                basis_set="6-31g",
+                charge="1",
+                multiplicity="2",
+            ),
+            files=_upload_file("../unsafe/input.xyz", b"advanced xyz content"),
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        job_id = uuid.UUID(result["job_id"])
+        assert result["slurm_id"] == "98765"
+        assert result["message"] == (
+            "Advanced analysis started successfully with SLURM ID 98765."
+        )
+        assert (tmp_path / "uploads" / f"{job_id}.xyz").read_bytes() == b"advanced xyz content"
+
+        assert calls == [
+            (
+                ["scp", f"uploads/{job_id}.xyz", f"cluster:uploads/{job_id}.xyz"],
+                {"check": True, "timeout": 120},
+            ),
+            (
+                [
+                    "ssh",
+                    "cluster",
+                    "python3",
+                    "advance_analysis.py",
+                    "submit",
+                    str(job_id),
+                    f"uploads/{job_id}.xyz",
+                    "energy",
+                    "b3lyp",
+                    "6-31g",
+                    "1",
+                    "2",
+                ],
+                {
+                    "check": True,
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": 120,
+                },
+            ),
+        ]
+
+    def test_advanced_analysis_rejects_non_xyz_upload(self, client, monkeypatch, tmp_path):
+        """
+        POST /jobs/advanced_analysis should reject non-.xyz files before cluster calls.
+        """
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(monkeypatch)
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(),
+            files=_upload_file("input.txt", b"not xyz"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid file format. Only .xyz allowed."
+        assert calls == []
+        assert not (tmp_path / "uploads").exists()
+
+    def test_advanced_analysis_returns_500_when_scp_fails(
+        self, client, monkeypatch, tmp_path
+    ):
+        """
+        scp failures should become a clear 500 response.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(
+            monkeypatch,
+            side_effects=[
+                jobs_routes.subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=["scp"],
+                )
+            ],
+        )
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to transfer file to cluster"
+        assert len(calls) == 1
+
+    def test_advanced_analysis_returns_500_when_scp_times_out(
+        self, client, monkeypatch, tmp_path
+    ):
+        """
+        scp timeouts should become a clear 500 response.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(
+            monkeypatch,
+            side_effects=[
+                jobs_routes.subprocess.TimeoutExpired(
+                    cmd=["scp"],
+                    timeout=120,
+                )
+            ],
+        )
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Timed out transferring file to cluster"
+        assert len(calls) == 1
+
+    def test_advanced_analysis_returns_500_when_submission_fails(
+        self, client, monkeypatch, tmp_path
+    ):
+        """
+        ssh submission failures should become a clear 500 response.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(
+            monkeypatch,
+            side_effects=[
+                None,
+                jobs_routes.subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=["ssh"],
+                    stderr="submission failed",
+                ),
+            ],
+        )
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Cluster submission failed: submission failed"
+        assert len(calls) == 2
+
+    def test_advanced_analysis_returns_500_when_submission_times_out(
+        self, client, monkeypatch, tmp_path
+    ):
+        """
+        ssh submission timeouts should become a clear 500 response.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.chdir(tmp_path)
+        calls = _mock_advanced_analysis_subprocess(
+            monkeypatch,
+            side_effects=[
+                None,
+                jobs_routes.subprocess.TimeoutExpired(
+                    cmd=["ssh"],
+                    timeout=120,
+                ),
+            ],
+        )
+
+        response = client.post(
+            "/jobs/advanced_analysis",
+            data=_advanced_analysis_form_data(),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Timed out submitting job to cluster"
+        assert len(calls) == 2
