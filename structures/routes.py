@@ -28,6 +28,22 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4")
 )
 
+def get_structure_or_404(db: Session, structure_id: str, user_sub: str):
+    try:
+        parsed_structure_id = uuid.UUID(str(structure_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Structure not found.")
+
+    structure = db.query(Structure).filter(
+        Structure.structure_id == parsed_structure_id,
+        Structure.user_sub == user_sub,
+        Structure.is_deleted == False
+    ).first()
+
+    if not structure:
+        raise HTTPException(status_code=404, detail="Structure not found.")
+    return structure
+
 @router.get("/")
 def get_all_structures(
     user=Depends(verify_token),
@@ -142,13 +158,7 @@ def get_structure_by_id(
     """
     try:
         user_id = get_user_sub(user)
-        structure = db.query(Structure).filter(
-            Structure.structure_id == structure_id,
-            Structure.user_sub == user_id
-        ).first()
-
-        if not structure:
-            raise HTTPException(status_code=404, detail="Structure not found.")
+        structure = get_structure_or_404(db, structure_id, user_id)
 
         return {
             "structure_id": structure.structure_id,
@@ -159,6 +169,8 @@ def get_structure_by_id(
             "uploaded_at": structure.uploaded_at,
             "tags": [tag.name for tag in structure.tags]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
