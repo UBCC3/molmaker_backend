@@ -87,6 +87,10 @@ def delete_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    token = get_auth0_management_token()
+    if not token:
+        raise HTTPException(status_code=500, detail="Failed to obtain Auth0 management token")
+
     # 3. Delete jobs
     jobs = db.query(Job).filter_by(user_sub=user_sub).all()
     for job in jobs:
@@ -104,13 +108,9 @@ def delete_user(
 
     # 6. Delete user
     db.delete(user)
-    db.commit()
 
     # 7. Delete user from Auth0
     try:
-        token = get_auth0_management_token()
-        if not token:
-            raise HTTPException(status_code=500, detail="Failed to obtain Auth0 management token")
         print(f"Deleting user {user_sub} from Auth0")
         auth0_domain = os.getenv('AUTH0_DOMAIN')
         url = f"https://{auth0_domain}/api/v2/users/{user_sub}"
@@ -120,7 +120,17 @@ def delete_user(
             raise HTTPException(
                 status_code=500, detail=f"Failed to delete user from Auth0: {resp.text}"
             )
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Auth0 deletion error: {str(e)}")
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete local user data: {e}")
 
     return {"detail": "User and all associated data deleted successfully"}

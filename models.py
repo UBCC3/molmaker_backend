@@ -3,7 +3,7 @@ from sqlalchemy import Column, String, DateTime, Text, Table, ForeignKey, Intege
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
-from database import Base, engine
+from database import Base
 import uuid
 from datetime import datetime, timezone
 
@@ -197,6 +197,3 @@ class Request(Base):
     sender = relationship("User", foreign_keys=[sender_sub], back_populates="sent_requests")
     receiver = relationship("User", foreign_keys=[receiver_sub], back_populates="received_requests")
     group = relationship("Group", back_populates="requests")
-
-# Create all tables in the database
-Base.metadata.create_all(bind=engine, checkfirst=True)
