@@ -197,14 +197,7 @@ def update_structure(
     """
     try:
         user_id = get_user_sub(user)
-
-        structure = db.query(Structure).filter(
-            Structure.structure_id == structure_id,
-            Structure.user_sub == user_id
-        ).first()
-
-        if not structure:
-            raise HTTPException(404, "Structure not found.")
+        structure = get_structure_or_404(db, structure_id, user_id)
 
         structure.name = name
         structure.formula = formula
@@ -230,6 +223,17 @@ def update_structure(
         except Exception as e:
             db.rollback()
             raise HTTPException(500, f"Could not update structure: {e}")
+        return {
+            "structure_id": structure.structure_id,
+            "name": structure.name,
+            "formula": structure.formula,
+            "location": structure.location,
+            "notes": structure.notes,
+            "uploaded_at": structure.uploaded_at,
+            "tags": [tag.name for tag in structure.tags]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -247,14 +251,7 @@ def delete_structure(
     :return: Success message if deletion is successful.
     """
     user_id = get_user_sub(user)
-
-    structure = db.query(Structure).filter(
-        Structure.structure_id == structure_id,
-        Structure.user_sub == user_id
-    ).first()
-
-    if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found.")
+    structure = get_structure_or_404(db, structure_id, user_id)
 
     # Mark as deleted
     structure.is_deleted = True
