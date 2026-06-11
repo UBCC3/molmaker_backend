@@ -2,18 +2,66 @@ from fastapi import (
     APIRouter,
     HTTPException,
     Depends,
+    Form,
+    status,
 )
 from sqlalchemy.orm import Session
-from fastapi import status
+import uuid
 
 from models import Request, User, Group
 from dependencies import get_db
 from auth import verify_token
 
 from utils import get_user_sub
-from fastapi import APIRouter, HTTPException, Depends, status, Form
 
 router = APIRouter(prefix="/request", tags=["request"])
+
+def parse_uuid_or_404(value: str, detail: str):
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+def serialize_request(request: Request, **extra):
+    result = {
+        "request_id": str(request.request_id),
+        "status": request.status,
+        "requested_at": request.requested_at.isoformat(),
+        "sender_sub": request.sender_sub,
+        "receiver_sub": request.receiver_sub,
+        "group_id": str(request.group_id),
+    }
+    result.update(extra)
+    return result
+
+def get_request_for_receiver_or_404(db: Session, request_id: str, receiver_sub: str):
+    parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
+    request = (
+        db.query(Request)
+        .filter_by(request_id=parsed_request_id, receiver_sub=receiver_sub)
+        .first()
+    )
+    if not request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    return request
+
+def get_request_for_sender_or_404(db: Session, request_id: str, sender_sub: str):
+    parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
+    request = (
+        db.query(Request)
+        .filter_by(request_id=parsed_request_id, sender_sub=sender_sub)
+        .first()
+    )
+    if not request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    return request
+
+def get_group_or_404(db: Session, group_id: str):
+    parsed_group_id = parse_uuid_or_404(group_id, "Group not found")
+    group = db.query(Group).filter_by(group_id=parsed_group_id).first()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    return group
 
 @router.get("/{receiver_sub}")
 def get_requests(
@@ -29,15 +77,18 @@ def get_requests(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     requests = db.query(Request).filter_by(receiver_sub=receiver_sub, status='pending').all()
-    # bind with the sender user name and group name
+    result = []
     for request in requests:
         sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
-        if sender:
-            request.sender_name = sender.email
         group = db.query(Group).filter_by(group_id=request.group_id).first()
-        if group:
-            request.group_name = group.name
-    return requests
+        result.append(
+            serialize_request(
+                request,
+                sender_name=sender.email if sender else None,
+                group_name=group.name if group else None,
+            )
+        )
+    return result
 
 @router.get("/sent/{sender_sub}")
 def get_sent_requests(
@@ -57,13 +108,16 @@ def get_sent_requests(
 
     requests = db.query(Request).filter_by(sender_sub=sender_sub).all()
 
-    # bind with the receiver user names
+    result = []
     for request in requests:
         receiver = db.query(User).filter_by(user_sub=request.receiver_sub).first()
-        if receiver:
-            request.receiver_name = receiver.email
-
-    return requests
+        result.append(
+            serialize_request(
+                request,
+                receiver_name=receiver.email if receiver else None,
+            )
+        )
+    return result
 
 @router.post("/{receiver_sub}")
 def send_request(
@@ -80,14 +134,28 @@ def send_request(
     if sender_sub == receiver_sub:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot send request to yourself")
 
-    existing_request = db.query(Request).filter_by(sender_sub=sender_sub, receiver_sub=receiver_sub).first()
+    sender = db.query(User).filter_by(user_sub=sender_sub).first()
+    if not sender:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    receiver = db.query(User).filter_by(user_sub=receiver_sub).first()
+    if not receiver:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receiver not found")
+
+    group = get_group_or_404(db, group_id)
+
+    existing_request = (
+        db.query(Request)
+        .filter_by(sender_sub=sender_sub, receiver_sub=receiver_sub, status='pending')
+        .first()
+    )
     if existing_request:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already exists")
 
     new_request = Request(
         sender_sub=sender_sub,
         receiver_sub=receiver_sub,
-        group_id=group_id,
+        group_id=group.group_id,
         status='pending'
     )
 
@@ -95,7 +163,7 @@ def send_request(
     db.commit()
     db.refresh(new_request)
 
-    return new_request
+    return serialize_request(new_request)
 
 @router.put("/{request_id}/approve")
 def approve_request(
@@ -107,24 +175,29 @@ def approve_request(
     Approve a request.
     """
     user_sub = get_user_sub(current_user)
-    request = db.query(Request).filter_by(request_id=request_id, receiver_sub=user_sub).first()
-
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    request = get_request_for_receiver_or_404(db, request_id, user_sub)
 
     if request.status != 'pending':
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
 
-    # add the user to the group
-    group = db.query(Group).filter_by(group_id=request.group_id).first()
+    receiver = db.query(User).filter_by(user_sub=request.receiver_sub).first()
+    if not receiver:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not receiver.group_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Receiver is not part of a group")
+    if request.group_id != receiver.group_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request group does not match receiver group")
+
+    group = db.query(Group).filter_by(group_id=receiver.group_id).first()
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    user = db.query(User).filter_by(user_sub=request.receiver_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if user.group_id:
+
+    sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
+    if not sender:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sender not found")
+    if sender.group_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already in a group")
-    user.group_id = request.group_id
+    sender.group_id = receiver.group_id
 
     request.status = 'approved'
     db.commit()
@@ -141,10 +214,7 @@ def reject_request(
     Reject a request.
     """
     user_sub = get_user_sub(current_user)
-    request = db.query(Request).filter_by(request_id=request_id, receiver_sub=user_sub).first()
-
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    request = get_request_for_receiver_or_404(db, request_id, user_sub)
 
     if request.status != 'pending':
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
@@ -164,10 +234,7 @@ def delete_request(
     Delete a request.
     """
     user_sub = get_user_sub(current_user)
-    request = db.query(Request).filter_by(request_id=request_id, sender_sub=user_sub).first()
-
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    request = get_request_for_sender_or_404(db, request_id, user_sub)
 
     db.delete(request)
     db.commit()
