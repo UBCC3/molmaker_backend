@@ -305,7 +305,7 @@ def update_job(
             )
 
     if state is not None:
-        allowed = {"pending", "running", "completed", "failed", "cancelled"}
+        allowed = {"pending", "running", "completed", "failed", "cancelled", "out_of_memory", "timeout"}
         new_status = state.lower()
         if new_status not in allowed:
             raise HTTPException(
@@ -314,7 +314,7 @@ def update_job(
             )
         job.status = new_status
 
-        if new_status in {"completed", "failed", "cancelled"}:
+        if new_status in {"completed", "failed", "cancelled", "out_of_memory", "timeout"}:
             job.completed_at = datetime.now(timezone.utc)
 
             # Attempt result upload for completed/failed jobs
