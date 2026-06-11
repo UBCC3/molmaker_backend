@@ -3,7 +3,6 @@ from admin.routes import (
     has_admin_permission as admin_has_admin_permission,
     has_group_admin_permission as admin_has_group_admin_permission,
 )
-from groups.routes import has_permission as group_has_permission
 from jobs.routes import (
     has_admin_permission as job_has_admin_permission,
     has_group_admin_permission as job_has_group_admin_permission,
@@ -142,60 +141,3 @@ class TestAdminPermissionHelpers:
         )
 
         assert not admin_has_group_admin_permission(db, group_admin, "auth0|missing")
-
-
-class TestGroupPermissionHelpers:
-    def test_admin_user_has_group_permission(self, db, user_factory):
-        user = user_factory(role="admin")
-
-        assert group_has_permission(db, user, "auth0|any-target") is True
-
-    def test_group_admin_user_can_act_on_same_group_user(
-        self, db, group_factory, user_factory
-    ):
-        group = group_factory()
-        target_user = user_factory(group=group, user_sub="auth0|target")
-        group_admin = user_factory(
-            group=group,
-            user_sub="auth0|group-admin",
-            role="group_admin",
-        )
-
-        assert group_has_permission(db, group_admin, target_user.user_sub) is True
-
-    def test_group_admin_user_cannot_act_on_other_group_user(
-        self, db, group_factory, user_factory
-    ):
-        target_group = group_factory()
-        admin_group = group_factory()
-        target_user = user_factory(group=target_group, user_sub="auth0|target")
-        group_admin = user_factory(
-            group=admin_group,
-            user_sub="auth0|group-admin",
-            role="group_admin",
-        )
-
-        assert group_has_permission(db, group_admin, target_user.user_sub) is False
-
-    def test_member_user_cannot_act_on_another_user(self, db, group_factory, user_factory):
-        group = group_factory()
-        target_user = user_factory(group=group, user_sub="auth0|target")
-        member = user_factory(group=group, user_sub="auth0|member", role="member")
-
-        assert group_has_permission(db, member, target_user.user_sub) is False
-
-    def test_group_admin_user_without_group_cannot_act(self, db, user_factory):
-        target_user = user_factory(user_sub="auth0|target")
-        group_admin = user_factory(user_sub="auth0|group-admin", role="group_admin")
-
-        assert group_has_permission(db, group_admin, target_user.user_sub) is False
-
-    def test_missing_target_user_denies_group_admin_user(self, db, group_factory, user_factory):
-        group = group_factory()
-        group_admin = user_factory(
-            group=group,
-            user_sub="auth0|group-admin",
-            role="group_admin",
-        )
-
-        assert not group_has_permission(db, group_admin, "auth0|missing")

@@ -289,6 +289,25 @@ class TestGroupsAPI:
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
 
+    def test_group_admin_without_group_cannot_update_group(
+        self, client, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Group admins without a group should not be able to update groups.
+        """
+        group = group_factory()
+        group_admin = user_factory(
+            user_sub="auth0|group-admin",
+            role="group_admin",
+            group_id=None,
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
     def test_update_group_returns_404_for_missing_group(self, client, user_factory):
         """
         PATCH /group/{group_id} should return 404 when the group is missing.

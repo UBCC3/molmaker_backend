@@ -20,14 +20,6 @@ from utils import serialize_job, get_user_sub
 router = APIRouter(prefix="/group", tags=["jobs"])
 JOB_DIR = "./results"
 
-def has_permission(db: Session, user: User, target_user_sub: str):
-    if user.role == "admin":
-        return True
-    if user.role == "group_admin" and user.group_id:
-        target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
-        return target_user and target_user.group_id == user.group_id
-    return False
-
 def get_group_or_404(db: Session, group_id: str):
     try:
         parsed_group_id = uuid.UUID(str(group_id))
