@@ -110,20 +110,24 @@ def run_advanced_analysis(
             shutil.copyfileobj(keywords.file, f)
         ssh_cmd.append(f"--keywords-file {remote_cluster_job_dir + keywords_json_path}")
 
-    subprocess.run(
-        ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-        check=True
-    )
+    try:
+        subprocess.run(
+            ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
+            check=True
+        )
 
-    result = subprocess.run(
-        ssh_cmd,
-        check=True,
-        capture_output=True,
-        text=True
-    )
+        result = subprocess.run(
+            ssh_cmd,
+            check=True,
+            capture_output=True,
+            text=True
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise HTTPException(status_code=500, detail="Cluster job submission failed")
+    finally:
+        clean_up_upload_cache(backend_job_dir)
 
     slurm_id = result.stdout.strip()
-    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @router.post("/run_standard_analysis")
@@ -183,25 +187,30 @@ def run_standard_analysis(
     #     check=True,
     # )
 
-    # Local development, use shutil.copytree instead
-    if (ENV == "local"):
-        if os.path.exists(remote_cluster_job_dir):
-            shutil.rmtree(remote_cluster_job_dir)
-        shutil.copytree(backend_job_dir, remote_cluster_job_dir)
-    else:
-        subprocess.run(
-            ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-            check=True
-        )
+    try:
+        # Local development, use shutil.copytree instead
+        if (ENV == "local"):
+            if os.path.exists(remote_cluster_job_dir):
+                shutil.rmtree(remote_cluster_job_dir)
+            shutil.copytree(backend_job_dir, remote_cluster_job_dir)
+        else:
+            subprocess.run(
+                ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
+                check=True
+            )
 
-    result = subprocess.run(
-        ssh_cmd,
-        check=True,
-        capture_output=True,
-        text=True,
-        # For local development, setting current working directory as local cluster working directory.
-        cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
-    )
+        result = subprocess.run(
+            ssh_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            # For local development, setting current working directory as local cluster working directory.
+            cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        raise HTTPException(status_code=500, detail="Cluster job submission failed")
+    finally:
+        clean_up_upload_cache(backend_job_dir)
 
     slurm_id = result.stdout.strip()
     # For local development, setting slurm ID to None
@@ -211,7 +220,6 @@ def run_standard_analysis(
         except ValueError:
             slurm_id = None
 
-    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @router.get("/status/{slurm_id}", response_model=StatusResponse)
