@@ -191,6 +191,25 @@ class TestAdminAPI:
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
 
+    def test_create_group_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, user_factory
+    ):
+        """
+        POST /admin/groups should roll back if the DB commit fails.
+        """
+        user_factory(user_sub="auth0|testuser", role="admin")
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.post("/admin/groups", data={"name": "New Group"})
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        assert db.query(Group).filter_by(name="New Group").first() is None
+
     def test_admin_can_update_user_role_and_group(
         self, client, db, group_factory, user_factory
     ):
@@ -313,6 +332,33 @@ class TestAdminAPI:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Group not found"
+
+    def test_update_user_role_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory
+    ):
+        """
+        PUT /admin/users/{user_sub} should roll back role/group changes on commit failure.
+        """
+        admin_group = group_factory(name="Admins")
+        target_group = group_factory(name="Target Group")
+        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(user_sub="auth0|target", role="member", group_id=None)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "group_admin", "group_id": str(target_group.group_id)},
+        )
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(target)
+        assert target.role == "member"
+        assert target.group_id is None
 
     def test_update_user_role_returns_404_for_invalid_group_id(
         self, client, user_factory

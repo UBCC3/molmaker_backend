@@ -153,6 +153,64 @@ class TestUsersAPI:
             )
         ]
 
+    def test_admin_delete_returns_500_when_auth0_token_is_missing(
+        self, client, db, monkeypatch, group_factory, user_factory
+    ):
+        """
+        DELETE /users/{user_sub} should not delete local data if Auth0 token lookup fails.
+        """
+        import users.routes as users_routes
+
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: None)
+
+        response = client.delete(f"/users/{target.user_sub}")
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to obtain Auth0 management token"
+        assert db.query(User).filter_by(user_sub=target.user_sub).one()
+
+    def test_admin_delete_rolls_back_when_auth0_delete_fails(
+        self,
+        client,
+        db,
+        monkeypatch,
+        group_factory,
+        user_factory,
+        tag_factory,
+        structure_factory,
+        job_factory,
+    ):
+        """
+        DELETE /users/{user_sub} should keep local data if Auth0 rejects deletion.
+        """
+        import users.routes as users_routes
+
+        def fake_auth0_delete(_url, headers):
+            return type("Response", (), {"status_code": 500, "text": "auth0 failed"})()
+
+        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(users_routes.requests, "delete", fake_auth0_delete)
+        monkeypatch.setenv("AUTH0_DOMAIN", "auth.example.com")
+
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        tag = tag_factory(user_sub=target.user_sub, name="target-tag")
+        structure = structure_factory(user_sub=target.user_sub, tags=[tag])
+        job = job_factory(user_sub=target.user_sub, tags=[tag], structures=[structure])
+
+        response = client.delete(f"/users/{target.user_sub}")
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to delete user from Auth0: auth0 failed"
+        assert db.query(User).filter_by(user_sub=target.user_sub).one()
+        assert db.query(Job).filter_by(job_id=job.job_id).one()
+        assert db.query(Structure).filter_by(structure_id=structure.structure_id).one()
+        assert db.query(Tags).filter_by(tag_id=tag.tag_id).one()
+
     def test_admin_delete_returns_404_for_missing_user(
         self, client, monkeypatch, user_factory
     ):

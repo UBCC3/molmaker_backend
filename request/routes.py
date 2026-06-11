@@ -159,9 +159,13 @@ def send_request(
         status='pending'
     )
 
-    db.add(new_request)
-    db.commit()
-    db.refresh(new_request)
+    try:
+        db.add(new_request)
+        db.commit()
+        db.refresh(new_request)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return serialize_request(new_request)
 
@@ -200,7 +204,11 @@ def approve_request(
     sender.group_id = receiver.group_id
 
     request.status = 'approved'
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return {"message": "Request approved successfully"}
 
@@ -220,7 +228,11 @@ def reject_request(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
 
     request.status = 'rejected'
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return {"message": "Request rejected successfully"}
 
@@ -237,6 +249,10 @@ def delete_request(
     request = get_request_for_sender_or_404(db, request_id, user_sub)
 
     db.delete(request)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return {"message": "Request deleted successfully"}

@@ -113,14 +113,16 @@ def run_advanced_analysis(
     try:
         subprocess.run(
             ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-            check=True
+            check=True,
+            timeout=120,
         )
 
         result = subprocess.run(
             ssh_cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise HTTPException(status_code=500, detail="Cluster job submission failed")
@@ -196,7 +198,8 @@ def run_standard_analysis(
         else:
             subprocess.run(
                 ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-                check=True
+                check=True,
+                timeout=120,
             )
 
         result = subprocess.run(
@@ -204,6 +207,7 @@ def run_standard_analysis(
             check=True,
             capture_output=True,
             text=True,
+            timeout=120,
             # For local development, setting current working directory as local cluster working directory.
             cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
         )
@@ -233,13 +237,16 @@ def status(slurm_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         # TODO: state here is still a raw output, hasn't captured the actual state in the JSON object result
         state = proc.stdout.strip()
         return StatusResponse(slurm_id=slurm_id, state=state)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, detail="Failed to fetch status")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching status")
 
 class ResultResponse(BaseModel):
     job_id: str
@@ -256,11 +263,14 @@ def error_result(job_id):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         return ResultResponse(job_id=job_id, output=proc.stdout)
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching result")
 
 @router.get("/result/{job_id}", response_model=ResultResponse)
 def result(job_id: str):
@@ -273,11 +283,14 @@ def result(job_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         return ResultResponse(job_id=job_id, output=proc.stdout)
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching result")
 
 @router.post("/cancel/{slurm_id}", response_model=CancelResponse)
 def cancel(slurm_id: str):
@@ -290,9 +303,12 @@ def cancel(slurm_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         success = proc.stdout.strip()
         return CancelResponse(slurm_id=slurm_id, success=success)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, detail="Failed to cancel the job")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out canceling the job")

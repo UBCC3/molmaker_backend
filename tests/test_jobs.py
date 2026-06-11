@@ -188,6 +188,26 @@ class TestJobsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
 
+    @pytest.mark.parametrize(
+        "method, path, data",
+        [
+            ("get", "/jobs/not-a-uuid", None),
+            ("delete", "/jobs/not-a-uuid", None),
+            ("patch", "/jobs/not-a-uuid/visibility", {"is_public": "true"}),
+            ("patch", "/jobs/not-a-uuid", {"state": "running"}),
+        ],
+    )
+    def test_job_routes_return_404_for_invalid_job_id(self, client, method, path, data):
+        """
+        Job routes should treat invalid UUIDs as missing jobs instead of crashing.
+        """
+        request = getattr(client, method)
+
+        response = request(path, data=data) if data is not None else request(path)
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+
     def test_get_job_by_id_denies_cross_user_access(
         self, client, set_auth_user, group_factory, user_factory, job_factory
     ):
@@ -385,6 +405,28 @@ class TestJobsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
 
+    def test_visibility_update_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        PATCH /jobs/{job_id}/visibility should roll back is_public if commit fails.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, is_public=False)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(job)
+        assert job.is_public is False
+
     @pytest.mark.parametrize("state", ["pending", "running", "completed", "failed", "cancelled"])
     def test_owner_can_update_job_status(
         self, client, db, group_factory, user_factory, job_factory, state
@@ -425,6 +467,29 @@ class TestJobsAPI:
         assert "Invalid status" in response.json()["detail"]
         db.refresh(job)
         assert job.status == "pending"
+
+    def test_update_job_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    ):
+        """
+        PATCH /jobs/{job_id} should roll back status changes if commit fails.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, status="pending", completed_at=None)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(job)
+        assert job.status == "pending"
+        assert job.completed_at is None
 
     def test_update_job_parses_valid_runtime(
         self, client, db, group_factory, user_factory, job_factory
@@ -734,6 +799,25 @@ class TestJobsAPI:
         assert response.json()["detail"] == "Invalid file format. Only .xyz allowed."
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert not (tmp_path / str(job_id)).exists()
+
+    def test_create_job_rejects_invalid_job_id(self, client, db, monkeypatch, tmp_path):
+        """
+        POST /jobs/ should reject job IDs that are not UUIDs before saving files.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id="not-a-uuid"),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid job_id"
+        assert db.query(Job).count() == 0
+        assert not list(tmp_path.iterdir())
 
     def test_create_job_rolls_back_when_structure_is_not_owned(
         self,

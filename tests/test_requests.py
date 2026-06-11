@@ -169,6 +169,30 @@ class TestRequestsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Group not found"
 
+    def test_send_request_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory
+    ):
+        """
+        POST /request/{receiver_sub} should not persist a request if commit fails.
+        """
+        group = group_factory()
+        sender = user_factory(user_sub="auth0|testuser")
+        receiver = user_factory(group=group, user_sub="auth0|receiver")
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.post(
+            f"/request/{receiver.user_sub}",
+            data={"group_id": str(group.group_id)},
+        )
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        assert db.query(Request).filter_by(sender_sub=sender.user_sub).first() is None
+
     def test_approve_request_assigns_sender_to_receivers_group(
         self, client, db, group_factory, user_factory, request_factory
     ):
@@ -249,6 +273,31 @@ class TestRequestsAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == "User already in a group"
 
+    def test_approve_request_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory, request_factory
+    ):
+        """
+        PUT /request/{request_id}/approve should roll back request/user changes on commit failure.
+        """
+        group = group_factory()
+        receiver = user_factory(group=group, user_sub="auth0|testuser")
+        sender = user_factory(user_sub="auth0|sender", group_id=None)
+        request = request_factory(sender=sender, receiver=receiver, group=group)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(request)
+        db.refresh(sender)
+        assert request.status == "pending"
+        assert sender.group_id is None
+
     def test_reject_request_marks_pending_request_rejected(
         self, client, db, group_factory, user_factory, request_factory
     ):
@@ -292,6 +341,29 @@ class TestRequestsAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == "Request already processed"
 
+    def test_reject_request_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory, request_factory
+    ):
+        """
+        PUT /request/{request_id}/reject should roll back status changes on commit failure.
+        """
+        group = group_factory()
+        receiver = user_factory(group=group, user_sub="auth0|testuser")
+        sender = user_factory(user_sub="auth0|sender")
+        request = request_factory(sender=sender, receiver=receiver, group=group)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.put(f"/request/{request.request_id}/reject")
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(request)
+        assert request.status == "pending"
+
     def test_delete_request_removes_sender_request(
         self, client, db, group_factory, user_factory, request_factory
     ):
@@ -317,6 +389,28 @@ class TestRequestsAPI:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Request not found"
+
+    def test_delete_request_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory, request_factory
+    ):
+        """
+        DELETE /request/{request_id} should keep the request if commit fails.
+        """
+        group = group_factory()
+        sender = user_factory(user_sub="auth0|testuser")
+        receiver = user_factory(group=group, user_sub="auth0|receiver")
+        request = request_factory(sender=sender, receiver=receiver, group=group)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.delete(f"/request/{request.request_id}")
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        assert db.query(Request).filter_by(request_id=request.request_id).one()
 
     def test_delete_request_returns_404_for_non_sender(
         self, client, set_auth_user, group_factory, user_factory, request_factory

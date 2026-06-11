@@ -344,6 +344,27 @@ class TestGroupsAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == "No fields to update"
 
+    def test_update_group_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory
+    ):
+        """
+        PATCH /group/{group_id} should roll back the group name if commit fails.
+        """
+        group = group_factory(name="Original")
+        user_factory(user_sub="auth0|testuser", role="admin")
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(group)
+        assert group.name == "Original"
+
     def test_admin_can_delete_group_and_unassign_users(
         self, client, db, group_factory, user_factory
     ):
@@ -402,3 +423,31 @@ class TestGroupsAPI:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Group not found"
+
+    def test_delete_group_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, group_factory, user_factory
+    ):
+        """
+        DELETE /group/{group_id} should keep the group and member assignments if commit fails.
+        """
+        group = group_factory(name="Keep Me")
+        user_factory(user_sub="auth0|testuser", role="admin")
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        member = user_factory(group=group, user_sub="auth0|member", role="member")
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.delete(f"/group/{group.group_id}")
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        assert db.query(Group).filter_by(group_id=group.group_id).one()
+        db.refresh(group_admin)
+        db.refresh(member)
+        assert group_admin.group_id == group.group_id
+        assert group_admin.role == "group_admin"
+        assert member.group_id == group.group_id
+        assert member.role == "member"

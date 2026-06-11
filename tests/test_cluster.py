@@ -110,7 +110,7 @@ class TestClusterRunAPI:
         assert subprocess_calls == [
             (
                 ["scp", "-r", str(backend_job_dir), f"cluster:{remote_job_dir}"],
-                {"check": True},
+                {"check": True, "timeout": 120},
             ),
             (
                 [
@@ -127,7 +127,7 @@ class TestClusterRunAPI:
                     "--opt-type ts ",
                     f"--keywords-file {remote_job_dir}/keywords.json",
                 ],
-                {"check": True, "capture_output": True, "text": True},
+                {"check": True, "capture_output": True, "text": True, "timeout": 120},
             ),
         ]
         assert cleanup_calls == [str(backend_job_dir)]
@@ -164,7 +164,7 @@ class TestClusterRunAPI:
         assert subprocess_calls == [
             (
                 ["scp", "-r", str(backend_job_dir), f"cluster:{remote_job_dir}"],
-                {"check": True},
+                {"check": True, "timeout": 120},
             ),
             (
                 [
@@ -181,6 +181,7 @@ class TestClusterRunAPI:
                     "check": True,
                     "capture_output": True,
                     "text": True,
+                    "timeout": 120,
                     "cwd": None,
                 },
             ),
@@ -227,6 +228,7 @@ class TestClusterRunAPI:
                     "check": True,
                     "capture_output": True,
                     "text": True,
+                    "timeout": 120,
                     "cwd": str(cluster_dir),
                 },
             )
@@ -280,6 +282,52 @@ class TestClusterRunAPI:
         assert response.json()["detail"] == expected_detail
         assert cleanup_calls == [str(backend_dir / "jobs" / str(job_id))]
 
+    @pytest.mark.parametrize(
+        "endpoint, data",
+        [
+            (
+                "/cluster/run_advanced_analysis",
+                {
+                    "calculation_type": "energy",
+                    "method": "hf",
+                    "basis_set": "sto-3g",
+                    "charge": "0",
+                    "multiplicity": "1",
+                },
+            ),
+            (
+                "/cluster/run_standard_analysis",
+                {"charge": "0", "multiplicity": "1"},
+            ),
+        ],
+    )
+    def test_run_analysis_submission_timeout_returns_500(
+        self, client, monkeypatch, tmp_path, endpoint, data
+    ):
+        """
+        Cluster submission timeouts should return 500 and clean up staged files.
+        """
+        cluster_routes, backend_dir, _cluster_dir, cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        job_id = _freeze_job_id(monkeypatch, cluster_routes)
+        _mock_upload_urls(monkeypatch, cluster_routes)
+        _mock_subprocess_run(
+            monkeypatch,
+            cluster_routes,
+            side_effects=[
+                None,
+                cluster_routes.subprocess.TimeoutExpired(cmd=["ssh"], timeout=120),
+            ],
+        )
+
+        response = client.post(endpoint, data=data, files=_xyz_file())
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Cluster job submission failed"
+        assert cleanup_calls == [str(backend_dir / "jobs" / str(job_id))]
+
 
 class TestClusterStatusAPI:
     def test_status_returns_cluster_state(self, client, monkeypatch, tmp_path):
@@ -296,7 +344,7 @@ class TestClusterStatusAPI:
         assert subprocess_calls == [
             (
                 ["ssh", "cluster", f"python3 {cluster_dir}/dispatch.py status 12345"],
-                {"check": True, "capture_output": True, "text": True},
+                {"check": True, "capture_output": True, "text": True, "timeout": 120},
             )
         ]
 
@@ -317,6 +365,24 @@ class TestClusterStatusAPI:
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to fetch status"
+
+    def test_status_timeout_returns_500(self, client, monkeypatch, tmp_path):
+        cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        _mock_subprocess_run(
+            monkeypatch,
+            cluster_routes,
+            side_effects=[
+                cluster_routes.subprocess.TimeoutExpired(cmd=["ssh"], timeout=120),
+            ],
+        )
+
+        response = client.get("/cluster/status/12345")
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Timed out fetching status"
 
     @pytest.mark.parametrize(
         "endpoint, command_name",
@@ -341,7 +407,7 @@ class TestClusterStatusAPI:
         assert subprocess_calls == [
             (
                 ["ssh", "cluster", f"python3 {cluster_dir}/dispatch.py {command_name} job-1"],
-                {"check": True, "capture_output": True, "text": True},
+                {"check": True, "capture_output": True, "text": True, "timeout": 120},
             )
         ]
 
@@ -372,6 +438,33 @@ class TestClusterStatusAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Result not found yet"
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/cluster/result/job-1",
+            "/cluster/error/job-1",
+        ],
+    )
+    def test_result_endpoints_timeout_returns_500(
+        self, client, monkeypatch, tmp_path, endpoint
+    ):
+        cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        _mock_subprocess_run(
+            monkeypatch,
+            cluster_routes,
+            side_effects=[
+                cluster_routes.subprocess.TimeoutExpired(cmd=["ssh"], timeout=120),
+            ],
+        )
+
+        response = client.get(endpoint)
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Timed out fetching result"
+
     def test_cancel_returns_success_flag(self, client, monkeypatch, tmp_path):
         cluster_routes, _backend_dir, cluster_dir, _cleanup_calls = _configure_cluster(
             monkeypatch,
@@ -386,7 +479,7 @@ class TestClusterStatusAPI:
         assert subprocess_calls == [
             (
                 ["ssh", "cluster", f"python3 {cluster_dir}/dispatch.py cancel 12345"],
-                {"check": True, "capture_output": True, "text": True},
+                {"check": True, "capture_output": True, "text": True, "timeout": 120},
             )
         ]
 
@@ -407,3 +500,21 @@ class TestClusterStatusAPI:
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Failed to cancel the job"
+
+    def test_cancel_timeout_returns_500(self, client, monkeypatch, tmp_path):
+        cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        _mock_subprocess_run(
+            monkeypatch,
+            cluster_routes,
+            side_effects=[
+                cluster_routes.subprocess.TimeoutExpired(cmd=["ssh"], timeout=120),
+            ],
+        )
+
+        response = client.post("/cluster/cancel/12345")
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Timed out canceling the job"

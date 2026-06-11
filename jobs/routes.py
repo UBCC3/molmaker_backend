@@ -283,6 +283,11 @@ def update_job_visibility(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
         )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
 
     return {
         "job_id": job.job_id,
@@ -374,6 +379,11 @@ def update_job(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
 
     return {

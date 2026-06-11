@@ -144,6 +144,28 @@ def get_user_tags(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/presigned/{structure_id}")
+def get_presigned_url_for_structure(
+    structure_id: str,
+    user=Depends(verify_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a presigned URL for downloading an owned structure file from S3.
+    """
+    user_id = get_user_sub(user)
+    structure = get_structure_or_404(db, structure_id, user_id)
+    key = f"structures/{structure.structure_id}.xyz"
+    try:
+        url = s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": BUCKET_NAME, "Key": key},
+            ExpiresIn=300
+        )
+        return JSONResponse({"url": url})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/{structure_id}")
 def get_structure_by_id(
     structure_id: str,
@@ -170,7 +192,7 @@ def get_structure_by_id(
             "uploaded_at": structure.uploaded_at,
             "tags": [tag.name for tag in structure.tags]
         }
-    except HTTPException:
+    except HTTPException: 
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -261,6 +283,9 @@ def delete_structure(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
@@ -287,6 +312,7 @@ def create_and_upload_structure(
     :param db: Database session dependency.
     :return: The created structure object.
     """
+    structure_path = None
     try:
         user_id = get_user_sub(user)
 
@@ -342,7 +368,12 @@ def create_and_upload_structure(
             db.refresh(structure)
         except IntegrityError:
             db.rollback()
+            shutil.rmtree(structure_path, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Structure with this name already exists.")
+        except Exception as e:
+            db.rollback()
+            shutil.rmtree(structure_path, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Could not create structure: {e}")
 
         return {
             "structure_id": structure.structure_id,
@@ -356,6 +387,8 @@ def create_and_upload_structure(
     except HTTPException:
         raise
     except Exception as e:
+        if structure_path:
+            shutil.rmtree(structure_path, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 def upload_structure_to_s3(local_file_path: str, structure_id: str):
@@ -368,21 +401,3 @@ def upload_structure_to_s3(local_file_path: str, structure_id: str):
     except Exception as e:
         print("Upload to s3 failed:", e)
         raise
-
-@router.get("/presigned/{structure_id}")
-def get_presigned_url_for_structure(structure_id: str):
-    """
-    Generate a presigned URL for downloading a structure file from S3.
-    :param structure_id: The ID of the structure to generate the URL for.
-    :return: JSONResponse containing the presigned URL.
-    """
-    key = f"structures/{structure_id}.xyz"
-    try:
-        url = s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": BUCKET_NAME, "Key": key},
-            ExpiresIn=300
-        )
-        return JSONResponse({"url": url})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
