@@ -7,6 +7,7 @@ from dependencies import get_db
 from auth import verify_token
 import os, uuid, shutil
 import boto3
+from pathlib import Path
 from utils import get_user_sub
 from datetime import datetime, timezone
 from typing import List
@@ -290,21 +291,23 @@ def create_and_upload_structure(
         user_id = get_user_sub(user)
 
         # Create directory for the structure
-        structure_id = str(uuid.uuid4())
-        structure_path = os.path.join(JOB_DIR, structure_id)
+        structure_id = uuid.uuid4()
+        structure_id_str = str(structure_id)
+        structure_path = os.path.join(JOB_DIR, structure_id_str)
         os.makedirs(structure_path, exist_ok=True)
 
         # Save the uploaded file
-        file_path = os.path.join(structure_path, file.filename)
+        safe_name = Path(file.filename or "").name
+        file_path = os.path.join(structure_path, safe_name)
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        s3_link = upload_structure_to_s3(file_path, structure_id)
+        s3_link = upload_structure_to_s3(file_path, structure_id_str)
         uploaded_at = datetime.now(timezone.utc)
 
         print("FORMULA", formula)
         try:
-            image_key = f"structures/{structure_id}.png"
+            image_key = f"structures/{structure_id_str}.png"
             s3.upload_fileobj(image.file, BUCKET_NAME, image_key)
         except Exception as e:
             print("Upload to s3 failed:", e)
@@ -341,7 +344,17 @@ def create_and_upload_structure(
             db.rollback()
             raise HTTPException(status_code=400, detail="Structure with this name already exists.")
 
-        return structure
+        return {
+            "structure_id": structure.structure_id,
+            "name": structure.name,
+            "formula": structure.formula,
+            "location": structure.location,
+            "notes": structure.notes,
+            "uploaded_at": structure.uploaded_at,
+            "tags": [tag.name for tag in structure.tags]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
