@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from conftest import make_auth0_payload
+from models import Job, Tags
 
 
 def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
@@ -24,6 +25,26 @@ def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
     monkeypatch.setattr(jobs_routes, "CLUSTER_WORK_DIR", "/cluster/work")
     monkeypatch.setattr(jobs_routes.subprocess, "run", fake_run)
     return calls
+
+
+def _job_form_data(job_id=None, **overrides):
+    job_id = job_id or uuid.uuid4()
+    data = {
+        "job_id": str(job_id),
+        "job_name": "Created job",
+        "job_notes": "created from test",
+        "method": "hf",
+        "basis_set": "sto-3g",
+        "calculation_type": "energy",
+        "charge": "0",
+        "multiplicity": "1",
+    }
+    data.update(overrides)
+    return data
+
+
+def _upload_file(filename="input.xyz", content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
+    return {"file": (filename, content, "chemical/x-xyz")}
 
 
 class TestJobsAPI:
@@ -581,3 +602,161 @@ class TestJobsAPI:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
+
+    def test_create_job_accepts_xyz_upload_and_persists_job_file_tags_and_structure(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        group_factory,
+        user_factory,
+        tag_factory,
+        structure_factory,
+    ):
+        """
+        POST /jobs/ should create the DB row, save a sanitized file, and link tags/structures.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        existing_tag = tag_factory(user_sub=user.user_sub, name="existing")
+        structure = structure_factory(user_sub=user.user_sub, name="Water", formula="H2O")
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(
+                job_id=job_id,
+                job_name="Water energy",
+                job_notes="safe upload",
+                method="b3lyp",
+                basis_set="6-31g",
+                charge="1",
+                multiplicity="2",
+                tags=["existing", "new"],
+                structure_id=str(structure.structure_id),
+            ),
+            files=_upload_file("../unsafe/input.xyz", b"water xyz content"),
+        )
+
+        assert response.status_code == 201
+        assert response.headers["location"] == f"/jobs/{job_id}"
+        result = response.json()
+        assert result["job_id"] == str(job_id)
+        assert result["job_name"] == "Water energy"
+        assert result["job_notes"] == "safe upload"
+        assert result["filename"] == "input.xyz"
+        assert result["status"] == "pending"
+        assert result["calculation_type"] == "energy"
+        assert result["method"] == "b3lyp"
+        assert result["basis_set"] == "6-31g"
+        assert result["charge"] == 1
+        assert result["multiplicity"] == 2
+        assert sorted(result["tags"]) == ["existing", "new"]
+        assert result["structures"][0]["structure_id"] == str(structure.structure_id)
+
+        saved_file = tmp_path / str(job_id) / "input.xyz"
+        assert saved_file.read_bytes() == b"water xyz content"
+        assert not (tmp_path / str(job_id) / "unsafe").exists()
+
+        job = db.query(Job).filter_by(job_id=job_id).one()
+        assert job.user_sub == user.user_sub
+        assert job.filename == "input.xyz"
+        assert job.status == "pending"
+        assert job.is_deleted is False
+        assert job.is_uploaded is False
+        assert sorted(tag.name for tag in job.tags) == ["existing", "new"]
+        assert [job_structure.structure_id for job_structure in job.structures] == [
+            structure.structure_id
+        ]
+
+        existing_tags = (
+            db.query(Tags)
+            .filter_by(user_sub=user.user_sub, name="existing")
+            .all()
+        )
+        assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
+
+    def test_create_job_rejects_non_xyz_upload(self, client, db, monkeypatch, tmp_path):
+        """
+        POST /jobs/ should reject non-.xyz files before creating files or DB rows.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file("input.txt", b"not xyz"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid file format. Only .xyz allowed."
+        assert db.query(Job).filter_by(job_id=job_id).first() is None
+        assert not (tmp_path / str(job_id)).exists()
+
+    def test_create_job_rolls_back_when_structure_is_not_owned(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        group_factory,
+        user_factory,
+        structure_factory,
+    ):
+        """
+        Structure-link failures should roll back DB changes and remove saved files.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser")
+        other_user = user_factory(group=group, user_sub="auth0|other")
+        other_structure = structure_factory(user_sub=other_user.user_sub)
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(
+                job_id=job_id,
+                tags=["should-rollback"],
+                structure_id=str(other_structure.structure_id),
+            ),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Structure not found or not owned by user"
+        assert db.query(Job).filter_by(job_id=job_id).first() is None
+        assert db.query(Tags).filter_by(name="should-rollback").first() is None
+        assert not (tmp_path / str(job_id)).exists()
+
+    def test_create_job_rolls_back_and_removes_files_when_commit_fails(
+        self, client, db, monkeypatch, tmp_path
+    ):
+        """
+        Commit failures should not leave partial DB rows or uploaded files behind.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        monkeypatch.setattr(db, "commit", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == "Failed to create job"
+        assert db.query(Job).filter_by(job_id=job_id).first() is None
+        assert not (tmp_path / str(job_id)).exists()

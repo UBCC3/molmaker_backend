@@ -160,6 +160,15 @@ def create_job(
     """
     user_sub = get_user_sub(current_user)
 
+    try:
+        parsed_job_id = uuid.UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid job_id",
+        )
+    job_id_str = str(parsed_job_id)
+
     safe_name = Path(file.filename or "").name
     if not safe_name.lower().endswith(".xyz"):
         raise HTTPException(
@@ -167,7 +176,7 @@ def create_job(
             detail="Invalid file format. Only .xyz allowed.",
         )
 
-    job_path = os.path.join(JOB_DIR, job_id)
+    job_path = os.path.join(JOB_DIR, job_id_str)
     os.makedirs(job_path, exist_ok=True)
     file_path = os.path.join(job_path, safe_name)
 
@@ -177,7 +186,7 @@ def create_job(
             shutil.copyfileobj(file.file, f)
 
         new_job = Job(
-            job_id=job_id,
+            job_id=parsed_job_id,
             job_name=job_name,
             job_notes=job_notes,
             filename=safe_name,
@@ -202,14 +211,18 @@ def create_job(
                 db.add(tag)
             new_job.tags.append(tag)
 
-        db.commit()
-        db.refresh(new_job)
-
         # link to an existing structure owned by the user
         if structure_id:
+            try:
+                parsed_structure_id = uuid.UUID(str(structure_id))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Structure not found or not owned by user",
+                )
             structure = (
                 db.query(Structure)
-                .filter_by(structure_id=structure_id, user_sub=user_sub)
+                .filter_by(structure_id=parsed_structure_id, user_sub=user_sub)
                 .first()
             )
             if not structure:
@@ -218,8 +231,9 @@ def create_job(
                     detail="Structure not found or not owned by user",
                 )
             new_job.structures.append(structure)
-            db.commit()
-            db.refresh(new_job)
+
+        db.commit()
+        db.refresh(new_job)
 
     except HTTPException:
         db.rollback()
@@ -233,7 +247,7 @@ def create_job(
             detail="Failed to create job",
         )
 
-    headers = {"Location": f"/jobs/{job_id}"}
+    headers = {"Location": f"/jobs/{job_id_str}"}
     return JSONResponse(
         status_code=status.HTTP_201_CREATED, content=serialize_job(new_job), headers=headers
     )
