@@ -1,11 +1,11 @@
 from sqlalchemy.orm import Session
-from database import SessionLocal
+from database import get_session_local
 
 def get_db() -> Session:
     """
     Provides a SQLAlchemy DB session to FastAPI routes.
     """
-    db = SessionLocal()
+    db = get_session_local()()
     try:
         yield db
     finally:

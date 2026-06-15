@@ -7,6 +7,7 @@ from dependencies import get_db
 from auth import verify_token
 import os, uuid, shutil
 import boto3
+from pathlib import Path
 from utils import get_user_sub
 from datetime import datetime, timezone
 from typing import List
@@ -27,6 +28,22 @@ s3 = boto3.client(
     region_name=REGION,
     config=Config(signature_version="s3v4")
 )
+
+def get_structure_or_404(db: Session, structure_id: str, user_sub: str):
+    try:
+        parsed_structure_id = uuid.UUID(str(structure_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Structure not found.")
+
+    structure = db.query(Structure).filter(
+        Structure.structure_id == parsed_structure_id,
+        Structure.user_sub == user_sub,
+        Structure.is_deleted == False
+    ).first()
+
+    if not structure:
+        raise HTTPException(status_code=404, detail="Structure not found.")
+    return structure
 
 @router.get("/")
 def get_all_structures(
@@ -127,6 +144,28 @@ def get_user_tags(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/presigned/{structure_id}")
+def get_presigned_url_for_structure(
+    structure_id: str,
+    user=Depends(verify_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a presigned URL for downloading an owned structure file from S3.
+    """
+    user_id = get_user_sub(user)
+    structure = get_structure_or_404(db, structure_id, user_id)
+    key = f"structures/{structure.structure_id}.xyz"
+    try:
+        url = s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": BUCKET_NAME, "Key": key},
+            ExpiresIn=300
+        )
+        return JSONResponse({"url": url})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/{structure_id}")
 def get_structure_by_id(
     structure_id: str,
@@ -142,13 +181,7 @@ def get_structure_by_id(
     """
     try:
         user_id = get_user_sub(user)
-        structure = db.query(Structure).filter(
-            Structure.structure_id == structure_id,
-            Structure.user_sub == user_id
-        ).first()
-
-        if not structure:
-            raise HTTPException(status_code=404, detail="Structure not found.")
+        structure = get_structure_or_404(db, structure_id, user_id)
 
         return {
             "structure_id": structure.structure_id,
@@ -159,6 +192,8 @@ def get_structure_by_id(
             "uploaded_at": structure.uploaded_at,
             "tags": [tag.name for tag in structure.tags]
         }
+    except HTTPException: 
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -185,14 +220,7 @@ def update_structure(
     """
     try:
         user_id = get_user_sub(user)
-
-        structure = db.query(Structure).filter(
-            Structure.structure_id == structure_id,
-            Structure.user_sub == user_id
-        ).first()
-
-        if not structure:
-            raise HTTPException(404, "Structure not found.")
+        structure = get_structure_or_404(db, structure_id, user_id)
 
         structure.name = name
         structure.formula = formula
@@ -218,6 +246,17 @@ def update_structure(
         except Exception as e:
             db.rollback()
             raise HTTPException(500, f"Could not update structure: {e}")
+        return {
+            "structure_id": structure.structure_id,
+            "name": structure.name,
+            "formula": structure.formula,
+            "location": structure.location,
+            "notes": structure.notes,
+            "uploaded_at": structure.uploaded_at,
+            "tags": [tag.name for tag in structure.tags]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -235,14 +274,7 @@ def delete_structure(
     :return: Success message if deletion is successful.
     """
     user_id = get_user_sub(user)
-
-    structure = db.query(Structure).filter(
-        Structure.structure_id == structure_id,
-        Structure.user_sub == user_id
-    ).first()
-
-    if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found.")
+    structure = get_structure_or_404(db, structure_id, user_id)
 
     # Mark as deleted
     structure.is_deleted = True
@@ -251,6 +283,9 @@ def delete_structure(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
@@ -277,25 +312,28 @@ def create_and_upload_structure(
     :param db: Database session dependency.
     :return: The created structure object.
     """
+    structure_path = None
     try:
         user_id = get_user_sub(user)
 
         # Create directory for the structure
-        structure_id = str(uuid.uuid4())
-        structure_path = os.path.join(JOB_DIR, structure_id)
+        structure_id = uuid.uuid4()
+        structure_id_str = str(structure_id)
+        structure_path = os.path.join(JOB_DIR, structure_id_str)
         os.makedirs(structure_path, exist_ok=True)
 
         # Save the uploaded file
-        file_path = os.path.join(structure_path, file.filename)
+        safe_name = Path(file.filename or "").name
+        file_path = os.path.join(structure_path, safe_name)
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        s3_link = upload_structure_to_s3(file_path, structure_id)
+        s3_link = upload_structure_to_s3(file_path, structure_id_str)
         uploaded_at = datetime.now(timezone.utc)
 
         print("FORMULA", formula)
         try:
-            image_key = f"structures/{structure_id}.png"
+            image_key = f"structures/{structure_id_str}.png"
             s3.upload_fileobj(image.file, BUCKET_NAME, image_key)
         except Exception as e:
             print("Upload to s3 failed:", e)
@@ -330,10 +368,27 @@ def create_and_upload_structure(
             db.refresh(structure)
         except IntegrityError:
             db.rollback()
+            shutil.rmtree(structure_path, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Structure with this name already exists.")
+        except Exception as e:
+            db.rollback()
+            shutil.rmtree(structure_path, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"Could not create structure: {e}")
 
-        return structure
+        return {
+            "structure_id": structure.structure_id,
+            "name": structure.name,
+            "formula": structure.formula,
+            "location": structure.location,
+            "notes": structure.notes,
+            "uploaded_at": structure.uploaded_at,
+            "tags": [tag.name for tag in structure.tags]
+        }
+    except HTTPException:
+        raise
     except Exception as e:
+        if structure_path:
+            shutil.rmtree(structure_path, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 def upload_structure_to_s3(local_file_path: str, structure_id: str):
@@ -346,21 +401,3 @@ def upload_structure_to_s3(local_file_path: str, structure_id: str):
     except Exception as e:
         print("Upload to s3 failed:", e)
         raise
-
-@router.get("/presigned/{structure_id}")
-def get_presigned_url_for_structure(structure_id: str):
-    """
-    Generate a presigned URL for downloading a structure file from S3.
-    :param structure_id: The ID of the structure to generate the URL for.
-    :return: JSONResponse containing the presigned URL.
-    """
-    key = f"structures/{structure_id}.xyz"
-    try:
-        url = s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": BUCKET_NAME, "Key": key},
-            ExpiresIn=300
-        )
-        return JSONResponse({"url": url})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

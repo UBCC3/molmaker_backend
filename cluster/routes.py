@@ -110,20 +110,26 @@ def run_advanced_analysis(
             shutil.copyfileobj(keywords.file, f)
         ssh_cmd.append(f"--keywords-file {remote_cluster_job_dir + keywords_json_path}")
 
-    subprocess.run(
-        ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-        check=True
-    )
+    try:
+        subprocess.run(
+            ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
+            check=True,
+            timeout=120,
+        )
 
-    result = subprocess.run(
-        ssh_cmd,
-        check=True,
-        capture_output=True,
-        text=True
-    )
+        result = subprocess.run(
+            ssh_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise HTTPException(status_code=500, detail="Cluster job submission failed")
+    finally:
+        clean_up_upload_cache(backend_job_dir)
 
     slurm_id = result.stdout.strip()
-    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @router.post("/run_standard_analysis")
@@ -183,25 +189,32 @@ def run_standard_analysis(
     #     check=True,
     # )
 
-    # Local development, use shutil.copytree instead
-    if (ENV == "local"):
-        if os.path.exists(remote_cluster_job_dir):
-            shutil.rmtree(remote_cluster_job_dir)
-        shutil.copytree(backend_job_dir, remote_cluster_job_dir)
-    else:
-        subprocess.run(
-            ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
-            check=True
-        )
+    try:
+        # Local development, use shutil.copytree instead
+        if (ENV == "local"):
+            if os.path.exists(remote_cluster_job_dir):
+                shutil.rmtree(remote_cluster_job_dir)
+            shutil.copytree(backend_job_dir, remote_cluster_job_dir)
+        else:
+            subprocess.run(
+                ["scp", "-r", backend_job_dir, f"cluster:{remote_cluster_job_dir}"],
+                check=True,
+                timeout=120,
+            )
 
-    result = subprocess.run(
-        ssh_cmd,
-        check=True,
-        capture_output=True,
-        text=True,
-        # For local development, setting current working directory as local cluster working directory.
-        cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
-    )
+        result = subprocess.run(
+            ssh_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            # For local development, setting current working directory as local cluster working directory.
+            cwd=f"{CLUSTER_WORK_DIR}" if ENV == "local" else None
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        raise HTTPException(status_code=500, detail="Cluster job submission failed")
+    finally:
+        clean_up_upload_cache(backend_job_dir)
 
     slurm_id = result.stdout.strip()
     # For local development, setting slurm ID to None
@@ -211,7 +224,6 @@ def run_standard_analysis(
         except ValueError:
             slurm_id = None
 
-    clean_up_upload_cache(backend_job_dir)
     return {"job_id":job_id, "slurm_id":slurm_id}
 
 @router.get("/status/{slurm_id}", response_model=StatusResponse)
@@ -225,13 +237,16 @@ def status(slurm_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         # TODO: state here is still a raw output, hasn't captured the actual state in the JSON object result
         state = proc.stdout.strip()
         return StatusResponse(slurm_id=slurm_id, state=state)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, detail="Failed to fetch status")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching status")
 
 class ResultResponse(BaseModel):
     job_id: str
@@ -248,11 +263,14 @@ def error_result(job_id):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         return ResultResponse(job_id=job_id, output=proc.stdout)
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching result")
 
 @router.get("/result/{job_id}", response_model=ResultResponse)
 def result(job_id: str):
@@ -265,11 +283,14 @@ def result(job_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         return ResultResponse(job_id=job_id, output=proc.stdout)
     except subprocess.CalledProcessError:
         raise HTTPException(404, detail="Result not found yet")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out fetching result")
 
 @router.post("/cancel/{slurm_id}", response_model=CancelResponse)
 def cancel(slurm_id: str):
@@ -282,9 +303,12 @@ def cancel(slurm_id: str):
             cmd,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=120,
         )
         success = proc.stdout.strip()
         return CancelResponse(slurm_id=slurm_id, success=success)
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, detail="Failed to cancel the job")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, detail="Timed out canceling the job")

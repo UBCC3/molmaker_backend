@@ -37,6 +37,17 @@ def has_group_admin_permission(db: Session, user, target_user_sub: str):
         return target_user and target_user.group_id == user.get("group_id")
     return False
 
+def get_job_or_404(db: Session, job_id: str):
+    try:
+        parsed_job_id = uuid.UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+
+    job = db.query(Job).filter_by(job_id=parsed_job_id).first()
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
+
 @router.get("/")
 def get_all_jobs(
     db: Session = Depends(get_db),
@@ -73,9 +84,11 @@ def get_job_by_id(
     :return: Serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
+
+    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
     return serialize_job(job)
 
 
@@ -93,9 +106,7 @@ def delete_job(
     :return: No content response (204).
     """
     user_sub = get_user_sub(current_user)
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -149,6 +160,15 @@ def create_job(
     """
     user_sub = get_user_sub(current_user)
 
+    try:
+        parsed_job_id = uuid.UUID(str(job_id))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid job_id",
+        )
+    job_id_str = str(parsed_job_id)
+
     safe_name = Path(file.filename or "").name
     if not safe_name.lower().endswith(".xyz"):
         raise HTTPException(
@@ -156,7 +176,7 @@ def create_job(
             detail="Invalid file format. Only .xyz allowed.",
         )
 
-    job_path = os.path.join(JOB_DIR, job_id)
+    job_path = os.path.join(JOB_DIR, job_id_str)
     os.makedirs(job_path, exist_ok=True)
     file_path = os.path.join(job_path, safe_name)
 
@@ -166,7 +186,7 @@ def create_job(
             shutil.copyfileobj(file.file, f)
 
         new_job = Job(
-            job_id=job_id,
+            job_id=parsed_job_id,
             job_name=job_name,
             job_notes=job_notes,
             filename=safe_name,
@@ -191,14 +211,18 @@ def create_job(
                 db.add(tag)
             new_job.tags.append(tag)
 
-        db.commit()
-        db.refresh(new_job)
-
         # link to an existing structure owned by the user
         if structure_id:
+            try:
+                parsed_structure_id = uuid.UUID(str(structure_id))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Structure not found or not owned by user",
+                )
             structure = (
                 db.query(Structure)
-                .filter_by(structure_id=structure_id, user_sub=user_sub)
+                .filter_by(structure_id=parsed_structure_id, user_sub=user_sub)
                 .first()
             )
             if not structure:
@@ -207,8 +231,9 @@ def create_job(
                     detail="Structure not found or not owned by user",
                 )
             new_job.structures.append(structure)
-            db.commit()
-            db.refresh(new_job)
+
+        db.commit()
+        db.refresh(new_job)
 
     except HTTPException:
         db.rollback()
@@ -222,7 +247,7 @@ def create_job(
             detail="Failed to create job",
         )
 
-    headers = {"Location": f"/jobs/{job_id}"}
+    headers = {"Location": f"/jobs/{job_id_str}"}
     return JSONResponse(
         status_code=status.HTTP_201_CREATED, content=serialize_job(new_job), headers=headers
     )
@@ -243,9 +268,7 @@ def update_job_visibility(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     user_sub = get_user_sub(current_user)
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
@@ -259,6 +282,11 @@ def update_job_visibility(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
 
     return {
@@ -287,9 +315,7 @@ def update_job(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    job = get_job_or_404(db, job_id)
 
     if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == get_user_sub(current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -353,6 +379,11 @@ def update_job(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
         )
 
     return {

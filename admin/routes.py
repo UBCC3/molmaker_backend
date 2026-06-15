@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional
+import uuid
 from fastapi import (
     APIRouter,
     Form,
@@ -203,10 +204,15 @@ def update_user_role(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Selected user not found")
 
     if group_id:
-        group = db.query(Group).filter_by(group_id=group_id).first()
+        try:
+            parsed_group_id = uuid.UUID(str(group_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Group not found")
+
+        group = db.query(Group).filter_by(group_id=parsed_group_id).first()
         if not group:
             raise HTTPException(status_code=404, detail="Group not found")
-        selected_user.group_id = group_id
+        selected_user.group_id = parsed_group_id
     else:
         selected_user.group_id = None
 

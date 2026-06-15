@@ -1,0 +1,286 @@
+import uuid
+
+import pytest
+
+import storage
+from s3.routes import verify_job_access
+
+
+def _url(prefix, key):
+    return f"{prefix}:{key}"
+
+
+@pytest.fixture
+def mock_put_urls(monkeypatch):
+    calls = []
+
+    def fake_generate_presigned_put_url(key):
+        calls.append(key)
+        return _url("put", key)
+
+    monkeypatch.setattr(storage, "generate_presigned_put_url", fake_generate_presigned_put_url)
+    return calls
+
+
+@pytest.fixture
+def mock_get_urls(monkeypatch):
+    calls = []
+
+    def fake_generate_presigned_get_url(key):
+        calls.append(key)
+        return _url("get", key)
+
+    monkeypatch.setattr(storage, "generate_presigned_get_url", fake_generate_presigned_get_url)
+    return calls
+
+
+def _common_upload_urls(job_id):
+    return {
+        "zip": _url("put", f"{storage.BUCKET_ROOT_DIR}/archive/{job_id}.zip"),
+        "result": _url("put", f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.json"),
+        "error": _url("put", f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.err"),
+    }
+
+
+def _job_artifact_urls(job_id, prefix, artifacts):
+    job_dir = f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/"
+    return {name: _url(prefix, job_dir + key) for name, key in artifacts.items()}
+
+
+class TestConstructUploadScript:
+    @pytest.mark.parametrize(
+        "calculation_type, expected_artifacts",
+        [
+            ("energy", {"mol": "input.xyz"}),
+            ("frequency", {"vib": "vib.xyz", "jdx": "ir.jdx"}),
+            ("orbitals", {"esp": "esp.cube", "molden": "orbitals.molden"}),
+            ("optimization", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            ("transition", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            ("irc", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            (
+                "standard",
+                {
+                    "trajectory": "trajectory.xyz",
+                    "opt": "opt.xyz",
+                    "esp": "esp.cube",
+                    "molden": "orbitals.molden",
+                    "vib": "vib.xyz",
+                    "jdx": "ir.jdx",
+                },
+            ),
+        ],
+    )
+    def test_known_calculation_types_include_expected_upload_urls(
+        self, mock_put_urls, calculation_type, expected_artifacts
+    ):
+        """
+        construct_upload_script should include common URLs and calculation artifacts.
+        """
+        job_id = "job-123"
+
+        result = storage.construct_upload_script(job_id, calculation_type)
+
+        expected = _common_upload_urls(job_id)
+        expected.update(_job_artifact_urls(job_id, "put", expected_artifacts))
+        assert result == expected
+        assert "calculation_type" not in result
+        assert set(mock_put_urls) == {
+            key.removeprefix("put:") for key in expected.values()
+        }
+
+    def test_unknown_calculation_type_includes_fallback_marker(self, mock_put_urls):
+        """
+        Unknown calculations still get common URLs and preserve the calculation name.
+        """
+        job_id = "job-unknown"
+
+        result = storage.construct_upload_script(job_id, "custom")
+
+        expected = _common_upload_urls(job_id)
+        expected["calculation_type"] = "custom"
+        assert result == expected
+        assert set(mock_put_urls) == {
+            f"{storage.BUCKET_ROOT_DIR}/archive/{job_id}.zip",
+            f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.json",
+            f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.err",
+        }
+
+
+class TestConstructFetchScript:
+    @pytest.mark.parametrize(
+        "calculation_type, expected_artifacts",
+        [
+            ("energy", {"mol": "input.xyz"}),
+            ("frequency", {"vib": "vib.xyz", "jdx": "ir.jdx"}),
+            ("orbitals", {"esp": "esp.cube", "molden": "orbitals.molden"}),
+            ("optimization", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            ("transition", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            ("irc", {"trajectory": "trajectory.xyz", "opt": "opt.xyz"}),
+            (
+                "standard",
+                {
+                    "trajectory": "trajectory.xyz",
+                    "opt": "opt.xyz",
+                    "esp": "esp.cube",
+                    "molden": "orbitals.molden",
+                    "vib": "vib.xyz",
+                    "jdx": "ir.jdx",
+                },
+            ),
+        ],
+    )
+    def test_successful_jobs_include_result_and_artifact_download_urls(
+        self, mock_get_urls, calculation_type, expected_artifacts
+    ):
+        """
+        construct_fetch_script should expose download URLs, not upload URLs.
+        """
+        job_id = "job-123"
+
+        result = storage.construct_fetch_script(job_id, calculation_type, success=True)
+
+        expected = {
+            "result": _url("get", f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.json")
+        }
+        expected.update(_job_artifact_urls(job_id, "get", expected_artifacts))
+        assert result == expected
+        assert "zip" not in result
+        assert set(mock_get_urls) == {
+            key.removeprefix("get:") for key in expected.values()
+        }
+
+    def test_failed_jobs_return_only_error_download_url(self, mock_get_urls):
+        """
+        Failed jobs should not expose result or calculation artifact URLs.
+        """
+        job_id = "job-failed"
+
+        result = storage.construct_fetch_script(job_id, "standard", success=False)
+
+        error_key = f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.err"
+        assert result == {"error": _url("get", error_key)}
+        assert mock_get_urls == [error_key]
+
+    def test_unknown_successful_calculation_returns_only_result_url(self, mock_get_urls):
+        """
+        Unknown successful calculations fall back to the generic result artifact.
+        """
+        job_id = "job-custom"
+
+        result = storage.construct_fetch_script(job_id, "custom", success=True)
+
+        result_key = f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.json"
+        assert result == {"result": _url("get", result_key)}
+        assert mock_get_urls == [result_key]
+
+
+class TestPresignZipDownloadUrl:
+    def test_presigns_expected_archive_key(self, mock_get_urls):
+        """
+        presign_zip_download_url should request the job archive download key.
+        """
+        job_id = "job-archive"
+
+        result = storage.presign_zip_download_url(job_id)
+
+        archive_key = f"{storage.BUCKET_ROOT_DIR}/archive/{job_id}.zip"
+        assert result == _url("get", archive_key)
+        assert mock_get_urls == [archive_key]
+
+
+class TestVerifyJobAccess:
+    def test_owner_can_access_archive(self, db, group_factory, user_factory, job_factory):
+        """
+        Job owners can access their own archive.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, owner.user_sub, job.job_id) is True
+
+    def test_admin_can_access_any_archive(self, db, group_factory, user_factory, job_factory):
+        """
+        Admin users can access archives owned by other users.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        admin = user_factory(group=group, user_sub="auth0|admin", role="admin")
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, admin.user_sub, job.job_id) is True
+
+    def test_group_admin_can_access_same_group_archive(
+        self, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Group admins can access archives owned by users in their group.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, group_admin.user_sub, job.job_id) is True
+
+    def test_group_admin_cannot_access_other_group_archive(
+        self, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Group admins cannot access archives owned by users in a different group.
+        """
+        owner_group = group_factory()
+        admin_group = group_factory()
+        owner = user_factory(group=owner_group, user_sub="auth0|owner")
+        group_admin = user_factory(
+            group=admin_group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, group_admin.user_sub, job.job_id) is False
+
+    def test_member_cannot_access_another_users_archive(
+        self, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal members cannot access archives owned by another user.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        member = user_factory(group=group, user_sub="auth0|member")
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, member.user_sub, job.job_id) is False
+
+    def test_missing_job_denies_access(self, db):
+        """
+        Missing jobs should deny archive access.
+        """
+        assert verify_job_access(db, "auth0|owner", uuid.uuid4()) is False
+
+    def test_missing_requesting_user_denies_non_owner_access(
+        self, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Missing users cannot access archives they do not own.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        job = job_factory(user_sub=owner.user_sub)
+
+        assert verify_job_access(db, "auth0|missing-user", job.job_id) is False
+
+    def test_matching_owner_sub_allows_access_even_without_user_row(self, db, job_factory):
+        """
+        verify_job_access checks ownership before requiring a requester User row.
+        """
+        owner_sub = "auth0|external-owner"
+        job = job_factory(user_sub=owner_sub)
+
+        assert verify_job_access(db, owner_sub, job.job_id) is True
