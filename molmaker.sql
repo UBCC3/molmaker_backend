@@ -21,7 +21,7 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- Name: groups; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: groups; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.groups (
@@ -29,11 +29,8 @@ CREATE TABLE public.groups (
     name character varying NOT NULL
 );
 
-
-ALTER TABLE public.groups OWNER TO sparshtrivedy;
-
 --
--- Name: jobs; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.jobs (
@@ -46,6 +43,7 @@ CREATE TABLE public.jobs (
     submitted_at timestamp with time zone NOT NULL,
     completed_at timestamp with time zone,
     user_sub text,
+    group_id uuid,
     job_name text,
     slurm_id integer,
     charge integer,
@@ -57,11 +55,8 @@ CREATE TABLE public.jobs (
     is_uploaded boolean DEFAULT false NOT NULL
 );
 
-
-ALTER TABLE public.jobs OWNER TO sparshtrivedy;
-
 --
--- Name: jobs_structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.jobs_structures (
@@ -69,11 +64,8 @@ CREATE TABLE public.jobs_structures (
     structure_id uuid NOT NULL
 );
 
-
-ALTER TABLE public.jobs_structures OWNER TO sparshtrivedy;
-
 --
--- Name: jobs_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.jobs_tags (
@@ -81,45 +73,39 @@ CREATE TABLE public.jobs_tags (
     tag_id uuid NOT NULL
 );
 
-
-ALTER TABLE public.jobs_tags OWNER TO sparshtrivedy;
-
 --
--- Name: requests; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: requests; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.requests (
     request_id uuid NOT NULL,
     status character varying NOT NULL,
+    request_type character varying DEFAULT 'invite'::character varying NOT NULL,
     requested_at timestamp with time zone,
     sender_sub character varying NOT NULL,
-    receiver_sub character varying NOT NULL,
+    receiver_sub character varying,
     group_id uuid NOT NULL
 );
 
-
-ALTER TABLE public.requests OWNER TO sparshtrivedy;
-
 --
--- Name: structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: structures; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.structures (
     structure_id uuid NOT NULL,
-    user_sub text NOT NULL,
+    user_sub text,
+    group_id uuid,
     name text NOT NULL,
     location text NOT NULL,
     notes text,
     uploaded_at timestamp without time zone NOT NULL,
     is_deleted boolean DEFAULT false NOT NULL,
-    formula text NOT NULL
+    formula text NOT NULL,
+    is_public boolean DEFAULT false NOT NULL
 );
 
-
-ALTER TABLE public.structures OWNER TO sparshtrivedy;
-
 --
--- Name: structures_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.structures_tags (
@@ -127,11 +113,8 @@ CREATE TABLE public.structures_tags (
     tag_id uuid NOT NULL
 );
 
-
-ALTER TABLE public.structures_tags OWNER TO sparshtrivedy;
-
 --
--- Name: tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: tags; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.tags (
@@ -140,11 +123,8 @@ CREATE TABLE public.tags (
     name text NOT NULL
 );
 
-
-ALTER TABLE public.tags OWNER TO sparshtrivedy;
-
 --
--- Name: users; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: users; Type: TABLE; Schema: public
 --
 
 CREATE TABLE public.users (
@@ -155,11 +135,8 @@ CREATE TABLE public.users (
     member_since timestamp with time zone
 );
 
-
-ALTER TABLE public.users OWNER TO sparshtrivedy;
-
 --
--- Data for Name: groups; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: groups; Type: TABLE DATA; Schema: public
 --
 
 COPY public.groups (group_id, name) FROM stdin;
@@ -170,7 +147,7 @@ e09abdef-b0cf-4b8d-ac14-bcb591724b6c	group4
 
 
 --
--- Data for Name: jobs; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs; Type: TABLE DATA; Schema: public
 --
 
 COPY public.jobs (job_id, filename, status, calculation_type, method, basis_set, submitted_at, completed_at, user_sub, job_name, slurm_id, charge, multiplicity, job_notes, runtime, is_deleted, is_public) FROM stdin;
@@ -191,7 +168,7 @@ da65463b-c301-45e4-83f1-0871227b2042	water-4-vib.xyz	cancelled	energy	scf	sto-3g
 
 
 --
--- Data for Name: jobs_structures; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs_structures; Type: TABLE DATA; Schema: public
 --
 
 COPY public.jobs_structures (job_id, structure_id) FROM stdin;
@@ -201,7 +178,7 @@ c3383ec3-8f50-4162-90c8-7c6bf6ddda18	5b8c773c-d2a3-47b7-b543-2a21a5e19698
 
 
 --
--- Data for Name: jobs_tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs_tags; Type: TABLE DATA; Schema: public
 --
 
 COPY public.jobs_tags (job_id, tag_id) FROM stdin;
@@ -211,7 +188,7 @@ c3383ec3-8f50-4162-90c8-7c6bf6ddda18	92d1dc3c-f6bc-429c-be29-4ae99c64c73d
 
 
 --
--- Data for Name: requests; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: requests; Type: TABLE DATA; Schema: public
 --
 
 COPY public.requests (request_id, status, requested_at, sender_sub, receiver_sub, group_id) FROM stdin;
@@ -222,7 +199,7 @@ a8cc679c-2354-4a77-8e9d-378de58f8ff9	approved	2025-07-24 12:59:08.642048-07	auth
 
 
 --
--- Data for Name: structures; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: structures; Type: TABLE DATA; Schema: public
 --
 
 COPY public.structures (structure_id, user_sub, name, location, notes, uploaded_at, is_deleted, formula) FROM stdin;
@@ -239,7 +216,7 @@ c44bee2d-b59e-4b70-b98f-af64d25b2811	auth0|681d382c228898b5ba13b7be	some_struct	
 
 
 --
--- Data for Name: structures_tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: structures_tags; Type: TABLE DATA; Schema: public
 --
 
 COPY public.structures_tags (structure_id, tag_id) FROM stdin;
@@ -253,7 +230,7 @@ c44bee2d-b59e-4b70-b98f-af64d25b2811	8b35cb5b-66ae-45cb-ba74-1fb5eca33e9d
 
 
 --
--- Data for Name: tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: tags; Type: TABLE DATA; Schema: public
 --
 
 COPY public.tags (tag_id, user_sub, name) FROM stdin;
@@ -272,7 +249,7 @@ a3eb6c5d-82d2-45db-89e3-0753fc11d0bf	auth0|681d382c228898b5ba13b7be	new_tag
 
 
 --
--- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: users; Type: TABLE DATA; Schema: public
 --
 
 COPY public.users (user_sub, email, role, group_id, member_since) FROM stdin;
@@ -286,7 +263,7 @@ auth0|686ffc1ea0025875955dadfe	member@test.com	member	\N	2025-07-31 11:00:04.354
 
 
 --
--- Name: groups groups_name_key; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: groups groups_name_key; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.groups
@@ -294,7 +271,7 @@ ALTER TABLE ONLY public.groups
 
 
 --
--- Name: groups groups_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: groups groups_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.groups
@@ -302,15 +279,18 @@ ALTER TABLE ONLY public.groups
 
 
 --
--- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs
     ADD CONSTRAINT jobs_pkey PRIMARY KEY (job_id);
 
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT ck_jobs_owner_present CHECK (((user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
+
 
 --
--- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -318,7 +298,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -326,7 +306,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.requests
@@ -334,15 +314,18 @@ ALTER TABLE ONLY public.requests
 
 
 --
--- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.structures
     ADD CONSTRAINT structures_pkey PRIMARY KEY (structure_id);
 
+ALTER TABLE ONLY public.structures
+    ADD CONSTRAINT ck_structures_owner_present CHECK (((user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
+
 
 --
--- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -350,7 +333,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.tags
@@ -358,7 +341,7 @@ ALTER TABLE ONLY public.tags
 
 
 --
--- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.users
@@ -366,7 +349,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.users
@@ -374,23 +357,37 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: jobs fk_jobs_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs fk_jobs_user_sub; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs
     ADD CONSTRAINT fk_jobs_user_sub FOREIGN KEY (user_sub) REFERENCES public.users(user_sub);
 
+--
+-- Name: jobs fk_jobs_group_id; Type: FK CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT fk_jobs_group_id FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+
 
 --
--- Name: structures fk_structures_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures fk_structures_user_sub; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.structures
     ADD CONSTRAINT fk_structures_user_sub FOREIGN KEY (user_sub) REFERENCES public.users(user_sub);
 
+--
+-- Name: structures fk_structures_group_id; Type: FK CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.structures
+    ADD CONSTRAINT fk_structures_group_id FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+
 
 --
--- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -398,7 +395,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -406,7 +403,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -414,7 +411,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -422,7 +419,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: requests requests_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_group_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.requests
@@ -430,7 +427,7 @@ ALTER TABLE ONLY public.requests
 
 
 --
--- Name: requests requests_receiver_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_receiver_sub_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.requests
@@ -438,7 +435,7 @@ ALTER TABLE ONLY public.requests
 
 
 --
--- Name: requests requests_sender_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_sender_sub_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.requests
@@ -446,7 +443,7 @@ ALTER TABLE ONLY public.requests
 
 
 --
--- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -454,7 +451,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -462,14 +459,61 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: users users_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: users users_group_id_fkey; Type: FK CONSTRAINT; Schema: public
 --
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
 
+--
+-- Name: idx_users_group_role; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_users_group_role ON public.users USING btree (group_id, role);
+
+--
+-- Name: idx_jobs_user_active_submitted; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_jobs_user_active_submitted ON public.jobs USING btree (user_sub, is_deleted, submitted_at DESC);
+
+--
+-- Name: idx_jobs_group_active_submitted; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_jobs_group_active_submitted ON public.jobs USING btree (group_id, is_deleted, submitted_at DESC);
+
+--
+-- Name: idx_structures_user_active_uploaded; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_structures_user_active_uploaded ON public.structures USING btree (user_sub, is_deleted, uploaded_at DESC);
+
+--
+-- Name: idx_structures_group_active_uploaded; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_structures_group_active_uploaded ON public.structures USING btree (group_id, is_deleted, uploaded_at DESC);
+
+--
+-- Name: idx_requests_receiver_status; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_requests_receiver_status ON public.requests USING btree (receiver_sub, status);
+
+--
+-- Name: idx_requests_sender_status; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_requests_sender_status ON public.requests USING btree (sender_sub, status);
+
+--
+-- Name: idx_requests_group_status_type; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_requests_group_status_type ON public.requests USING btree (group_id, status, request_type);
+
 
 --
 -- PostgreSQL database dump complete
 --
-

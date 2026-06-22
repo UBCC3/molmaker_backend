@@ -79,10 +79,18 @@ DB_PASSWORD="molmaker_local_password"
 
 psql -d postgres -c "ALTER ROLE ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
 createdb -O "${DB_USER}" "${DB_NAME}"
-sed "s/OWNER TO sparshtrivedy/OWNER TO ${DB_USER}/g" molmaker.sql | psql -v ON_ERROR_STOP=1 -d "${DB_NAME}"
+psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f molmaker.sql
 ```
 
 Then set these values in `.env`.
+
+The database role that imports `molmaker.sql` owns the created schema objects. To keep schema dumps portable, generate future schema-only dumps with owner and grant statements omitted:
+
+```zsh
+pg_dump --schema-only --no-owner --no-acl ...
+```
+
+Production deployments should confirm whether migrations run as the same role used by the backend or as a separate migration/admin role. If a separate role owns the schema, explicitly grant the backend role the required table privileges before starting the app.
 
 ### 4. Run the backend
 After dependencies are installed, you can run the backend with the following command.
