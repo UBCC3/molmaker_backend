@@ -194,7 +194,10 @@ class TestJobsAPI:
         response = client.get(f"/jobs/{job.job_id}")
 
         assert response.status_code == 200
-        assert response.json()["job_id"] == str(job.job_id)
+        result = response.json()
+        assert result["job_id"] == str(job.job_id)
+        assert result["group_id"] == str(group.group_id)
+        assert "user_sub" not in result
 
     def test_get_job_by_id_denies_private_group_job_to_normal_member(
         self, client, set_auth_user, group_factory, user_factory, job_factory
@@ -838,6 +841,8 @@ class TestJobsAPI:
         assert result["basis_set"] == "6-31g"
         assert result["charge"] == 1
         assert result["multiplicity"] == 2
+        assert result["user_sub"] == user.user_sub
+        assert result["group_id"] == str(group.group_id)
         assert sorted(result["tags"]) == ["existing", "new"]
         assert result["structures"][0]["structure_id"] == str(structure.structure_id)
 
@@ -847,6 +852,7 @@ class TestJobsAPI:
 
         job = db.query(Job).filter_by(job_id=job_id).one()
         assert job.user_sub == user.user_sub
+        assert job.group_id == group.group_id
         assert job.filename == "input.xyz"
         assert job.status == "pending"
         assert job.is_deleted is False
@@ -862,6 +868,79 @@ class TestJobsAPI:
             .all()
         )
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
+
+    def test_create_job_without_group_creates_user_owned_job(
+        self, client, db, monkeypatch, tmp_path, user_factory
+    ):
+        """
+        POST /jobs/ should leave group_id null when the authenticated user has no group.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["user_sub"] == user.user_sub
+        assert response.json()["group_id"] is None
+
+        job = db.query(Job).filter_by(job_id=job_id).one()
+        assert job.user_sub == user.user_sub
+        assert job.group_id is None
+
+    def test_create_job_can_link_public_group_structure(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        group_factory,
+        user_factory,
+        structure_factory,
+    ):
+        """
+        POST /jobs/ can link a public structure from the authenticated user's group.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        structure_owner = user_factory(group=group, user_sub="auth0|structure-owner")
+        public_structure = structure_factory(
+            user_sub=structure_owner.user_sub,
+            group_id=group.group_id,
+            is_public=True,
+        )
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(
+                job_id=job_id,
+                structure_id=str(public_structure.structure_id),
+            ),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["structures"][0]["structure_id"] == str(
+            public_structure.structure_id
+        )
+
+        job = db.query(Job).filter_by(job_id=job_id).one()
+        assert job.user_sub == user.user_sub
+        assert job.group_id == group.group_id
+        assert [structure.structure_id for structure in job.structures] == [
+            public_structure.structure_id
+        ]
 
     def test_create_job_rejects_non_xyz_upload(self, client, db, monkeypatch, tmp_path):
         """
@@ -902,7 +981,7 @@ class TestJobsAPI:
         assert db.query(Job).count() == 0
         assert not list(tmp_path.iterdir())
 
-    def test_create_job_rolls_back_when_structure_is_not_owned(
+    def test_create_job_rolls_back_when_structure_is_not_accessible(
         self,
         client,
         db,
@@ -935,13 +1014,13 @@ class TestJobsAPI:
         )
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Structure not found or not owned by user"
+        assert response.json()["detail"] == "Structure not found or not accessible"
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert db.query(Tags).filter_by(name="should-rollback").first() is None
         assert not (tmp_path / str(job_id)).exists()
 
     def test_create_job_rolls_back_and_removes_files_when_commit_fails(
-        self, client, db, monkeypatch, tmp_path
+        self, client, db, monkeypatch, tmp_path, user_factory
     ):
         """
         Commit failures should not leave partial DB rows or uploaded files behind.
@@ -949,6 +1028,7 @@ class TestJobsAPI:
         import jobs.routes as jobs_routes
 
         monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user_factory(user_sub="auth0|testuser")
         monkeypatch.setattr(db, "commit", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         job_id = uuid.uuid4()
 

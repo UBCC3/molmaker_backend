@@ -4,6 +4,7 @@ from asset_permissions import (
     can_change_asset_visibility,
     can_delete_asset,
     can_read_asset,
+    can_view_asset_user_owner,
     can_write_asset,
     is_group_admin_for_group,
     is_group_member_for_asset,
@@ -185,3 +186,38 @@ class TestAssetVisibilityPermissions:
         asset = asset_factory(user_sub=None, group_id=group.group_id, is_public=True)
 
         assert can_change_asset_visibility(member, asset) is False
+
+
+class TestAssetOwnerFieldPermissions:
+    def test_public_group_member_cannot_view_asset_user_owner(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        member = user_factory(group=group, user_sub="auth0|member")
+        asset = asset_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=True,
+        )
+
+        assert can_view_asset_user_owner(member, asset) is False
+
+    def test_direct_owner_can_view_asset_user_owner(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        owner = user_factory(user_sub="auth0|owner")
+        asset = asset_factory(user_sub=owner.user_sub, group_id=group.group_id)
+
+        assert can_view_asset_user_owner(owner, asset) is True
+
+    def test_group_admin_can_view_asset_user_owner(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        group_admin = user_factory(group=group, role="group_admin")
+        asset = asset_factory(user_sub=owner.user_sub, group_id=group.group_id)
+
+        assert can_view_asset_user_owner(group_admin, asset) is True

@@ -22,6 +22,7 @@ from asset_permissions import (
     can_change_asset_visibility,
     can_delete_asset,
     can_read_asset,
+    can_view_asset_user_owner,
 )
 from models import Job, Structure, Tags, User
 from dependencies import get_db
@@ -93,7 +94,8 @@ def get_job_by_id(
     """
     Retrieve one job when the authenticated user has read access.
     Allows admins, direct owners, group admins for the job's group_id, and
-    current group members when the job is public.
+    current group members when the job is public. Public group viewers do not
+    receive another user's user_sub.
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
@@ -105,7 +107,7 @@ def get_job_by_id(
     if not can_read_asset(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
-    return serialize_job(job)
+    return serialize_job(job, include_user_sub=can_view_asset_user_owner(user, job))
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -158,7 +160,9 @@ def create_job(
     db: Session = Depends(get_db),
 ):
     """
-    Create a new job by uploading a file and providing job details.
+    Create a new job by uploading a .xyz file and job metadata.
+    Ownership is derived from the authenticated user's database record. Users in a
+    group always create co-owned jobs with user_sub and group_id set.
     :param tags: List of tags to associate with the job.
     :param file: Upload file containing the job structure (must be .xyz format).
     :param job_id: Unique ID for the job (UUID format).
@@ -175,8 +179,6 @@ def create_job(
     :param db: Database session dependency.
     :return: JSONResponse with job details and status code 201 Created.
     """
-    user_sub = get_user_sub(current_user)
-
     try:
         parsed_job_id = uuid.UUID(str(job_id))
     except ValueError:
@@ -192,6 +194,9 @@ def create_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file format. Only .xyz allowed.",
         )
+
+    user = get_current_db_user_or_404(db, current_user)
+    user_sub = user.user_sub
 
     job_path = os.path.join(JOB_DIR, job_id_str)
     os.makedirs(job_path, exist_ok=True)
@@ -215,6 +220,7 @@ def create_job(
             slurm_id=slurm_id,
             submitted_at=datetime.now(timezone.utc),
             user_sub=user_sub,
+            group_id=user.group_id,
             status="pending",
             is_deleted=False,
             is_uploaded=False,
@@ -228,24 +234,25 @@ def create_job(
                 db.add(tag)
             new_job.tags.append(tag)
 
-        # link to an existing structure owned by the user
+        # Link to an existing structure the requester can read. Public group
+        # structures are allowed; deleted or inaccessible structures are not.
         if structure_id:
             try:
                 parsed_structure_id = uuid.UUID(str(structure_id))
             except ValueError:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not owned by user",
+                    detail="Structure not found or not accessible",
                 )
             structure = (
                 db.query(Structure)
-                .filter_by(structure_id=parsed_structure_id, user_sub=user_sub)
+                .filter_by(structure_id=parsed_structure_id, is_deleted=False)
                 .first()
             )
-            if not structure:
+            if not structure or not can_read_asset(user, structure):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not owned by user",
+                    detail="Structure not found or not accessible",
                 )
             new_job.structures.append(structure)
 

@@ -44,10 +44,11 @@ def can_read_asset(user: User, asset: Asset) -> bool:
 
 
 def can_write_asset(user: User, asset: Asset) -> bool:
-    if is_admin(user) or is_group_admin_for_group(user, asset.group_id):
-        return True
-
-    return is_user_owner(user, asset)
+    return (
+        is_admin(user)
+        or is_user_owner(user, asset)
+        or is_group_admin_for_group(user, asset.group_id)
+    )
 
 
 def can_delete_asset(user: User, asset: Asset) -> bool:
@@ -62,3 +63,7 @@ def can_change_asset_visibility(user: User, asset: Asset) -> bool:
         return is_group_admin_for_group(user, asset.group_id)
 
     return is_user_owner(user, asset)
+
+
+def can_view_asset_user_owner(user: User, asset: Asset) -> bool:
+    return can_write_asset(user, asset)

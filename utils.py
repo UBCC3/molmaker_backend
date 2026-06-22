@@ -13,8 +13,8 @@ def serialize_structure(s: Structure) -> Dict[str, Any]:
         "uploaded_at": s.uploaded_at.isoformat(),
     }
 
-def serialize_job(job: Job) -> Dict[str, Any]:
-    return {
+def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
+    result = {
         "job_id": str(job.job_id),
         "job_name": job.job_name,
         "job_notes": job.job_notes,
@@ -27,7 +27,7 @@ def serialize_job(job: Job) -> Dict[str, Any]:
         "multiplicity": job.multiplicity,
         "submitted_at": job.submitted_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "user_sub": job.user_sub,
+        "group_id": str(job.group_id) if job.group_id else None,
         "slurm_id": job.slurm_id and str(job.slurm_id),
         "structures": [serialize_structure(s) for s in job.structures],
         "tags": [t.name for t in job.tags],
@@ -35,6 +35,9 @@ def serialize_job(job: Job) -> Dict[str, Any]:
         "is_deleted": job.is_deleted,
         "is_public": job.is_public,
     }
+    if include_user_sub:
+        result["user_sub"] = job.user_sub
+    return result
 
 def get_user_sub(current_user) -> str:
     if isinstance(current_user, dict):

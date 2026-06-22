@@ -111,7 +111,12 @@ class TestSerializeStructure:
 
 class TestSerializeJob:
     def test_serializes_job_with_relationships_and_runtime(
-        self, user_factory, job_factory, structure_factory, tag_factory
+        self,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+        tag_factory,
     ):
         """
         serialize_job should include related structures, tag names, timestamps, and flags.
@@ -123,6 +128,7 @@ class TestSerializeJob:
         structure = structure_factory(name="Methane", formula="CH4")
         first_tag = tag_factory(name="organic")
         second_tag = tag_factory(name="demo")
+        group = group_factory()
 
         job = job_factory(
             job_id=job_id,
@@ -138,6 +144,7 @@ class TestSerializeJob:
             submitted_at=submitted_at,
             completed_at=completed_at,
             user_sub="auth0|testuser",
+            group_id=group.group_id,
             slurm_id="12345",
             runtime=timedelta(hours=1, minutes=2, seconds=3),
             is_deleted=False,
@@ -161,6 +168,7 @@ class TestSerializeJob:
         assert result["submitted_at"] == job.submitted_at.isoformat()
         assert result["completed_at"] == job.completed_at.isoformat()
         assert result["user_sub"] == "auth0|testuser"
+        assert result["group_id"] == str(group.group_id)
         assert result["slurm_id"] == "12345"
         assert result["runtime"] == "1:02:03"
         assert result["is_deleted"] is False
@@ -184,6 +192,17 @@ class TestSerializeJob:
         assert result["completed_at"] is None
         assert result["runtime"] is None
         assert result["slurm_id"] is None
+        assert result["group_id"] is None
+
+    def test_can_omit_job_user_sub(self, job_factory):
+        """
+        serialize_job can hide direct user ownership when returning public group jobs.
+        """
+        job = job_factory(user_sub="auth0|owner")
+
+        result = serialize_job(job, include_user_sub=False)
+
+        assert "user_sub" not in result
 
 
 class TestCleanUpUploadCache:
