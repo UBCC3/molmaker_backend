@@ -179,6 +179,72 @@ class TestJobsAPI:
         assert result["job_name"] == "owned job"
         assert result["user_sub"] == user.user_sub
 
+    def test_get_job_by_id_returns_public_group_job_to_member(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal group members can read public jobs with a matching persisted group_id.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        viewer = user_factory(group=group, user_sub="auth0|viewer")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=True)
+        set_auth_user(make_auth0_payload(viewer.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+
+    def test_get_job_by_id_denies_private_group_job_to_normal_member(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal group members cannot read private jobs just because group_id matches.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        viewer = user_factory(group=group, user_sub="auth0|viewer")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        set_auth_user(make_auth0_payload(viewer.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+
+    def test_get_job_by_id_returns_private_group_only_job_to_group_admin(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Group admins can read private group-owned jobs with matching persisted group_id.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        job = job_factory(user_sub=None, group_id=group.group_id, is_public=False)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+        assert response.json()["user_sub"] is None
+
+    def test_get_job_by_id_returns_co_owned_job_to_former_member_owner(
+        self, client, group_factory, user_factory, job_factory
+    ):
+        """
+        Former members still access co-owned jobs through their direct user ownership.
+        """
+        group = group_factory()
+        owner = user_factory(user_sub="auth0|testuser", group_id=None)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+
     def test_get_job_by_id_returns_404_for_missing_job(self, client):
         """
         GET /jobs/{job_id} should return 404 when no job exists for the ID.
@@ -261,7 +327,7 @@ class TestJobsAPI:
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
     ):
         """
-        Group admins should be able to soft-delete jobs owned by users in their group.
+        Group admins should be able to soft-delete jobs with their persisted group_id.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
@@ -270,7 +336,7 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, is_deleted=False)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_deleted=False)
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -353,7 +419,7 @@ class TestJobsAPI:
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
     ):
         """
-        Group admins should be able to update visibility for jobs in their group.
+        Group admins should be able to update visibility for jobs with their group_id.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
@@ -362,7 +428,7 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, is_public=False)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -376,6 +442,23 @@ class TestJobsAPI:
         assert response.status_code == 200
         db.refresh(job)
         assert job.is_public is True
+
+    def test_owner_cannot_update_co_owned_job_visibility(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Direct owners cannot change visibility once a job is also group-owned.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+
+        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+        db.refresh(job)
+        assert job.is_public is False
 
     def test_visibility_update_denies_unauthorized_user(
         self, client, db, set_auth_user, group_factory, user_factory, job_factory

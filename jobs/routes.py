@@ -18,6 +18,11 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from asset_permissions import (
+    can_change_asset_visibility,
+    can_delete_asset,
+    can_read_asset,
+)
 from models import Job, Structure, Tags, User
 from dependencies import get_db
 from auth import verify_token
@@ -48,14 +53,23 @@ def get_job_or_404(db: Session, job_id: str):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
 
+def get_current_db_user_or_404(db: Session, current_user):
+    user_sub = get_user_sub(current_user)
+    user = db.query(User).filter_by(user_sub=user_sub).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
+
 @router.get("/")
 def get_all_jobs(
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all submitted jobs for the currently authenticated user,
-    ordered by submission time (most recent first).
+    List non-deleted jobs directly owned by the authenticated user.
+    This includes co-owned jobs even if the user later leaves the group, but
+    does not include public jobs owned only by the user's current group.
+    Results are ordered by submission time, most recent first.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
@@ -77,16 +91,18 @@ def get_job_by_id(
     current_user=Depends(verify_token),
 ):
     """
-    Retrieve a job by its ID for the current authenticated user.
+    Retrieve one job when the authenticated user has read access.
+    Allows admins, direct owners, group admins for the job's group_id, and
+    current group members when the job is public.
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: Serialized job details.
     """
-    user_sub = get_user_sub(current_user)
     job = get_job_or_404(db, job_id)
+    user = get_current_db_user_or_404(db, current_user)
 
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+    if not can_read_asset(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     return serialize_job(job)
@@ -99,16 +115,17 @@ def delete_job(
     current_user=Depends(verify_token),
 ):
     """
-    Soft-delete a job by its ID for the current authenticated user.
+    Soft-delete one job when the authenticated user has delete access.
+    Allows admins, direct owners, and group admins for the job's group_id.
     :param job_id: ID of the job to delete.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: No content response (204).
     """
-    user_sub = get_user_sub(current_user)
     job = get_job_or_404(db, job_id)
+    user = get_current_db_user_or_404(db, current_user)
 
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+    if not can_delete_asset(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     job.is_deleted = True
@@ -261,7 +278,10 @@ def update_job_visibility(
     db: Session = Depends(get_db),
 ):
     """
-    Update the visibility of a job by its ID for the current authenticated user.
+    Update public/private visibility for one job.
+    User-only jobs can be changed by the direct owner or an admin. Group-owned
+    or co-owned jobs require an admin or group admin for the job's group_id.
+    Direct user co-owners cannot change group visibility themselves.
     :param job_id: ID of the job to update.
     :param is_public: Boolean indicating whether the job should be public or private.
     :param current_user: Current user dependency, verified via token.
@@ -269,9 +289,9 @@ def update_job_visibility(
     :return: JSONResponse with updated job details and status code 200 OK.
     """
     job = get_job_or_404(db, job_id)
+    user = get_current_db_user_or_404(db, current_user)
 
-    user_sub = get_user_sub(current_user)
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
+    if not can_change_asset_visibility(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     job.is_public = is_public
