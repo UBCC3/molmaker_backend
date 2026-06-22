@@ -107,23 +107,33 @@ class TestAdminAPI:
         """
         admin_group = group_factory(name="Admins")
         research_group = group_factory(name="Research")
+        owner_current_group = group_factory(name="Owner Current Group")
         admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        owner = user_factory(group=research_group, user_sub="auth0|owner", role="member")
+        owner = user_factory(group=owner_current_group, user_sub="auth0|owner", role="member")
         older_job = job_factory(
             user_sub=admin.user_sub,
+            group_id=admin_group.group_id,
             job_name="admin job",
             submitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         newer_job = job_factory(
             user_sub=owner.user_sub,
+            group_id=research_group.group_id,
             job_name="owner job",
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
+        group_only_job = job_factory(
+            user_sub=None,
+            group_id=research_group.group_id,
+            job_name="group-only job",
+            submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        )
         job_factory(
             user_sub=owner.user_sub,
+            group_id=research_group.group_id,
             job_name="deleted job",
             is_deleted=True,
-            submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+            submitted_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
         )
 
         response = client.get("/admin/jobs")
@@ -131,17 +141,23 @@ class TestAdminAPI:
         assert response.status_code == 200
         result = response.json()
         assert [job["job_id"] for job in result] == [
+            str(group_only_job.job_id),
             str(newer_job.job_id),
             str(older_job.job_id),
         ]
-        assert result[0]["job_name"] == "owner job"
-        assert result[0]["user_email"] == owner.email
+        assert result[0]["job_name"] == "group-only job"
+        assert result[0]["user_sub"] is None
+        assert result[0]["user_email"] is None
         assert result[0]["group_id"] == str(research_group.group_id)
         assert result[0]["group_name"] == "Research"
-        assert result[1]["job_name"] == "admin job"
-        assert result[1]["user_email"] == admin.email
-        assert result[1]["group_id"] == str(admin_group.group_id)
-        assert result[1]["group_name"] == "Admins"
+        assert result[1]["job_name"] == "owner job"
+        assert result[1]["user_email"] == owner.email
+        assert result[1]["group_id"] == str(research_group.group_id)
+        assert result[1]["group_name"] == "Research"
+        assert result[2]["job_name"] == "admin job"
+        assert result[2]["user_email"] == admin.email
+        assert result[2]["group_id"] == str(admin_group.group_id)
+        assert result[2]["group_name"] == "Admins"
 
     def test_admin_jobs_list_requires_admin_user(self, client, user_factory):
         """

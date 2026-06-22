@@ -53,11 +53,12 @@ class TestGroupsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "User not found"
 
-    def test_group_admin_can_list_all_group_jobs_since_each_members_join_date(
+    def test_group_admin_can_list_all_jobs_with_persisted_group_id(
         self, client, group_factory, user_factory, job_factory
     ):
         """
-        GET /group/jobs should let group admins see group jobs since each member joined.
+        GET /group/jobs should let group admins see non-deleted jobs with the
+        authenticated user's persisted group_id, even if the user owner left.
         """
         group = group_factory(name="Current Group")
         other_group = group_factory(name="Other Group")
@@ -65,6 +66,12 @@ class TestGroupsAPI:
             group=group,
             user_sub="auth0|testuser",
             role="group_admin",
+            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        former_member = user_factory(
+            group=None,
+            user_sub="auth0|former",
+            role="member",
             member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         member = user_factory(
@@ -81,30 +88,42 @@ class TestGroupsAPI:
         )
         admin_job = job_factory(
             user_sub=group_admin.user_sub,
+            group_id=group.group_id,
             job_name="admin visible",
             is_public=False,
             submitted_at=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
         )
         member_job = job_factory(
             user_sub=member.user_sub,
+            group_id=group.group_id,
             job_name="member visible",
             is_public=False,
             submitted_at=datetime(2026, 1, 2, 12, tzinfo=timezone.utc),
         )
-        job_factory(
-            user_sub=member.user_sub,
-            job_name="before membership",
-            is_public=True,
-            submitted_at=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        former_member_job = job_factory(
+            user_sub=former_member.user_sub,
+            group_id=group.group_id,
+            job_name="former member visible",
+            is_public=False,
+            submitted_at=datetime(2026, 1, 3, 12, tzinfo=timezone.utc),
         )
         job_factory(
             user_sub=member.user_sub,
+            group_id=None,
+            job_name="user-owned only",
+            is_public=True,
+            submitted_at=datetime(2026, 1, 4, 12, tzinfo=timezone.utc),
+        )
+        job_factory(
+            user_sub=member.user_sub,
+            group_id=group.group_id,
             job_name="deleted",
             is_deleted=True,
             submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         )
         job_factory(
             user_sub=other_user.user_sub,
+            group_id=other_group.group_id,
             job_name="other group",
             is_public=True,
             submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
@@ -117,8 +136,15 @@ class TestGroupsAPI:
         assert {job["job_id"] for job in result} == {
             str(admin_job.job_id),
             str(member_job.job_id),
+            str(former_member_job.job_id),
         }
-        assert {job["job_name"] for job in result} == {"admin visible", "member visible"}
+        assert {job["job_name"] for job in result} == {
+            "admin visible",
+            "member visible",
+            "former member visible",
+        }
+        assert all(job["group_id"] == str(group.group_id) for job in result)
+        assert all("user_sub" in job for job in result)
 
     def test_group_member_only_sees_public_group_jobs(
         self, client, group_factory, user_factory, job_factory
@@ -141,12 +167,14 @@ class TestGroupsAPI:
         )
         public_job = job_factory(
             user_sub=group_member.user_sub,
+            group_id=group.group_id,
             job_name="public",
             is_public=True,
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
         job_factory(
             user_sub=current_user.user_sub,
+            group_id=group.group_id,
             job_name="private",
             is_public=False,
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
@@ -158,6 +186,118 @@ class TestGroupsAPI:
         result = response.json()
         assert [job["job_id"] for job in result] == [str(public_job.job_id)]
         assert result[0]["job_name"] == "public"
+        assert result[0]["group_id"] == str(group.group_id)
+        assert "user_sub" not in result[0]
+
+    def test_group_admin_can_list_all_structures_with_persisted_group_id(
+        self, client, group_factory, user_factory, structure_factory
+    ):
+        """
+        GET /group/structures should let group admins see non-deleted structures
+        with the authenticated user's persisted group_id.
+        """
+        group = group_factory(name="Current Group")
+        other_group = group_factory(name="Other Group")
+        group_admin = user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|member", role="member")
+        former_member = user_factory(group=None, user_sub="auth0|former", role="member")
+        other_user = user_factory(group=other_group, user_sub="auth0|other", role="member")
+        member_structure = structure_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            name="member structure",
+            is_public=False,
+            uploaded_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        former_member_structure = structure_factory(
+            user_sub=former_member.user_sub,
+            group_id=group.group_id,
+            name="former member structure",
+            is_public=False,
+            uploaded_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        )
+        structure_factory(
+            user_sub=owner.user_sub,
+            group_id=None,
+            name="user-owned only",
+            is_public=True,
+            uploaded_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
+        )
+        structure_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            name="deleted",
+            is_deleted=True,
+            uploaded_at=datetime(2026, 1, 5, tzinfo=timezone.utc),
+        )
+        structure_factory(
+            user_sub=other_user.user_sub,
+            group_id=other_group.group_id,
+            name="other group",
+            is_public=True,
+            uploaded_at=datetime(2026, 1, 6, tzinfo=timezone.utc),
+        )
+
+        response = client.get("/group/structures")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert {structure["structure_id"] for structure in result} == {
+            str(member_structure.structure_id),
+            str(former_member_structure.structure_id),
+        }
+        assert all(structure["group_id"] == str(group.group_id) for structure in result)
+        assert all("user_sub" in structure for structure in result)
+
+    def test_group_member_only_sees_public_group_structures(
+        self, client, group_factory, user_factory, structure_factory
+    ):
+        """
+        Normal group members should only see public group structures, without
+        user_sub for structures owned by other members.
+        """
+        group = group_factory()
+        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        group_member = user_factory(group=group, user_sub="auth0|member", role="member")
+        public_structure = structure_factory(
+            user_sub=group_member.user_sub,
+            group_id=group.group_id,
+            name="public",
+            is_public=True,
+            uploaded_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        structure_factory(
+            user_sub=current_user.user_sub,
+            group_id=group.group_id,
+            name="private",
+            is_public=False,
+            uploaded_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        )
+
+        response = client.get("/group/structures")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert [structure["structure_id"] for structure in result] == [
+            str(public_structure.structure_id)
+        ]
+        assert result[0]["name"] == "public"
+        assert result[0]["group_id"] == str(group.group_id)
+        assert "user_sub" not in result[0]
+
+    def test_group_structures_returns_404_when_group_has_no_structures(
+        self, client, group_factory, user_factory
+    ):
+        """
+        GET /group/structures should return 404 when no structures exist for the group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+
+        response = client.get("/group/structures")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "No structures found for the group"
 
     def test_group_jobs_returns_404_when_group_has_no_jobs(
         self, client, group_factory, user_factory

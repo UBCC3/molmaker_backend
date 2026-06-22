@@ -37,8 +37,9 @@ def get_all_jobs(
     current_user=Depends(verify_token),
 ):
     """
-    Returns all submitted jobs by all users,
-    ordered by submission time (most recent first).
+    List all non-deleted jobs for all users, ordered by submission time - most recent first.
+    Job group metadata comes from the job's persisted group_id, not from the
+    owner's current group membership.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
@@ -57,17 +58,14 @@ def get_all_jobs(
             .all()
         )
 
-        serialized = [serialize_job(j) for j in jobs]
-
-        for job in serialized:
-            user = db.query(User).filter_by(user_sub=job["user_sub"]).first()
-            user_email = user.email if user else None
-            group_id = user.group_id if user else None
-            group_name = db.query(Group).filter_by(group_id=group_id).first().name if group_id else None
-            job["user_email"] = user_email
-            job["group_id"] = group_id
-            job["group_name"] = group_name
-
+        serialized = []
+        for job in jobs:
+            owner = db.query(User).filter_by(user_sub=job.user_sub).first() if job.user_sub else None
+            group = db.query(Group).filter_by(group_id=job.group_id).first() if job.group_id else None
+            payload = serialize_job(job)
+            payload["user_email"] = owner.email if owner else None
+            payload["group_name"] = group.name if group else None
+            serialized.append(payload)
         return serialized
 
     except Exception as e:
