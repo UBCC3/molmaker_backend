@@ -2,13 +2,20 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, s
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse
-from models import Structure, Tags
+from asset_permissions import (
+    can_change_asset_visibility,
+    can_delete_asset,
+    can_read_asset,
+    can_view_asset_user_owner,
+    can_write_asset,
+)
+from models import Structure, Tags, User
 from dependencies import get_db
 from auth import verify_token
 import os, uuid, shutil
 import boto3
 from pathlib import Path
-from utils import get_user_sub
+from utils import get_user_sub, serialize_structure
 from datetime import datetime, timezone
 from typing import List
 from ase.io import read
@@ -29,7 +36,7 @@ s3 = boto3.client(
     config=Config(signature_version="s3v4")
 )
 
-def get_structure_or_404(db: Session, structure_id: str, user_sub: str):
+def get_structure_or_404(db: Session, structure_id: str):
     try:
         parsed_structure_id = uuid.UUID(str(structure_id))
     except ValueError:
@@ -37,7 +44,6 @@ def get_structure_or_404(db: Session, structure_id: str, user_sub: str):
 
     structure = db.query(Structure).filter(
         Structure.structure_id == parsed_structure_id,
-        Structure.user_sub == user_sub,
         Structure.is_deleted == False
     ).first()
 
@@ -45,16 +51,25 @@ def get_structure_or_404(db: Session, structure_id: str, user_sub: str):
         raise HTTPException(status_code=404, detail="Structure not found.")
     return structure
 
+def get_current_db_user_or_404(db: Session, current_user):
+    user_sub = get_user_sub(current_user)
+    user = db.query(User).filter_by(user_sub=user_sub).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
+
 @router.get("/")
 def get_all_structures(
     user=Depends(verify_token),
     db: Session = Depends(get_db)
 ):
     """
-    List all structures in the database.
+    List non-deleted structures directly owned by the authenticated user.
+    Results are ordered by upload time, most recent first. Each response item
+    includes tags and a presigned image URL.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
-    :return: List of structures associated with the user.
+    :return: List of serialized structure details.
     """
     try:
         user_id = get_user_sub(user)
@@ -65,13 +80,7 @@ def get_all_structures(
 
         return [
             {
-                "structure_id": s.structure_id,
-                "name": s.name,
-                "formula": s.formula,
-                "location": s.location,
-                "notes": s.notes,
-                "uploaded_at": s.uploaded_at,
-                "tags": [tag.name for tag in s.tags],
+                **serialize_structure(s),
                 "imageS3URL": s3.generate_presigned_url(
                     "get_object",
                     Params={
@@ -151,10 +160,12 @@ def get_presigned_url_for_structure(
     db: Session = Depends(get_db),
 ):
     """
-    Generate a presigned URL for downloading an owned structure file from S3.
+    Generate a presigned URL when the authenticated user can read the structure.
     """
-    user_id = get_user_sub(user)
-    structure = get_structure_or_404(db, structure_id, user_id)
+    structure = get_structure_or_404(db, structure_id)
+    db_user = get_current_db_user_or_404(db, user)
+    if not can_read_asset(db_user, structure):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     key = f"structures/{structure.structure_id}.xyz"
     try:
         url = s3.generate_presigned_url(
@@ -173,29 +184,70 @@ def get_structure_by_id(
     db: Session = Depends(get_db)
 ):
     """
-    Retrieve a structure by its ID.
+    Retrieve one structure when the authenticated user has read access.
+    Allows admins, direct owners, group admins for the structure's group_id, and
+    current group members when the structure is public.
     :param structure_id: ID of the structure to retrieve.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: The structure object if found, otherwise raises HTTPException.
     """
     try:
-        user_id = get_user_sub(user)
-        structure = get_structure_or_404(db, structure_id, user_id)
+        structure = get_structure_or_404(db, structure_id)
+        db_user = get_current_db_user_or_404(db, user)
+        if not can_read_asset(db_user, structure):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
         return {
-            "structure_id": structure.structure_id,
-            "name": structure.name,
-            "formula": structure.formula,
-            "location": structure.location,
-            "notes": structure.notes,
-            "uploaded_at": structure.uploaded_at,
-            "tags": [tag.name for tag in structure.tags]
+            **serialize_structure(
+                structure,
+                include_user_sub=can_view_asset_user_owner(db_user, structure),
+            )
         }
     except HTTPException: 
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/{structure_id}/visibility", status_code=status.HTTP_200_OK)
+def update_structure_visibility(
+    structure_id: str,
+    is_public: bool = Form(...),
+    user=Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Update public/private visibility for one structure.
+    User-only structures can be changed by the direct owner or an admin.
+    Group-owned or co-owned structures require an admin or group admin for the
+    structure's group_id. Direct user co-owners cannot change group visibility themselves.
+    :param structure_id: ID of the structure to update.
+    :param is_public: Boolean indicating whether the structure should be public or private.
+    :param user: Current user dependency, verified via token.
+    :param db: Database session dependency.
+    :return: Updated structure visibility details.
+    """
+    structure = get_structure_or_404(db, structure_id)
+    db_user = get_current_db_user_or_404(db, user)
+    if not can_change_asset_visibility(db_user, structure):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+    structure.is_public = is_public
+    try:
+        db.commit()
+        db.refresh(structure)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    return {
+        "structure_id": structure.structure_id,
+        "is_public": structure.is_public,
+        "message": "Structure visibility updated successfully.",
+    }
 
 @router.patch("/{structure_id}")
 def update_structure(
@@ -208,7 +260,8 @@ def update_structure(
     db: Session = Depends(get_db)
 ):
     """
-    Update an existing structure's name and notes.
+    Update an existing structure when the authenticated user has write access.
+    Allows admins, direct owners, and group admins for the structure's group_id.
     :param tags: List of tags to associate with the structure.
     :param structure_id: ID of the structure to update.
     :param name: New name for the structure.
@@ -219,8 +272,11 @@ def update_structure(
     :return: The updated structure object.
     """
     try:
-        user_id = get_user_sub(user)
-        structure = get_structure_or_404(db, structure_id, user_id)
+        structure = get_structure_or_404(db, structure_id)
+        db_user = get_current_db_user_or_404(db, user)
+        if not can_write_asset(db_user, structure):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+        user_id = db_user.user_sub
 
         structure.name = name
         structure.formula = formula
@@ -247,13 +303,10 @@ def update_structure(
             db.rollback()
             raise HTTPException(500, f"Could not update structure: {e}")
         return {
-            "structure_id": structure.structure_id,
-            "name": structure.name,
-            "formula": structure.formula,
-            "location": structure.location,
-            "notes": structure.notes,
-            "uploaded_at": structure.uploaded_at,
-            "tags": [tag.name for tag in structure.tags]
+            **serialize_structure(
+                structure,
+                include_user_sub=can_view_asset_user_owner(db_user, structure),
+            )
         }
     except HTTPException:
         raise
@@ -267,14 +320,17 @@ def delete_structure(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a structure by its ID.
+    Soft-delete one structure when the authenticated user has delete access.
+    Allows admins, direct owners, and group admins for the structure's group_id.
     :param structure_id: ID of the structure to delete.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: Success message if deletion is successful.
     """
-    user_id = get_user_sub(user)
-    structure = get_structure_or_404(db, structure_id, user_id)
+    structure = get_structure_or_404(db, structure_id)
+    db_user = get_current_db_user_or_404(db, user)
+    if not can_delete_asset(db_user, structure):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     # Mark as deleted
     structure.is_deleted = True
@@ -301,7 +357,9 @@ def create_and_upload_structure(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new structure by uploading a file.
+    Create a new structure by uploading a structure file and image.
+    Ownership is derived from the authenticated user's database record. Users in a
+    group always create co-owned structures with user_sub and group_id set.
     :param formula: Chemical formula of the structure.
     :param image: UploadFile containing the structure image.
     :param tags: List of tags to associate with the structure.
@@ -314,7 +372,8 @@ def create_and_upload_structure(
     """
     structure_path = None
     try:
-        user_id = get_user_sub(user)
+        db_user = get_current_db_user_or_404(db, user)
+        user_id = db_user.user_sub
 
         # Create directory for the structure
         structure_id = uuid.uuid4()
@@ -343,6 +402,7 @@ def create_and_upload_structure(
         structure = Structure(
             structure_id=structure_id,
             user_sub=user_id,
+            group_id=db_user.group_id,
             name=name,
             formula=formula,
             location=s3_link,
@@ -376,13 +436,10 @@ def create_and_upload_structure(
             raise HTTPException(status_code=500, detail=f"Could not create structure: {e}")
 
         return {
-            "structure_id": structure.structure_id,
-            "name": structure.name,
-            "formula": structure.formula,
-            "location": structure.location,
-            "notes": structure.notes,
-            "uploaded_at": structure.uploaded_at,
-            "tags": [tag.name for tag in structure.tags]
+            **serialize_structure(
+                structure,
+                include_user_sub=can_view_asset_user_owner(db_user, structure),
+            )
         }
     except HTTPException:
         raise

@@ -80,22 +80,27 @@ class TestGetUserSub:
 
 class TestSerializeStructure:
     def test_serializes_expected_structure_fields(
-        self, user_factory, structure_factory
+        self, group_factory, user_factory, structure_factory, tag_factory
     ):
         """
         serialize_structure should convert IDs and datetimes into API-safe values.
         """
         structure_id = uuid.uuid4()
         uploaded_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-        user_factory(user_sub="auth0|testuser")
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        tag = tag_factory(user_sub=user.user_sub, name="baseline")
         structure = structure_factory(
             structure_id=structure_id,
-            user_sub="auth0|testuser",
+            user_sub=user.user_sub,
+            group_id=group.group_id,
             name="Water",
             formula="H2O",
             location="s3://test-bucket/structures/water.xyz",
             notes="stable molecule",
             uploaded_at=uploaded_at,
+            is_public=True,
+            tags=[tag],
         )
 
         result = serialize_structure(structure)
@@ -103,10 +108,35 @@ class TestSerializeStructure:
         assert result == {
             "structure_id": str(structure_id),
             "name": "Water",
+            "formula": "H2O",
             "location": "s3://test-bucket/structures/water.xyz",
             "notes": "stable molecule",
             "uploaded_at": structure.uploaded_at.isoformat(),
+            "group_id": str(group.group_id),
+            "is_public": True,
+            "tags": ["baseline"],
         }
+
+    def test_can_omit_structure_tags(self, tag_factory, structure_factory):
+        """
+        serialize_structure can omit tags for nested job structure summaries.
+        """
+        tag = tag_factory(user_sub="auth0|testuser", name="baseline")
+        structure = structure_factory(tags=[tag])
+
+        result = serialize_structure(structure, include_tags=False)
+
+        assert "tags" not in result
+
+    def test_can_include_structure_user_sub(self, structure_factory):
+        """
+        serialize_structure can include direct user ownership for privileged viewers.
+        """
+        structure = structure_factory(user_sub="auth0|owner")
+
+        result = serialize_structure(structure, include_user_sub=True)
+
+        assert result["user_sub"] == "auth0|owner"
 
 
 class TestSerializeJob:
@@ -173,7 +203,7 @@ class TestSerializeJob:
         assert result["runtime"] == "1:02:03"
         assert result["is_deleted"] is False
         assert result["is_public"] is True
-        assert result["structures"] == [serialize_structure(structure)]
+        assert result["structures"] == [serialize_structure(structure, include_tags=False)]
         assert sorted(result["tags"]) == ["demo", "organic"]
 
     def test_serializes_none_optional_job_fields(self, user_factory, job_factory):

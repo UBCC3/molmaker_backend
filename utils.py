@@ -4,14 +4,26 @@ from typing import Dict, Any
 from models import Job, Structure
 from fastapi import HTTPException, status
 
-def serialize_structure(s: Structure) -> Dict[str, Any]:
-    return {
+def serialize_structure(
+    s: Structure,
+    include_tags: bool = True,
+    include_user_sub: bool = False,
+) -> Dict[str, Any]:
+    result = {
         "structure_id": str(s.structure_id),
         "name": s.name,
+        "formula": s.formula,
         "location": s.location,
         "notes": s.notes,
         "uploaded_at": s.uploaded_at.isoformat(),
+        "group_id": str(s.group_id) if s.group_id else None,
+        "is_public": s.is_public,
     }
+    if include_user_sub:
+        result["user_sub"] = s.user_sub
+    if include_tags:
+        result["tags"] = [tag.name for tag in s.tags]
+    return result
 
 def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
     result = {
@@ -29,7 +41,7 @@ def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "group_id": str(job.group_id) if job.group_id else None,
         "slurm_id": job.slurm_id and str(job.slurm_id),
-        "structures": [serialize_structure(s) for s in job.structures],
+        "structures": [serialize_structure(s, include_tags=False) for s in job.structures],
         "tags": [t.name for t in job.tags],
         "runtime": str(job.runtime) if job.runtime else None,
         "is_deleted": job.is_deleted,

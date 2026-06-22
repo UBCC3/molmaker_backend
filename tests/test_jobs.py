@@ -6,6 +6,7 @@ import pytest
 
 from conftest import make_auth0_payload
 from models import Job, Tags
+from utils import serialize_structure
 
 
 def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
@@ -153,15 +154,7 @@ class TestJobsAPI:
         assert len(result) == 1
         assert result[0]["job_id"] == str(job.job_id)
         assert result[0]["tags"] == ["baseline"]
-        assert result[0]["structures"] == [
-            {
-                "structure_id": str(structure.structure_id),
-                "name": "Water",
-                "location": structure.location,
-                "notes": structure.notes,
-                "uploaded_at": structure.uploaded_at.isoformat(),
-            }
-        ]
+        assert result[0]["structures"] == [serialize_structure(structure, include_tags=False)]
 
     def test_get_job_by_id_returns_owned_job(self, client, group_factory, user_factory, job_factory):
         """
