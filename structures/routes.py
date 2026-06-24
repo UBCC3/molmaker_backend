@@ -1,5 +1,4 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, status
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse
 from asset_permissions import (
@@ -9,13 +8,14 @@ from asset_permissions import (
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Structure, Tags, User
+from models import Structure, Tags
 from dependencies import get_db
 from auth import verify_token
+from query_helpers import get_current_user_or_404, get_structure_or_404
 import os, uuid, shutil
 import boto3
 from pathlib import Path
-from utils import get_user_sub, serialize_structure
+from utils import commit_or_rollback, get_user_sub, serialize_structure
 from datetime import datetime, timezone
 from typing import List
 from ase.io import read
@@ -35,28 +35,6 @@ s3 = boto3.client(
     region_name=REGION,
     config=Config(signature_version="s3v4")
 )
-
-def get_structure_or_404(db: Session, structure_id: str):
-    try:
-        parsed_structure_id = uuid.UUID(str(structure_id))
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Structure not found.")
-
-    structure = db.query(Structure).filter(
-        Structure.structure_id == parsed_structure_id,
-        Structure.is_deleted == False
-    ).first()
-
-    if not structure:
-        raise HTTPException(status_code=404, detail="Structure not found.")
-    return structure
-
-def get_current_db_user_or_404(db: Session, current_user):
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return user
 
 @router.get("/")
 def get_all_structures(
@@ -163,7 +141,7 @@ def get_presigned_url_for_structure(
     Generate a presigned URL when the authenticated user can read the structure.
     """
     structure = get_structure_or_404(db, structure_id)
-    db_user = get_current_db_user_or_404(db, user)
+    db_user = get_current_user_or_404(db, user)
     if not can_read_asset(db_user, structure):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     key = f"structures/{structure.structure_id}.xyz"
@@ -194,7 +172,7 @@ def get_structure_by_id(
     """
     try:
         structure = get_structure_or_404(db, structure_id)
-        db_user = get_current_db_user_or_404(db, user)
+        db_user = get_current_user_or_404(db, user)
         if not can_read_asset(db_user, structure):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
@@ -228,20 +206,16 @@ def update_structure_visibility(
     :return: Updated structure visibility details.
     """
     structure = get_structure_or_404(db, structure_id)
-    db_user = get_current_db_user_or_404(db, user)
+    db_user = get_current_user_or_404(db, user)
     if not can_change_asset_visibility(db_user, structure):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     structure.is_public = is_public
-    try:
-        db.commit()
-        db.refresh(structure)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(
+        db,
+        refresh=structure,
+        integrity_error_detail="Database integrity error",
+    )
 
     return {
         "structure_id": structure.structure_id,
@@ -273,7 +247,7 @@ def update_structure(
     """
     try:
         structure = get_structure_or_404(db, structure_id)
-        db_user = get_current_db_user_or_404(db, user)
+        db_user = get_current_user_or_404(db, user)
         if not can_write_asset(db_user, structure):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         user_id = db_user.user_sub
@@ -295,13 +269,11 @@ def update_structure(
                 db.add(tag_obj)
             structure.tags.append(tag_obj)
 
-        # 5) commit & refresh
-        try:
-            db.commit()
-            db.refresh(structure)
-        except Exception as e:
-            db.rollback()
-            raise HTTPException(500, f"Could not update structure: {e}")
+        commit_or_rollback(
+            db,
+            refresh=structure,
+            error_detail=lambda error: f"Could not update structure: {error}",
+        )
         return {
             **serialize_structure(
                 structure,
@@ -328,20 +300,16 @@ def delete_structure(
     :return: Success message if deletion is successful.
     """
     structure = get_structure_or_404(db, structure_id)
-    db_user = get_current_db_user_or_404(db, user)
+    db_user = get_current_user_or_404(db, user)
     if not can_delete_asset(db_user, structure):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     # Mark as deleted
     structure.is_deleted = True
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(
+        db,
+        integrity_error_detail="Database integrity error",
+    )
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
@@ -372,7 +340,7 @@ def create_and_upload_structure(
     """
     structure_path = None
     try:
-        db_user = get_current_db_user_or_404(db, user)
+        db_user = get_current_user_or_404(db, user)
         user_id = db_user.user_sub
 
         # Create directory for the structure
@@ -423,17 +391,13 @@ def create_and_upload_structure(
                 db.add(tag)
             structure.tags.append(tag)
 
-        try:
-            db.commit()
-            db.refresh(structure)
-        except IntegrityError:
-            db.rollback()
-            shutil.rmtree(structure_path, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Structure with this name already exists.")
-        except Exception as e:
-            db.rollback()
-            shutil.rmtree(structure_path, ignore_errors=True)
-            raise HTTPException(status_code=500, detail=f"Could not create structure: {e}")
+        commit_or_rollback(
+            db,
+            refresh=structure,
+            integrity_error_detail="Structure with this name already exists.",
+            error_detail=lambda error: f"Could not create structure: {error}",
+            on_error=lambda: shutil.rmtree(structure_path, ignore_errors=True),
+        )
 
         return {
             **serialize_structure(

@@ -3,8 +3,87 @@ import uuid
 
 from fastapi import HTTPException
 import pytest
+from sqlalchemy.exc import IntegrityError
 
-from utils import clean_up_upload_cache, get_user_sub, serialize_job, serialize_structure
+from utils import (
+    clean_up_upload_cache,
+    commit_or_rollback,
+    get_user_sub,
+    serialize_job,
+    serialize_structure,
+)
+
+
+class TestCommitOrRollback:
+    def test_commits_and_refreshes_requested_object(self, mocker):
+        db = mocker.Mock()
+        instance = object()
+
+        commit_or_rollback(db, refresh=instance)
+
+        db.commit.assert_called_once_with()
+        db.refresh.assert_called_once_with(instance)
+        db.rollback.assert_not_called()
+
+    def test_runs_staging_operation_inside_protected_block(self, mocker):
+        db = mocker.Mock()
+        stage = mocker.Mock()
+
+        commit_or_rollback(db, before_commit=stage)
+
+        stage.assert_called_once_with()
+        db.commit.assert_called_once_with()
+
+    def test_rolls_back_when_staging_operation_fails(self, mocker):
+        db = mocker.Mock()
+        stage = mocker.Mock(side_effect=RuntimeError("add failed"))
+
+        with pytest.raises(HTTPException) as error:
+            commit_or_rollback(db, before_commit=stage)
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "add failed"
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+
+    def test_rolls_back_and_maps_integrity_error(self, mocker):
+        db = mocker.Mock()
+        db.commit.side_effect = IntegrityError("statement", {}, RuntimeError("duplicate"))
+
+        with pytest.raises(HTTPException) as error:
+            commit_or_rollback(
+                db,
+                integrity_error_detail="Duplicate record",
+            )
+
+        assert error.value.status_code == 400
+        assert error.value.detail == "Duplicate record"
+        db.rollback.assert_called_once_with()
+
+    def test_rolls_back_with_custom_general_error_detail(self, mocker):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("commit failed")
+
+        with pytest.raises(HTTPException) as error:
+            commit_or_rollback(
+                db,
+                error_detail=lambda exception: f"Could not save: {exception}",
+            )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save: commit failed"
+        db.rollback.assert_called_once_with()
+
+    def test_runs_cleanup_after_rollback(self, mocker):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("commit failed")
+        cleanup = mocker.Mock()
+
+        with pytest.raises(HTTPException):
+            commit_or_rollback(db, on_error=cleanup)
+
+        db.rollback.assert_called_once_with()
+        cleanup.assert_called_once_with()
 
 
 class TestGetUserSub:

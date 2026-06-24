@@ -16,7 +16,6 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from asset_permissions import (
     can_change_asset_visibility,
@@ -27,7 +26,8 @@ from asset_permissions import (
 from models import Job, Structure, Tags, User
 from dependencies import get_db
 from auth import verify_token
-from utils import serialize_job, get_user_sub
+from query_helpers import get_current_user_or_404, get_job_or_404
+from utils import commit_or_rollback, serialize_job, get_user_sub
 from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -42,24 +42,6 @@ def has_group_admin_permission(db: Session, user, target_user_sub: str):
         target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
         return target_user and target_user.group_id == user.get("group_id")
     return False
-
-def get_job_or_404(db: Session, job_id: str):
-    try:
-        parsed_job_id = uuid.UUID(str(job_id))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-
-    job = db.query(Job).filter_by(job_id=parsed_job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return job
-
-def get_current_db_user_or_404(db: Session, current_user):
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return user
 
 @router.get("/")
 def get_all_jobs(
@@ -102,7 +84,7 @@ def get_job_by_id(
     :return: Serialized job details.
     """
     job = get_job_or_404(db, job_id)
-    user = get_current_db_user_or_404(db, current_user)
+    user = get_current_user_or_404(db, current_user)
 
     if not can_read_asset(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
@@ -125,19 +107,16 @@ def delete_job(
     :return: No content response (204).
     """
     job = get_job_or_404(db, job_id)
-    user = get_current_db_user_or_404(db, current_user)
+    user = get_current_user_or_404(db, current_user)
 
     if not can_delete_asset(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     job.is_deleted = True
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
+    commit_or_rollback(
+        db,
+        integrity_error_detail="Database integrity error",
+    )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -195,7 +174,7 @@ def create_job(
             detail="Invalid file format. Only .xyz allowed.",
         )
 
-    user = get_current_db_user_or_404(db, current_user)
+    user = get_current_user_or_404(db, current_user)
     user_sub = user.user_sub
 
     job_path = os.path.join(JOB_DIR, job_id_str)
@@ -256,8 +235,11 @@ def create_job(
                 )
             new_job.structures.append(structure)
 
-        db.commit()
-        db.refresh(new_job)
+        commit_or_rollback(
+            db,
+            refresh=new_job,
+            error_detail="Failed to create job",
+        )
 
     except HTTPException:
         db.rollback()
@@ -296,25 +278,17 @@ def update_job_visibility(
     :return: JSONResponse with updated job details and status code 200 OK.
     """
     job = get_job_or_404(db, job_id)
-    user = get_current_db_user_or_404(db, current_user)
+    user = get_current_user_or_404(db, current_user)
 
     if not can_change_asset_visibility(user, job):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
     job.is_public = is_public
-    try:
-        db.commit()
-        db.refresh(job)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
+    commit_or_rollback(
+        db,
+        refresh=job,
+        integrity_error_detail="Database integrity error",
+    )
 
     return {
         "job_id": job.job_id,
@@ -399,19 +373,11 @@ def update_job(
                     except subprocess.TimeoutExpired:
                         job.is_uploaded = False
 
-    try:
-        db.commit()
-        db.refresh(job)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
+    commit_or_rollback(
+        db,
+        refresh=job,
+        integrity_error_detail="Database integrity error",
+    )
 
     return {
         "job_id": job_id,

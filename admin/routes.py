@@ -7,7 +7,6 @@ from fastapi import (
     HTTPException,
     Depends,
 )
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi import status
 
@@ -15,7 +14,7 @@ from models import Job, User, Group
 from dependencies import get_db
 from auth import verify_token
 
-from utils import serialize_job, get_user_sub
+from utils import commit_or_rollback, serialize_job, get_user_sub
 
 router = APIRouter(prefix="/admin", tags=["jobs"])
 JOB_DIR = "./results"
@@ -155,20 +154,16 @@ def create_group(
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    try:
-        new_group = Group(name=name)
-        db.add(new_group)
-        db.commit()
-        return {
-            "group_id": str(new_group.group_id),
-            "name": new_group.name
-        }
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group already exists")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    new_group = Group(name=name)
+    commit_or_rollback(
+        db,
+        before_commit=lambda: db.add(new_group),
+        integrity_error_detail="Group already exists",
+    )
+    return {
+        "group_id": str(new_group.group_id),
+        "name": new_group.name
+    }
 
 @router.put("/users/{selected_user_sub}")
 def update_user_role(
@@ -214,17 +209,13 @@ def update_user_role(
     else:
         selected_user.group_id = None
 
-    try:
-        selected_user.role = role
-        selected_user.member_since = datetime.now(timezone.utc)
-        db.commit()
-        return {
-            "user_sub": selected_user.user_sub,
-            "email": selected_user.email,
-            "role": selected_user.role,
-            "group_id": str(selected_user.group_id) if selected_user.group_id else None,
-            "member_since": selected_user.member_since.isoformat()
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    selected_user.role = role
+    selected_user.member_since = datetime.now(timezone.utc)
+    commit_or_rollback(db)
+    return {
+        "user_sub": selected_user.user_sub,
+        "email": selected_user.email,
+        "role": selected_user.role,
+        "group_id": str(selected_user.group_id) if selected_user.group_id else None,
+        "member_since": selected_user.member_since.isoformat()
+    }

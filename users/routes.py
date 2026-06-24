@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from models import User, Job, Structure, Tags
 from dependencies import get_db
 from auth import verify_token
-from utils import get_user_sub
+from utils import commit_or_rollback, get_user_sub
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -29,9 +29,11 @@ def read_or_create_me(
             role="member",
             group_id=None,
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        commit_or_rollback(
+            db,
+            before_commit=lambda: db.add(user),
+            refresh=user,
+        )
 
     return user
 
@@ -127,10 +129,9 @@ def delete_user(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Auth0 deletion error: {str(e)}")
 
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete local user data: {e}")
+    commit_or_rollback(
+        db,
+        error_detail=lambda error: f"Failed to delete local user data: {error}",
+    )
 
     return {"detail": "User and all associated data deleted successfully"}

@@ -12,7 +12,8 @@ from models import Request, User, Group
 from dependencies import get_db
 from auth import verify_token
 
-from utils import get_user_sub
+from query_helpers import get_group_or_404
+from utils import commit_or_rollback, get_user_sub
 
 router = APIRouter(prefix="/request", tags=["request"])
 
@@ -55,13 +56,6 @@ def get_request_for_sender_or_404(db: Session, request_id: str, sender_sub: str)
     if not request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     return request
-
-def get_group_or_404(db: Session, group_id: str):
-    parsed_group_id = parse_uuid_or_404(group_id, "Group not found")
-    group = db.query(Group).filter_by(group_id=parsed_group_id).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return group
 
 @router.get("/{receiver_sub}")
 def get_requests(
@@ -159,13 +153,11 @@ def send_request(
         status='pending'
     )
 
-    try:
-        db.add(new_request)
-        db.commit()
-        db.refresh(new_request)
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(
+        db,
+        before_commit=lambda: db.add(new_request),
+        refresh=new_request,
+    )
 
     return serialize_request(new_request)
 
@@ -204,11 +196,7 @@ def approve_request(
     sender.group_id = receiver.group_id
 
     request.status = 'approved'
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(db)
 
     return {"message": "Request approved successfully"}
 
@@ -228,11 +216,7 @@ def reject_request(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
 
     request.status = 'rejected'
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(db)
 
     return {"message": "Request rejected successfully"}
 
@@ -249,10 +233,6 @@ def delete_request(
     request = get_request_for_sender_or_404(db, request_id, user_sub)
 
     db.delete(request)
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    commit_or_rollback(db)
 
     return {"message": "Request deleted successfully"}

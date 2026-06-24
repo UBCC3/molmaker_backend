@@ -250,6 +250,20 @@ class TestJobsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
 
+    def test_get_job_by_id_returns_404_for_deleted_job(
+        self, client, user_factory, job_factory
+    ):
+        """
+        Soft-deleted jobs should not be accessible through job detail routes.
+        """
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub="auth0|testuser", is_deleted=True)
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+
     @pytest.mark.parametrize(
         "method, path, data",
         [

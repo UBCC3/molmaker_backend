@@ -1,13 +1,10 @@
-from datetime import datetime
 from typing import Optional
-import uuid
 from fastapi import (
     APIRouter,
     Form,
     HTTPException,
     Depends,
 )
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi import status
 
@@ -15,37 +12,22 @@ from models import Job, Structure, User, Group
 from dependencies import get_db
 from auth import verify_token
 
-from utils import serialize_job, serialize_structure, get_user_sub
+from query_helpers import (
+    get_current_user_or_403_if_in_group,
+    get_current_user_or_404,
+    get_group_or_404,
+)
+from utils import commit_or_rollback, serialize_job, serialize_structure
 
 router = APIRouter(prefix="/group", tags=["jobs"])
 JOB_DIR = "./results"
 
-def get_group_or_404(db: Session, group_id: str):
-    try:
-        parsed_group_id = uuid.UUID(str(group_id))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-    group = db.query(Group).filter_by(group_id=parsed_group_id).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return group
-
-def can_update_group(user: User, group: Group):
+def can_update_group(user: User, group: Group) -> bool:
     if user.role == "admin":
         return True
     return user.role == "group_admin" and user.group_id == group.group_id
 
-def get_current_group_user(db: Session, current_user):
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if not user.group_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
-    return user
-
-def can_view_group_owner_metadata(user: User):
+def can_view_group_owner_metadata(user: User) -> bool:
     return user.role in {"admin", "group_admin"}
 
 @router.get("/jobs")
@@ -64,7 +46,7 @@ def get_all_jobs(
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
-    user = get_current_group_user(db, current_user)
+    user = get_current_user_or_403_if_in_group(db, current_user)
 
     try:
         query = (
@@ -109,7 +91,7 @@ def get_all_structures(
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized structure details.
     """
-    user = get_current_group_user(db, current_user)
+    user = get_current_user_or_403_if_in_group(db, current_user)
 
     try:
         query = (
@@ -148,12 +130,7 @@ def get_all_users(
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if not user.group_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
+    user = get_current_user_or_403_if_in_group(db, current_user)
 
     try:
         users_in_group = db.query(User).filter_by(group_id=user.group_id).all()
@@ -176,10 +153,7 @@ def update_group(
     :param current_user: Current user dependency, verified via token.
     :return: Updated group details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_current_user_or_404(db, current_user)
     if user.role not in {"admin", "group_admin"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
@@ -190,16 +164,12 @@ def update_group(
     if not group_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
 
-    try:
-        group.name = group_name
-        db.commit()
-        return {"group_id": str(group.group_id), "name": group.name}
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name already exists")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    group.name = group_name
+    commit_or_rollback(
+        db,
+        integrity_error_detail="Group name already exists",
+    )
+    return {"group_id": str(group.group_id), "name": group.name}
 
 @router.get("/{group_id}")
 def get_group(
@@ -214,10 +184,7 @@ def get_group(
     :param current_user: Current user dependency, verified via token.
     :return: Group details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    get_current_user_or_404(db, current_user)
 
     group = get_group_or_404(db, group_id)
 
@@ -236,10 +203,7 @@ def delete_group(
     :param current_user: Current user dependency, verified via token.
     :return: Confirmation message.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_current_user_or_404(db, current_user)
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
@@ -251,10 +215,6 @@ def delete_group(
         user.group_id = None
         user.role = "member"
 
-    try:
-        db.delete(group)
-        db.commit()
-        return {"detail": "Group deleted successfully"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    db.delete(group)
+    commit_or_rollback(db)
+    return {"detail": "Group deleted successfully"}
