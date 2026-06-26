@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from models import User, Job, Structure, Tags
 from dependencies import get_db
 from auth import verify_token
+from permissions import can_delete_user
 from utils import commit_or_rollback, get_user_sub
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -81,7 +82,7 @@ def delete_user(
     # 1. Check permissions (must be admin)
     admin_sub = get_user_sub(current_user)
     admin_user = db.query(User).filter_by(user_sub=admin_sub).first()
-    if not admin_user or admin_user.role != "admin":
+    if not admin_user or not can_delete_user(admin_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     # 2. Find user
@@ -93,25 +94,21 @@ def delete_user(
     if not token:
         raise HTTPException(status_code=500, detail="Failed to obtain Auth0 management token")
 
-    # 3. Delete jobs
-    jobs = db.query(Job).filter_by(user_sub=user_sub).all()
-    for job in jobs:
-        db.delete(job)
+    # 3. Delete assets
+    for asset_model in (Job, Structure):
+        assets = db.query(asset_model).filter_by(user_sub=user_sub).all()
+        for asset in assets:
+            db.delete(asset)
 
-    # 4. Delete structures
-    structures = db.query(Structure).filter_by(user_sub=user_sub).all()
-    for structure in structures:
-        db.delete(structure)
-
-    # 5. Delete tags
+    # 4. Delete tags
     tags = db.query(Tags).filter_by(user_sub=user_sub).all()
     for tag in tags:
         db.delete(tag)
 
-    # 6. Delete user
+    # 5. Delete user
     db.delete(user)
 
-    # 7. Delete user from Auth0
+    # 6. Delete user from Auth0
     try:
         print(f"Deleting user {user_sub} from Auth0")
         auth0_domain = os.getenv('AUTH0_DOMAIN')

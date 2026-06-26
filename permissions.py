@@ -1,10 +1,9 @@
-from typing import Union
+from sqlalchemy.orm import Session
 
-from models import Job, Structure, User
+from models import Asset, Group, User
 
 
-Asset = Union[Job, Structure]
-
+# Shared predicates
 
 def _same_id(left: object, right: object) -> bool:
     return left is not None and right is not None and str(left) == str(right)
@@ -14,8 +13,54 @@ def is_admin(user: User) -> bool:
     return user.role == "admin"
 
 
+def is_group_admin(user: User) -> bool:
+    return user.role == "group_admin"
+
+
+def is_admin_or_group_admin(user: User) -> bool:
+    return is_admin(user) or is_group_admin(user)
+
+
+# Admin/user permissions
+
+def has_admin_permission(user: User) -> bool:
+    return is_admin(user)
+
+
+def has_group_admin_permission(db: Session, user: User, target_user_sub: str) -> bool:
+    if not is_group_admin(user) or not user.group_id:
+        return False
+
+    target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
+    return bool(target_user and _same_id(target_user.group_id, user.group_id))
+
+
+def can_delete_user(user: User) -> bool:
+    return is_admin(user)
+
+
+# Group permissions
+
+def can_update_group(user: User, group: Group) -> bool:
+    return is_admin(user) or is_group_admin_for_group(user, group.group_id)
+
+
+def can_delete_group(user: User) -> bool:
+    return is_admin(user)
+
+
+def can_view_group_owner_metadata(user: User) -> bool:
+    return is_admin_or_group_admin(user)
+
+
+def can_access_user_requests(requesting_user_sub: str, target_user_sub: str) -> bool:
+    return _same_id(requesting_user_sub, target_user_sub)
+
+
+# Asset predicates
+
 def is_group_admin_for_group(user: User, group_id: object) -> bool:
-    return user.role == "group_admin" and _same_id(user.group_id, group_id)
+    return is_group_admin(user) and _same_id(user.group_id, group_id)
 
 
 def is_user_owner(user: User, asset: Asset) -> bool:
@@ -29,6 +74,8 @@ def is_group_member_for_asset(user: User, asset: Asset) -> bool:
 def is_group_asset(asset: Asset) -> bool:
     return asset.group_id is not None
 
+
+# Asset permissions
 
 def can_read_asset(user: User, asset: Asset) -> bool:
     if is_admin(user) or is_user_owner(user, asset):

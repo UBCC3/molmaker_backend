@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 import storage
-from s3.routes import verify_job_access
+from conftest import make_auth0_payload
 
 
 def _url(prefix, key):
@@ -188,97 +188,146 @@ class TestPresignZipDownloadUrl:
         assert mock_get_urls == [archive_key]
 
 
-class TestVerifyJobAccess:
-    def test_owner_can_access_archive(self, db, group_factory, user_factory, job_factory):
+class TestDownloadJobArchive:
+    @pytest.fixture(autouse=True)
+    def mock_archive_url(self, monkeypatch):
+        monkeypatch.setattr(
+            "s3.routes.presign_zip_download_url",
+            lambda job_id: f"https://example.test/{job_id}.zip",
+        )
+
+    def test_owner_can_access_archive(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
         """
         Job owners can access their own archive.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        job = job_factory(user_sub=owner.user_sub)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id)
+        set_auth_user(make_auth0_payload(owner.user_sub))
 
-        assert verify_job_access(db, owner.user_sub, job.job_id) is True
+        response = client.get(f"/storage/download/archive/{job.job_id}")
 
-    def test_admin_can_access_any_archive(self, db, group_factory, user_factory, job_factory):
+        assert response.status_code == 200
+        assert response.json() == {
+            "job_id": str(job.job_id),
+            "url": f"https://example.test/{job.job_id}.zip",
+        }
+
+    def test_admin_can_access_any_archive(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
         """
         Admin users can access archives owned by other users.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        admin = user_factory(group=group, user_sub="auth0|admin", role="admin")
-        job = job_factory(user_sub=owner.user_sub)
+        admin = user_factory(user_sub="auth0|admin", role="admin")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id)
+        set_auth_user(make_auth0_payload(admin.user_sub))
 
-        assert verify_job_access(db, admin.user_sub, job.job_id) is True
+        response = client.get(f"/storage/download/archive/{job.job_id}")
 
-    def test_group_admin_can_access_same_group_archive(
-        self, db, group_factory, user_factory, job_factory
+        assert response.status_code == 200
+
+    def test_group_admin_uses_job_group_not_owner_current_group(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
     ):
         """
-        Group admins can access archives owned by users in their group.
+        Group admins can access archives persisted to their group even when the
+        direct owner later belongs to another group.
         """
-        group = group_factory()
-        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset_group = group_factory()
+        owner_current_group = group_factory()
+        owner = user_factory(group=owner_current_group, user_sub="auth0|owner")
         group_admin = user_factory(
-            group=group,
+            group=asset_group,
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub)
-
-        assert verify_job_access(db, group_admin.user_sub, job.job_id) is True
-
-    def test_group_admin_cannot_access_other_group_archive(
-        self, db, group_factory, user_factory, job_factory
-    ):
-        """
-        Group admins cannot access archives owned by users in a different group.
-        """
-        owner_group = group_factory()
-        admin_group = group_factory()
-        owner = user_factory(group=owner_group, user_sub="auth0|owner")
-        group_admin = user_factory(
-            group=admin_group,
-            user_sub="auth0|group-admin",
-            role="group_admin",
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=asset_group.group_id,
         )
-        job = job_factory(user_sub=owner.user_sub)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
 
-        assert verify_job_access(db, group_admin.user_sub, job.job_id) is False
+        response = client.get(f"/storage/download/archive/{job.job_id}")
 
-    def test_member_cannot_access_another_users_archive(
-        self, db, group_factory, user_factory, job_factory
+        assert response.status_code == 200
+
+    def test_member_can_access_public_same_group_archive(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
     ):
         """
-        Normal members cannot access archives owned by another user.
+        Normal members can download archives for public jobs in their group.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
         member = user_factory(group=group, user_sub="auth0|member")
-        job = job_factory(user_sub=owner.user_sub)
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=True,
+        )
+        set_auth_user(make_auth0_payload(member.user_sub))
 
-        assert verify_job_access(db, member.user_sub, job.job_id) is False
+        response = client.get(f"/storage/download/archive/{job.job_id}")
 
-    def test_missing_job_denies_access(self, db):
-        """
-        Missing jobs should deny archive access.
-        """
-        assert verify_job_access(db, "auth0|owner", uuid.uuid4()) is False
+        assert response.status_code == 200
 
-    def test_missing_requesting_user_denies_non_owner_access(
-        self, db, group_factory, user_factory, job_factory
+    def test_member_cannot_access_private_job_owned_by_another_user(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
     ):
         """
-        Missing users cannot access archives they do not own.
+        Normal members cannot download private jobs owned by another user.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        job = job_factory(user_sub=owner.user_sub)
+        member = user_factory(group=group, user_sub="auth0|member")
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=False,
+        )
+        set_auth_user(make_auth0_payload(member.user_sub))
 
-        assert verify_job_access(db, "auth0|missing-user", job.job_id) is False
+        response = client.get(f"/storage/download/archive/{job.job_id}")
 
-    def test_matching_owner_sub_allows_access(self, db, user_factory, job_factory):
-        """Job owners can access their own archives."""
-        owner = user_factory(user_sub="auth0|owner")
-        job = job_factory(user_sub=owner.user_sub)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
 
-        assert verify_job_access(db, owner.user_sub, job.job_id) is True
+    def test_missing_job_returns_404(self, client, user_factory):
+        """
+        Missing jobs return the standard asset not-found response.
+        """
+        user_factory(user_sub="auth0|testuser")
+        response = client.get(f"/storage/download/archive/{uuid.uuid4()}")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"

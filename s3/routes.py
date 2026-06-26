@@ -1,17 +1,18 @@
 from fastapi import (
-    HTTPException, 
     APIRouter,
     Depends,
-    status
+    HTTPException,
 )
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from permissions import can_read_asset
+from asset_service import get_asset_or_404, require_asset_permission
 from auth import verify_token
 from dependencies import get_db
-from models import Job, User
+from models import Job
+from query_helpers import get_current_user_or_404
 from storage import construct_fetch_script, presign_zip_download_url
-from utils import get_user_sub
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 
@@ -41,30 +42,21 @@ def fetch_job_files(job_id: str, calculation: str, status: str):
     
 @router.get("/download/archive/{job_id}", response_model=ZipDownloadResponse)
 def download_job_zip(job_id: str, db: Session = Depends(get_db), current_user = Depends(verify_token)):
+    """
+    Generate an archive download URL when the authenticated user can read the job.
+    Allows admins, direct owners, group admins for the job's group_id, and
+    current group members when the job is public.
+    :param job_id: ID of the job archive to download.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Presigned archive download URL.
+    """
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_current_user_or_404(db, current_user)
+    require_asset_permission(user, job, can_read_asset)
+
     try:
-        user_sub = get_user_sub(current_user)
-        if not verify_job_access(db, user_sub, job_id):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this job")
         zip_url: str = presign_zip_download_url(job_id)
         return ZipDownloadResponse(job_id=job_id, url=zip_url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch files from S3: {e}")
-
-def verify_job_access(db: Session, user_sub: str, job_id: str) -> bool:
-    job = db.query(Job).filter_by(job_id=job_id).first()
-    if not job:
-        return False
-    # Check if the user is the owner of the job
-    if job.user_sub == user_sub:
-        return True
-    # Check if the user is an admin
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if user and user.role == "admin":
-        return True
-    # Check if the user is a group admin and the job owner is in the same group
-    if user and user.role == "group_admin" and user.group_id:
-        job_owner = db.query(User).filter_by(user_sub=job.user_sub).first()
-        if job_owner and job_owner.group_id == user.group_id:
-            return True
-
-    return False

@@ -1,11 +1,25 @@
 # models.py
-from sqlalchemy import CheckConstraint, Column, Index, String, DateTime, Text, Table, ForeignKey, Integer, Interval, Boolean
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Interval,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declared_attr, relationship, synonym
 
 from database import Base
 import uuid
 from datetime import datetime, timezone
+from typing import ClassVar
 
 jobs_structures = Table(
     'jobs_structures',
@@ -58,15 +72,73 @@ jobs_tags = Table(
     ),
 )
 
-class Job(Base):
+
+class Asset(Base):
+    __abstract__ = True
+
+    api_id_field: ClassVar[str]
+    api_created_at_field: ClassVar[str]
+    not_found_detail: ClassVar[str]
+
+    @declared_attr
+    def id(cls):
+        return Column(
+            cls.__asset_id_column__,
+            UUID(as_uuid=True),
+            primary_key=True,
+            default=uuid.uuid4,
+        )
+
+    user_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
+    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    is_deleted = Column(Boolean, nullable=False)
+    is_public = Column(Boolean, nullable=False, default=False)
+
+    @declared_attr
+    def created_at(cls):
+        return Column(
+            cls.__created_at_column__,
+            DateTime(timezone=True),
+            default=datetime.now(timezone.utc),
+        )
+
+    @declared_attr
+    def user(cls):
+        return relationship("User", back_populates=cls.__user_back_populates__)
+
+    @declared_attr
+    def group(cls):
+        return relationship("Group", back_populates=cls.__group_back_populates__)
+
+    @declared_attr
+    def tags(cls):
+        return relationship(
+            "Tags",
+            secondary=cls.__tags_secondary__,
+            back_populates=cls.__tags_back_populates__,
+            cascade="all, delete",
+        )
+
+
+class Job(Asset):
     __tablename__ = "jobs"
+    __asset_id_column__ = "job_id"
+    __created_at_column__ = "submitted_at"
+    __user_back_populates__ = "jobs"
+    __group_back_populates__ = "jobs"
+    __tags_secondary__ = jobs_tags
+    __tags_back_populates__ = "jobs"
+    api_id_field = "job_id"
+    api_created_at_field = "submitted_at"
+    not_found_detail = "Job not found"
     __table_args__ = (
         CheckConstraint("user_sub IS NOT NULL OR group_id IS NOT NULL", name="ck_jobs_owner_present"),
         Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
         Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
     )
 
-    job_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = synonym("id")
+    submitted_at = synonym("created_at")
     job_name = Column(Text, nullable=True)
     job_notes = Column(Text, nullable=True)
     filename = Column(Text, nullable=False)
@@ -76,14 +148,9 @@ class Job(Base):
     basis_set = Column(String, nullable=False)
     charge = Column(Integer, nullable=False)
     multiplicity = Column(Integer, nullable=False)
-    submitted_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
     completed_at = Column(DateTime(timezone=True), nullable=True)
-    user_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
     slurm_id = Column(String, nullable=True)
     runtime = Column(Interval, nullable=True)
-    is_deleted = Column(Boolean, nullable=False)
-    is_public = Column(Boolean, nullable=False, default=False)
     is_uploaded = Column(Boolean, nullable=False)
 
     structures = relationship(
@@ -93,40 +160,29 @@ class Job(Base):
         cascade="all, delete"
     )
 
-    tags = relationship(
-        'Tags',
-        secondary=jobs_tags,
-        back_populates='jobs',
-        cascade="all, delete"
-    )
-
-    user = relationship(
-        "User",
-        back_populates="jobs"
-    )
-    group = relationship(
-        "Group",
-        back_populates="jobs"
-    )
-
-class Structure(Base):
+class Structure(Asset):
     __tablename__ = "structures"
+    __asset_id_column__ = "structure_id"
+    __created_at_column__ = "uploaded_at"
+    __user_back_populates__ = "structures"
+    __group_back_populates__ = "structures"
+    __tags_secondary__ = structures_tags
+    __tags_back_populates__ = "structures"
+    api_id_field = "structure_id"
+    api_created_at_field = "uploaded_at"
+    not_found_detail = "Structure not found."
     __table_args__ = (
         CheckConstraint("user_sub IS NOT NULL OR group_id IS NOT NULL", name="ck_structures_owner_present"),
         Index("idx_structures_user_active_uploaded", "user_sub", "is_deleted", "uploaded_at"),
         Index("idx_structures_group_active_uploaded", "group_id", "is_deleted", "uploaded_at"),
     )
 
-    structure_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    structure_id = synonym("id")
+    uploaded_at = synonym("created_at")
     name = Column(Text, nullable=False)
     formula = Column(Text, nullable=False)
     location = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
-    uploaded_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
-    is_deleted = Column(Boolean, nullable=False)
-    is_public = Column(Boolean, nullable=False, default=False)
 
     jobs = relationship(
         'Job',
@@ -134,24 +190,11 @@ class Structure(Base):
         back_populates='structures'
     )
 
-    tags = relationship(
-        'Tags',
-        secondary=structures_tags,
-        back_populates='structures',
-        cascade="all, delete"
-    )
-
-    user = relationship(
-        "User",
-        back_populates="structures"
-    )
-    group = relationship(
-        "Group",
-        back_populates="structures"
-    )
-
 class Tags(Base):
     __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("user_sub", "name", name="uq_tags_user_sub_name"),
+    )
 
     tag_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_sub = Column(String, nullable=False)

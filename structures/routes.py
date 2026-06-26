@@ -1,9 +1,15 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse
-from asset_permissions import (
-    can_change_asset_visibility,
-    can_delete_asset,
+from asset_service import (
+    get_asset_or_404,
+    list_user_assets,
+    require_asset_permission,
+    set_asset_tags,
+    soft_delete_asset,
+    update_asset_visibility,
+)
+from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
     can_write_asset,
@@ -11,7 +17,7 @@ from asset_permissions import (
 from models import Structure, Tags
 from dependencies import get_db
 from auth import verify_token
-from query_helpers import get_current_user_or_404, get_structure_or_404
+from query_helpers import get_current_user_or_404
 import os, uuid, shutil
 import boto3
 from pathlib import Path
@@ -51,10 +57,7 @@ def get_all_structures(
     """
     try:
         user_id = get_user_sub(user)
-        structures = (db.query(Structure)
-                .filter(Structure.user_sub == user_id, Structure.is_deleted == False)
-                .order_by(Structure.uploaded_at.desc())
-                .all())
+        structures = list_user_assets(db, Structure, user_id)
 
         return [
             {
@@ -63,7 +66,7 @@ def get_all_structures(
                     "get_object",
                     Params={
                         "Bucket": BUCKET_NAME,
-                        "Key": f"structures/{s.structure_id}.png"
+                        "Key": f"structures/{s.id}.png"
                     },
                     ExpiresIn=3600
                 )
@@ -140,11 +143,10 @@ def get_presigned_url_for_structure(
     """
     Generate a presigned URL when the authenticated user can read the structure.
     """
-    structure = get_structure_or_404(db, structure_id)
+    structure = get_asset_or_404(db, Structure, structure_id)
     db_user = get_current_user_or_404(db, user)
-    if not can_read_asset(db_user, structure):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-    key = f"structures/{structure.structure_id}.xyz"
+    require_asset_permission(db_user, structure, can_read_asset)
+    key = f"structures/{structure.id}.xyz"
     try:
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
@@ -171,10 +173,9 @@ def get_structure_by_id(
     :return: The structure object if found, otherwise raises HTTPException.
     """
     try:
-        structure = get_structure_or_404(db, structure_id)
+        structure = get_asset_or_404(db, Structure, structure_id)
         db_user = get_current_user_or_404(db, user)
-        if not can_read_asset(db_user, structure):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+        require_asset_permission(db_user, structure, can_read_asset)
 
         return {
             **serialize_structure(
@@ -205,20 +206,17 @@ def update_structure_visibility(
     :param db: Database session dependency.
     :return: Updated structure visibility details.
     """
-    structure = get_structure_or_404(db, structure_id)
+    structure = get_asset_or_404(db, Structure, structure_id)
     db_user = get_current_user_or_404(db, user)
-    if not can_change_asset_visibility(db_user, structure):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    structure.is_public = is_public
-    commit_or_rollback(
+    structure = update_asset_visibility(
         db,
-        refresh=structure,
-        integrity_error_detail="Database integrity error",
+        db_user,
+        structure,
+        is_public,
     )
 
     return {
-        "structure_id": structure.structure_id,
+        "structure_id": structure.id,
         "is_public": structure.is_public,
         "message": "Structure visibility updated successfully.",
     }
@@ -246,28 +244,21 @@ def update_structure(
     :return: The updated structure object.
     """
     try:
-        structure = get_structure_or_404(db, structure_id)
+        structure = get_asset_or_404(db, Structure, structure_id)
         db_user = get_current_user_or_404(db, user)
-        if not can_write_asset(db_user, structure):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        user_id = db_user.user_sub
+        require_asset_permission(db_user, structure, can_write_asset)
 
         structure.name = name
         structure.formula = formula
         structure.notes = notes
 
-        structure.tags.clear()
-
-        for tag_name in tags:
-            tag_obj = (
-                db.query(Tags)
-                .filter_by(user_sub=user_id, name=tag_name)
-                .one_or_none()
-            )
-            if not tag_obj:
-                tag_obj = Tags(tag_id=uuid.uuid4(), user_sub=user_id, name=tag_name)
-                db.add(tag_obj)
-            structure.tags.append(tag_obj)
+        set_asset_tags(
+            db,
+            structure,
+            db_user.user_sub,
+            tags,
+            replace=True,
+        )
 
         commit_or_rollback(
             db,
@@ -299,17 +290,9 @@ def delete_structure(
     :param db: Database session dependency.
     :return: Success message if deletion is successful.
     """
-    structure = get_structure_or_404(db, structure_id)
+    structure = get_asset_or_404(db, Structure, structure_id)
     db_user = get_current_user_or_404(db, user)
-    if not can_delete_asset(db_user, structure):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    # Mark as deleted
-    structure.is_deleted = True
-    commit_or_rollback(
-        db,
-        integrity_error_detail="Database integrity error",
-    )
+    soft_delete_asset(db, db_user, structure)
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
@@ -380,16 +363,7 @@ def create_and_upload_structure(
         )
         db.add(structure)
 
-        for tag_name in tags:
-            tag = (
-                db.query(Tags)
-                .filter_by(user_sub=user_id, name=tag_name)
-                .one_or_none()
-            )
-            if not tag:
-                tag = Tags(user_sub=user_id, name=tag_name)
-                db.add(tag)
-            structure.tags.append(tag)
+        set_asset_tags(db, structure, user_id, tags)
 
         commit_or_rollback(
             db,

@@ -341,6 +341,14 @@ ALTER TABLE ONLY public.tags
 
 
 --
+-- Name: tags uq_tags_user_sub_name; Type: CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.tags
+    ADD CONSTRAINT uq_tags_user_sub_name UNIQUE (user_sub, name);
+
+
+--
 -- Name: users users_email_key; Type: CONSTRAINT; Schema: public
 --
 

@@ -1,6 +1,6 @@
 import pytest
 
-from asset_permissions import (
+from permissions import (
     can_change_asset_visibility,
     can_delete_asset,
     can_read_asset,

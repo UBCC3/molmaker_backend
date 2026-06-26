@@ -98,4 +98,89 @@ ON public.requests(sender_sub, status);
 CREATE INDEX IF NOT EXISTS idx_requests_group_status_type
 ON public.requests(group_id, status, request_type);
 
+WITH duplicate_tags AS (
+    SELECT
+        tag_id,
+        first_value(tag_id) OVER (
+            PARTITION BY user_sub, name
+            ORDER BY tag_id::text
+        ) AS canonical_tag_id
+    FROM public.tags
+)
+INSERT INTO public.jobs_tags (job_id, tag_id)
+SELECT jt.job_id, dt.canonical_tag_id
+FROM public.jobs_tags jt
+JOIN duplicate_tags dt ON jt.tag_id = dt.tag_id
+WHERE dt.tag_id <> dt.canonical_tag_id
+ON CONFLICT DO NOTHING;
+
+WITH duplicate_tags AS (
+    SELECT
+        tag_id,
+        first_value(tag_id) OVER (
+            PARTITION BY user_sub, name
+            ORDER BY tag_id::text
+        ) AS canonical_tag_id
+    FROM public.tags
+)
+DELETE FROM public.jobs_tags jt
+USING duplicate_tags dt
+WHERE jt.tag_id = dt.tag_id
+  AND dt.tag_id <> dt.canonical_tag_id;
+
+WITH duplicate_tags AS (
+    SELECT
+        tag_id,
+        first_value(tag_id) OVER (
+            PARTITION BY user_sub, name
+            ORDER BY tag_id::text
+        ) AS canonical_tag_id
+    FROM public.tags
+)
+INSERT INTO public.structures_tags (structure_id, tag_id)
+SELECT st.structure_id, dt.canonical_tag_id
+FROM public.structures_tags st
+JOIN duplicate_tags dt ON st.tag_id = dt.tag_id
+WHERE dt.tag_id <> dt.canonical_tag_id
+ON CONFLICT DO NOTHING;
+
+WITH duplicate_tags AS (
+    SELECT
+        tag_id,
+        first_value(tag_id) OVER (
+            PARTITION BY user_sub, name
+            ORDER BY tag_id::text
+        ) AS canonical_tag_id
+    FROM public.tags
+)
+DELETE FROM public.structures_tags st
+USING duplicate_tags dt
+WHERE st.tag_id = dt.tag_id
+  AND dt.tag_id <> dt.canonical_tag_id;
+
+WITH duplicate_tags AS (
+    SELECT
+        tag_id,
+        first_value(tag_id) OVER (
+            PARTITION BY user_sub, name
+            ORDER BY tag_id::text
+        ) AS canonical_tag_id
+    FROM public.tags
+)
+DELETE FROM public.tags t
+USING duplicate_tags dt
+WHERE t.tag_id = dt.tag_id
+  AND dt.tag_id <> dt.canonical_tag_id;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'uq_tags_user_sub_name'
+    ) THEN
+        ALTER TABLE public.tags
+            ADD CONSTRAINT uq_tags_user_sub_name
+            UNIQUE (user_sub, name);
+    END IF;
+END $$;
+
 COMMIT;

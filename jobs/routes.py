@@ -17,31 +17,29 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from asset_permissions import (
-    can_change_asset_visibility,
-    can_delete_asset,
+from asset_service import (
+    get_asset_or_404,
+    list_user_assets,
+    require_asset_permission,
+    set_asset_tags,
+    soft_delete_asset,
+    update_asset_visibility,
+)
+from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
+    can_write_asset,
 )
-from models import Job, Structure, Tags, User
+from models import Job, Structure
 from dependencies import get_db
 from auth import verify_token
-from query_helpers import get_current_user_or_404, get_job_or_404
+from query_helpers import get_current_user_or_404
 from utils import commit_or_rollback, serialize_job, get_user_sub
 from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
-
-def has_admin_permission(user):
-    return user.get("role") == "admin"
-
-def has_group_admin_permission(db: Session, user, target_user_sub: str):
-    if user.get("role") == "group_admin" and user.get("group_id"):
-        target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
-        return target_user and target_user.group_id == user.get("group_id")
-    return False
 
 @router.get("/")
 def get_all_jobs(
@@ -58,12 +56,7 @@ def get_all_jobs(
     :return: List of serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    jobs = (
-        db.query(Job)
-        .filter_by(user_sub=user_sub, is_deleted=False)
-        .order_by(Job.submitted_at.desc())
-        .all()
-    )
+    jobs = list_user_assets(db, Job, user_sub)
     return [serialize_job(job) for job in jobs]
 
 
@@ -83,11 +76,9 @@ def get_job_by_id(
     :param current_user: Current user dependency, verified via token.
     :return: Serialized job details.
     """
-    job = get_job_or_404(db, job_id)
+    job = get_asset_or_404(db, Job, job_id)
     user = get_current_user_or_404(db, current_user)
-
-    if not can_read_asset(user, job):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    require_asset_permission(user, job, can_read_asset)
 
     return serialize_job(job, include_user_sub=can_view_asset_user_owner(user, job))
 
@@ -106,17 +97,9 @@ def delete_job(
     :param current_user: Current user dependency, verified via token.
     :return: No content response (204).
     """
-    job = get_job_or_404(db, job_id)
+    job = get_asset_or_404(db, Job, job_id)
     user = get_current_user_or_404(db, current_user)
-
-    if not can_delete_asset(user, job):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    job.is_deleted = True
-    commit_or_rollback(
-        db,
-        integrity_error_detail="Database integrity error",
-    )
+    soft_delete_asset(db, user, job)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -206,29 +189,18 @@ def create_job(
         )
         db.add(new_job)
 
-        for tag_name in tags or []:
-            tag = db.query(Tags).filter_by(user_sub=user_sub, name=tag_name).one_or_none()
-            if not tag:
-                tag = Tags(user_sub=user_sub, name=tag_name)
-                db.add(tag)
-            new_job.tags.append(tag)
+        set_asset_tags(db, new_job, user_sub, tags or [])
 
         # Link to an existing structure the requester can read. Public group
         # structures are allowed; deleted or inaccessible structures are not.
         if structure_id:
-            try:
-                parsed_structure_id = uuid.UUID(str(structure_id))
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not accessible",
-                )
-            structure = (
-                db.query(Structure)
-                .filter_by(structure_id=parsed_structure_id, is_deleted=False)
-                .first()
+            structure = get_asset_or_404(
+                db,
+                Structure,
+                structure_id,
+                "Structure not found or not accessible",
             )
-            if not structure or not can_read_asset(user, structure):
+            if not can_read_asset(user, structure):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Structure not found or not accessible",
@@ -277,21 +249,12 @@ def update_job_visibility(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = get_job_or_404(db, job_id)
+    job = get_asset_or_404(db, Job, job_id)
     user = get_current_user_or_404(db, current_user)
-
-    if not can_change_asset_visibility(user, job):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    job.is_public = is_public
-    commit_or_rollback(
-        db,
-        refresh=job,
-        integrity_error_detail="Database integrity error",
-    )
+    job = update_asset_visibility(db, user, job, is_public)
 
     return {
-        "job_id": job.job_id,
+        "job_id": job.id,
         "is_public": job.is_public,
         "message": "Job visibility updated successfully.",
     }
@@ -307,7 +270,8 @@ def update_job(
     db: Session = Depends(get_db),
 ):
     """
-    Update the status of a job by its ID for the current authenticated user.
+    Update a job's execution status or runtime.
+    Allows admins, direct owners, and group admins for the job's group_id.
     :param state: Optional new status for the job (e.g., "pending", "running", "completed", "failed", "cancelled").
     :param runtime: Optional runtime to set for the job (format: "HH:MM:SS").
     :param user_sub: Optional user subscription ID to update the job for a specific user (not typically used).
@@ -316,10 +280,9 @@ def update_job(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = get_job_or_404(db, job_id)
-
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == get_user_sub(current_user)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_current_user_or_404(db, current_user)
+    require_asset_permission(user, job, can_write_asset)
 
     if runtime:
         try:

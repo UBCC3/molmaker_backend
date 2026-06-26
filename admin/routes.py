@@ -14,21 +14,11 @@ from models import Job, User, Group
 from dependencies import get_db
 from auth import verify_token
 
+from permissions import has_admin_permission, has_group_admin_permission
 from utils import commit_or_rollback, serialize_job, get_user_sub
 
 router = APIRouter(prefix="/admin", tags=["jobs"])
 JOB_DIR = "./results"
-
-# Check if the user is an admin
-def has_admin_permission(user: User):
-    return user.role == "admin"
-
-# Check if the user is a group admin and the target user is in the same group
-def has_group_admin_permission(db: Session, user: User, target_user_sub: str):
-    if user.role == "group_admin" and user.group_id:
-        target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
-        return target_user and target_user.group_id == user.group_id
-    return False
 
 @router.get("/jobs")
 def get_all_jobs(

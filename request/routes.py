@@ -11,6 +11,7 @@ import uuid
 from models import Request, User, Group
 from dependencies import get_db
 from auth import verify_token
+from permissions import can_access_user_requests
 
 from query_helpers import get_group_or_404
 from utils import commit_or_rollback, get_user_sub
@@ -67,7 +68,7 @@ def get_requests(
     Get all requests for a specific user.
     """
     user_sub = get_user_sub(current_user)
-    if user_sub != receiver_sub:
+    if not can_access_user_requests(user_sub, receiver_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     requests = db.query(Request).filter_by(receiver_sub=receiver_sub, status='pending').all()
@@ -97,7 +98,7 @@ def get_sent_requests(
     :return:
     """
     user_sub = get_user_sub(current_user)
-    if user_sub != sender_sub:
+    if not can_access_user_requests(user_sub, sender_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     requests = db.query(Request).filter_by(sender_sub=sender_sub).all()
