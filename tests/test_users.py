@@ -118,7 +118,7 @@ class TestUsersAPI:
         """
         DELETE /users/{user_sub} should remove a user and their local backend data.
         """
-        import users.routes as users_routes
+        import user_service
 
         auth0_delete_calls = []
 
@@ -126,8 +126,8 @@ class TestUsersAPI:
             auth0_delete_calls.append((url, headers))
             return type("Response", (), {"status_code": 204, "text": ""})()
 
-        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: "management-token")
-        monkeypatch.setattr(users_routes.requests, "delete", fake_auth0_delete)
+        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(user_service.requests, "delete", fake_auth0_delete)
         monkeypatch.setenv("AUTH0_DOMAIN", "auth.example.com")
 
         group = group_factory()
@@ -159,12 +159,12 @@ class TestUsersAPI:
         """
         DELETE /users/{user_sub} should not delete local data if Auth0 token lookup fails.
         """
-        import users.routes as users_routes
+        import user_service
 
         group = group_factory()
         user_factory(group=group, user_sub="auth0|testuser", role="admin")
         target = user_factory(group=group, user_sub="auth0|target", role="member")
-        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: None)
+        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: None)
 
         response = client.delete(f"/users/{target.user_sub}")
 
@@ -186,13 +186,13 @@ class TestUsersAPI:
         """
         DELETE /users/{user_sub} should keep local data if Auth0 rejects deletion.
         """
-        import users.routes as users_routes
+        import user_service
 
         def fake_auth0_delete(_url, headers):
             return type("Response", (), {"status_code": 500, "text": "auth0 failed"})()
 
-        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: "management-token")
-        monkeypatch.setattr(users_routes.requests, "delete", fake_auth0_delete)
+        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(user_service.requests, "delete", fake_auth0_delete)
         monkeypatch.setenv("AUTH0_DOMAIN", "auth.example.com")
 
         group = group_factory()
@@ -217,10 +217,10 @@ class TestUsersAPI:
         """
         DELETE /users/{user_sub} should return 404 when the target user does not exist.
         """
-        import users.routes as users_routes
+        import user_service
 
         user_factory(user_sub="auth0|testuser", role="admin")
-        monkeypatch.setattr(users_routes, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
 
         response = client.delete("/users/auth0|missing")
 

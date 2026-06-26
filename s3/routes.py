@@ -11,8 +11,9 @@ from asset_service import get_asset_or_404, require_asset_permission
 from auth import verify_token
 from dependencies import get_db
 from models import Job
-from query_helpers import get_current_user_or_404
 from storage import construct_fetch_script, presign_zip_download_url
+from user_service import get_user_or_404
+from utils import get_user_sub
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 
@@ -52,7 +53,7 @@ def download_job_zip(job_id: str, db: Session = Depends(get_db), current_user = 
     :return: Presigned archive download URL.
     """
     job = get_asset_or_404(db, Job, job_id)
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_read_asset)
 
     try:

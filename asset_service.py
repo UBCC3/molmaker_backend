@@ -1,5 +1,5 @@
 import uuid
-from typing import Callable, Iterable, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -9,12 +9,68 @@ from permissions import (
     can_change_asset_visibility,
     can_delete_asset,
 )
-from models import Asset, Tags, User
+from models import Asset, Group, Job, Structure, Tags, User
 from utils import commit_or_rollback
 
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
 PermissionCheck = Callable[[User, Asset], bool]
+
+
+def serialize_asset(
+    asset: Asset,
+    include_user_sub: bool = False,
+) -> Dict[str, Any]:
+    result = {
+        asset.api_id_field: str(asset.id),
+        asset.api_created_at_field: asset.created_at.isoformat(),
+        "group_id": str(asset.group_id) if asset.group_id else None,
+        "is_public": asset.is_public,
+    }
+    if include_user_sub:
+        result["user_sub"] = asset.user_sub
+    return result
+
+
+def serialize_structure(
+    structure: Structure,
+    include_tags: bool = True,
+    include_user_sub: bool = False,
+) -> Dict[str, Any]:
+    result = {
+        **serialize_asset(structure, include_user_sub=include_user_sub),
+        "name": structure.name,
+        "formula": structure.formula,
+        "location": structure.location,
+        "notes": structure.notes,
+    }
+    if include_tags:
+        result["tags"] = [tag.name for tag in structure.tags]
+    return result
+
+
+def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
+    return {
+        **serialize_asset(job, include_user_sub=include_user_sub),
+        "job_name": job.job_name,
+        "job_notes": job.job_notes,
+        "filename": job.filename,
+        "status": job.status,
+        "calculation_type": job.calculation_type,
+        "method": job.method,
+        "basis_set": job.basis_set,
+        "charge": job.charge,
+        "multiplicity": job.multiplicity,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "slurm_id": job.slurm_id and str(job.slurm_id),
+        "structures": [
+            serialize_structure(structure, include_tags=False)
+            for structure in job.structures
+        ],
+        "tags": [tag.name for tag in job.tags],
+        "runtime": str(job.runtime) if job.runtime else None,
+        "is_deleted": job.is_deleted,
+    }
 
 
 def list_user_assets(
@@ -47,6 +103,25 @@ def list_group_assets(
             detail=f"No {model.__tablename__} found for the group",
         )
     return assets
+
+
+def list_all_jobs_with_metadata(db: Session) -> list[dict]:
+    jobs = (
+        db.query(Job)
+        .filter_by(is_deleted=False)
+        .order_by(Job.submitted_at.desc())
+        .all()
+    )
+
+    result = []
+    for job in jobs:
+        owner = db.query(User).filter_by(user_sub=job.user_sub).first() if job.user_sub else None
+        group = db.query(Group).filter_by(group_id=job.group_id).first() if job.group_id else None
+        payload = serialize_job(job)
+        payload["user_email"] = owner.email if owner else None
+        payload["group_name"] = group.name if group else None
+        result.append(payload)
+    return result
 
 
 def get_asset_or_404(

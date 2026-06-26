@@ -1,6 +1,4 @@
-from datetime import datetime, timezone
 from typing import Optional
-import uuid
 from fastapi import (
     APIRouter,
     Form,
@@ -10,15 +8,20 @@ from fastapi import (
 from sqlalchemy.orm import Session
 from fastapi import status
 
-from models import Job, User, Group
 from dependencies import get_db
 from auth import verify_token
 
+from asset_service import list_all_jobs_with_metadata
+from group_service import create_group as create_group_record, list_groups_with_users
 from permissions import has_admin_permission, has_group_admin_permission
-from utils import commit_or_rollback, serialize_job, get_user_sub
+from user_service import (
+    get_user_or_404,
+    list_users_for_admin,
+    update_user_role_and_group,
+)
+from utils import get_user_sub
 
 router = APIRouter(prefix="/admin", tags=["jobs"])
-JOB_DIR = "./results"
 
 @router.get("/jobs")
 def get_all_jobs(
@@ -33,29 +36,11 @@ def get_all_jobs(
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     try:
-        jobs = (
-            db.query(Job)
-            .filter_by(is_deleted=False)
-            .order_by(Job.submitted_at.desc())
-            .all()
-        )
-
-        serialized = []
-        for job in jobs:
-            owner = db.query(User).filter_by(user_sub=job.user_sub).first() if job.user_sub else None
-            group = db.query(Group).filter_by(group_id=job.group_id).first() if job.group_id else None
-            payload = serialize_job(job)
-            payload["user_email"] = owner.email if owner else None
-            payload["group_name"] = group.name if group else None
-            serialized.append(payload)
-        return serialized
+        return list_all_jobs_with_metadata(db)
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -71,20 +56,11 @@ def get_all_users(
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     try:
-        users = db.query(User).all()
-        return [{
-            "user_sub": u.user_sub,
-            "email": u.email,
-            "role": u.role,
-            "group_id": str(u.group_id) if u.group_id else None
-        } for u in users]
+        return list_users_for_admin(db)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -99,28 +75,12 @@ def get_all_groups(
     :param current_user: Current user dependency, verified via token.
     :return: List of group details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     try:
-        res = []
-        groups = db.query(Group).all()
-        for g in groups:
-            g.users = db.query(User).filter_by(group_id=g.group_id).all()
-            res.append({
-                "group_id": str(g.group_id),
-                "name": g.name,
-                "users": [{
-                    "user_sub": u.user_sub,
-                    "email": u.email,
-                    "role": u.role
-                } for u in g.users]
-            })
-        return res
+        return list_groups_with_users(db)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -137,23 +97,11 @@ def create_group(
     :param current_user: Current user dependency, verified via token.
     :return: Details of the created group.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    new_group = Group(name=name)
-    commit_or_rollback(
-        db,
-        before_commit=lambda: db.add(new_group),
-        integrity_error_detail="Group already exists",
-    )
-    return {
-        "group_id": str(new_group.group_id),
-        "name": new_group.name
-    }
+    return create_group_record(db, name)
 
 @router.put("/users/{selected_user_sub}")
 def update_user_role(
@@ -172,40 +120,8 @@ def update_user_role(
     :param current_user: Current user dependency, verified via token.
     :return: Details of the updated user.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user) and not has_group_admin_permission(db, user, selected_user_sub):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    if role not in ["admin", "group_admin", "member"]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
-
-    selected_user = db.query(User).filter_by(user_sub=selected_user_sub).first()
-    if not selected_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Selected user not found")
-
-    if group_id:
-        try:
-            parsed_group_id = uuid.UUID(str(group_id))
-        except ValueError:
-            raise HTTPException(status_code=404, detail="Group not found")
-
-        group = db.query(Group).filter_by(group_id=parsed_group_id).first()
-        if not group:
-            raise HTTPException(status_code=404, detail="Group not found")
-        selected_user.group_id = parsed_group_id
-    else:
-        selected_user.group_id = None
-
-    selected_user.role = role
-    selected_user.member_since = datetime.now(timezone.utc)
-    commit_or_rollback(db)
-    return {
-        "user_sub": selected_user.user_sub,
-        "email": selected_user.email,
-        "role": selected_user.role,
-        "group_id": str(selected_user.group_id) if selected_user.group_id else None,
-        "member_since": selected_user.member_since.isoformat()
-    }
+    return update_user_role_and_group(db, selected_user_sub, role, group_id)

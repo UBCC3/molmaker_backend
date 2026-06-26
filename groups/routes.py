@@ -2,31 +2,26 @@ from typing import Optional
 from fastapi import (
     APIRouter,
     Form,
-    HTTPException,
     Depends,
 )
 from sqlalchemy.orm import Session
-from fastapi import status
 
-from asset_service import list_group_assets
-from models import Job, Structure, User
 from dependencies import get_db
 from auth import verify_token
-from permissions import (
-    can_delete_group,
-    can_update_group,
-    can_view_group_owner_metadata,
-    is_admin_or_group_admin,
-)
-
-from query_helpers import (
-    get_current_user_or_404,
+from group_service import (
+    delete_group as delete_group_by_id,
     get_group_or_404,
+    list_group_assets_for_user,
+    list_group_users,
+    serialize_group,
+    update_group_name,
 )
-from utils import commit_or_rollback, serialize_job, serialize_structure
+from asset_service import serialize_job, serialize_structure
+from models import Job, Structure
+from user_service import get_user_or_404
+from utils import get_user_sub
 
 router = APIRouter(prefix="/group", tags=["jobs"])
-JOB_DIR = "./results"
 
 @router.get("/jobs")
 def get_all_jobs(
@@ -44,30 +39,8 @@ def get_all_jobs(
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
-    user = get_current_user_or_404(db, current_user)
-    if not user.group_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not part of a group",
-        )
-
-    try:
-        group_jobs = list_group_assets(db, Job, user.group_id)
-        include_all_owner_metadata = can_view_group_owner_metadata(user)
-        if not include_all_owner_metadata:
-            group_jobs = [job for job in group_jobs if job.is_public]
-
-        return [
-            serialize_job(
-                job,
-                include_user_sub=include_all_owner_metadata or job.user_sub == user.user_sub,
-            )
-            for job in group_jobs
-        ]
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_assets_for_user(db, user, Job, serialize_job)
 
 @router.get("/structures")
 def get_all_structures(
@@ -86,34 +59,8 @@ def get_all_structures(
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized structure details.
     """
-    user = get_current_user_or_404(db, current_user)
-    if not user.group_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not part of a group",
-        )
-
-    try:
-        group_structures = list_group_assets(db, Structure, user.group_id)
-        include_all_owner_metadata = can_view_group_owner_metadata(user)
-        if not include_all_owner_metadata:
-            group_structures = [
-                structure
-                for structure in group_structures
-                if structure.is_public
-            ]
-
-        return [
-            serialize_structure(
-                structure,
-                include_user_sub=include_all_owner_metadata or structure.user_sub == user.user_sub,
-            )
-            for structure in group_structures
-        ]
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_assets_for_user(db, user, Structure, serialize_structure)
 
 @router.get("/users")
 def get_all_users(
@@ -126,18 +73,8 @@ def get_all_users(
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
     """
-    user = get_current_user_or_404(db, current_user)
-    if not user.group_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not part of a group",
-        )
-
-    try:
-        users_in_group = db.query(User).filter_by(group_id=user.group_id).all()
-        return users_in_group
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_users(db, user)
 
 @router.patch("/{group_id}")
 def update_group(
@@ -154,23 +91,8 @@ def update_group(
     :param current_user: Current user dependency, verified via token.
     :return: Updated group details.
     """
-    user = get_current_user_or_404(db, current_user)
-    if not is_admin_or_group_admin(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    group = get_group_or_404(db, group_id)
-    if not can_update_group(user, group):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    if not group_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
-
-    group.name = group_name
-    commit_or_rollback(
-        db,
-        integrity_error_detail="Group name already exists",
-    )
-    return {"group_id": str(group.group_id), "name": group.name}
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return update_group_name(db, user, group_id, group_name)
 
 @router.get("/{group_id}")
 def get_group(
@@ -185,11 +107,9 @@ def get_group(
     :param current_user: Current user dependency, verified via token.
     :return: Group details.
     """
-    get_current_user_or_404(db, current_user)
+    get_user_or_404(db, get_user_sub(current_user))
 
-    group = get_group_or_404(db, group_id)
-
-    return {"group_id": str(group.group_id), "name": group.name}
+    return serialize_group(get_group_or_404(db, group_id))
 
 @router.delete("/{group_id}")
 def delete_group(
@@ -204,18 +124,5 @@ def delete_group(
     :param current_user: Current user dependency, verified via token.
     :return: Confirmation message.
     """
-    user = get_current_user_or_404(db, current_user)
-    if not can_delete_group(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    group = get_group_or_404(db, group_id)
-
-    # un-assign all users from the group
-    users_in_group = db.query(User).filter_by(group_id=group.group_id).all()
-    for user in users_in_group:
-        user.group_id = None
-        user.role = "member"
-
-    db.delete(group)
-    commit_or_rollback(db)
-    return {"detail": "Group deleted successfully"}
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return delete_group_by_id(db, user, group_id)

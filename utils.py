@@ -1,11 +1,10 @@
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Callable, Optional, Union
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Asset, Job, Structure
 from fastapi import HTTPException, status
 
 ErrorDetail = Union[str, Callable[[Exception], str]]
@@ -66,58 +65,6 @@ def commit_or_rollback(
             detail=_resolve_error_detail(error_detail, error),
         )
 
-
-def serialize_structure(
-    s: Structure,
-    include_tags: bool = True,
-    include_user_sub: bool = False,
-) -> Dict[str, Any]:
-    result = {
-        **serialize_asset(s, include_user_sub=include_user_sub),
-        "name": s.name,
-        "formula": s.formula,
-        "location": s.location,
-        "notes": s.notes,
-    }
-    if include_tags:
-        result["tags"] = [tag.name for tag in s.tags]
-    return result
-
-def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
-    result = {
-        **serialize_asset(job, include_user_sub=include_user_sub),
-        "job_name": job.job_name,
-        "job_notes": job.job_notes,
-        "filename": job.filename,
-        "status": job.status,
-        "calculation_type": job.calculation_type,
-        "method": job.method,
-        "basis_set": job.basis_set,
-        "charge": job.charge,
-        "multiplicity": job.multiplicity,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "slurm_id": job.slurm_id and str(job.slurm_id),
-        "structures": [serialize_structure(s, include_tags=False) for s in job.structures],
-        "tags": [t.name for t in job.tags],
-        "runtime": str(job.runtime) if job.runtime else None,
-        "is_deleted": job.is_deleted,
-    }
-    return result
-
-
-def serialize_asset(
-    asset: Asset,
-    include_user_sub: bool = False,
-) -> Dict[str, Any]:
-    result = {
-        asset.api_id_field: str(asset.id),
-        asset.api_created_at_field: asset.created_at.isoformat(),
-        "group_id": str(asset.group_id) if asset.group_id else None,
-        "is_public": asset.is_public,
-    }
-    if include_user_sub:
-        result["user_sub"] = asset.user_sub
-    return result
 
 def get_user_sub(current_user) -> str:
     if isinstance(current_user, dict):

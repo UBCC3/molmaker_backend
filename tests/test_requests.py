@@ -224,6 +224,24 @@ class TestRequestsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Request not found"
 
+    def test_approve_request_returns_404_for_non_receiver(
+        self, client, set_auth_user, group_factory, user_factory, request_factory
+    ):
+        """
+        Users should not be able to approve requests received by someone else.
+        """
+        group = group_factory()
+        receiver = user_factory(group=group, user_sub="auth0|receiver")
+        sender = user_factory(user_sub="auth0|sender", group_id=None)
+        other_user = user_factory(group=group, user_sub="auth0|other")
+        request = request_factory(sender=sender, receiver=receiver, group=group)
+        set_auth_user(make_auth0_payload(other_user.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Request not found"
+
     def test_approve_request_rejects_processed_request(
         self, client, group_factory, user_factory, request_factory
     ):
@@ -321,6 +339,24 @@ class TestRequestsAPI:
         PUT /request/{request_id}/reject should return 404 for missing requests.
         """
         response = client.put(f"/request/{uuid.uuid4()}/reject")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Request not found"
+
+    def test_reject_request_returns_404_for_non_receiver(
+        self, client, set_auth_user, group_factory, user_factory, request_factory
+    ):
+        """
+        Users should not be able to reject requests received by someone else.
+        """
+        group = group_factory()
+        receiver = user_factory(group=group, user_sub="auth0|receiver")
+        sender = user_factory(user_sub="auth0|sender")
+        other_user = user_factory(group=group, user_sub="auth0|other")
+        request = request_factory(sender=sender, receiver=receiver, group=group)
+        set_auth_user(make_auth0_payload(other_user.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/reject")
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Request not found"

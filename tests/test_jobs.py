@@ -6,7 +6,7 @@ import pytest
 
 from conftest import make_auth0_payload
 from models import Job, Tags
-from utils import serialize_structure
+from asset_service import serialize_structure
 
 
 def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):

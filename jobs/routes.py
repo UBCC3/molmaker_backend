@@ -21,6 +21,7 @@ from asset_service import (
     get_asset_or_404,
     list_user_assets,
     require_asset_permission,
+    serialize_job,
     set_asset_tags,
     soft_delete_asset,
     update_asset_visibility,
@@ -33,8 +34,8 @@ from permissions import (
 from models import Job, Structure
 from dependencies import get_db
 from auth import verify_token
-from query_helpers import get_current_user_or_404
-from utils import commit_or_rollback, serialize_job, get_user_sub
+from user_service import get_user_or_404
+from utils import commit_or_rollback, get_user_sub
 from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -77,7 +78,7 @@ def get_job_by_id(
     :return: Serialized job details.
     """
     job = get_asset_or_404(db, Job, job_id)
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_read_asset)
 
     return serialize_job(job, include_user_sub=can_view_asset_user_owner(user, job))
@@ -98,7 +99,7 @@ def delete_job(
     :return: No content response (204).
     """
     job = get_asset_or_404(db, Job, job_id)
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     soft_delete_asset(db, user, job)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -157,7 +158,7 @@ def create_job(
             detail="Invalid file format. Only .xyz allowed.",
         )
 
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     user_sub = user.user_sub
 
     job_path = os.path.join(JOB_DIR, job_id_str)
@@ -250,7 +251,7 @@ def update_job_visibility(
     :return: JSONResponse with updated job details and status code 200 OK.
     """
     job = get_asset_or_404(db, Job, job_id)
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     job = update_asset_visibility(db, user, job, is_public)
 
     return {
@@ -281,7 +282,7 @@ def update_job(
     :return: JSONResponse with updated job details and status code 200 OK.
     """
     job = get_asset_or_404(db, Job, job_id)
-    user = get_current_user_or_404(db, current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_write_asset)
 
     if runtime:

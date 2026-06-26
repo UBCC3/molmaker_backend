@@ -270,6 +270,27 @@ class TestAdminAPI:
         assert target.group_id is None
         assert target.role == "member"
 
+    def test_group_admin_role_requires_group_id(
+        self, client, db, group_factory, user_factory
+    ):
+        """
+        PUT /admin/users/{user_sub} should reject group_admin without a group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="group_admin")
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "group_admin"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group_admin role requires group_id"
+        db.refresh(target)
+        assert target.group_id == group.group_id
+        assert target.role == "group_admin"
+
     def test_group_admin_can_update_same_group_user(
         self, client, db, set_auth_user, group_factory, user_factory
     ):

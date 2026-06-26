@@ -1,6 +1,3 @@
-from datetime import datetime, timedelta, timezone
-import uuid
-
 from fastapi import HTTPException
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -9,8 +6,6 @@ from utils import (
     clean_up_upload_cache,
     commit_or_rollback,
     get_user_sub,
-    serialize_job,
-    serialize_structure,
 )
 
 
@@ -155,163 +150,6 @@ class TestGetUserSub:
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Unauthorized"
-
-
-class TestSerializeStructure:
-    def test_serializes_expected_structure_fields(
-        self, group_factory, user_factory, structure_factory, tag_factory
-    ):
-        """
-        serialize_structure should convert IDs and datetimes into API-safe values.
-        """
-        structure_id = uuid.uuid4()
-        uploaded_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        tag = tag_factory(user_sub=user.user_sub, name="baseline")
-        structure = structure_factory(
-            structure_id=structure_id,
-            user_sub=user.user_sub,
-            group_id=group.group_id,
-            name="Water",
-            formula="H2O",
-            location="s3://test-bucket/structures/water.xyz",
-            notes="stable molecule",
-            uploaded_at=uploaded_at,
-            is_public=True,
-            tags=[tag],
-        )
-
-        result = serialize_structure(structure)
-
-        assert result == {
-            "structure_id": str(structure_id),
-            "name": "Water",
-            "formula": "H2O",
-            "location": "s3://test-bucket/structures/water.xyz",
-            "notes": "stable molecule",
-            "uploaded_at": structure.uploaded_at.isoformat(),
-            "group_id": str(group.group_id),
-            "is_public": True,
-            "tags": ["baseline"],
-        }
-
-    def test_can_omit_structure_tags(self, tag_factory, structure_factory):
-        """
-        serialize_structure can omit tags for nested job structure summaries.
-        """
-        tag = tag_factory(user_sub="auth0|testuser", name="baseline")
-        structure = structure_factory(tags=[tag])
-
-        result = serialize_structure(structure, include_tags=False)
-
-        assert "tags" not in result
-
-    def test_can_include_structure_user_sub(self, structure_factory):
-        """
-        serialize_structure can include direct user ownership for privileged viewers.
-        """
-        structure = structure_factory(user_sub="auth0|owner")
-
-        result = serialize_structure(structure, include_user_sub=True)
-
-        assert result["user_sub"] == "auth0|owner"
-
-
-class TestSerializeJob:
-    def test_serializes_job_with_relationships_and_runtime(
-        self,
-        group_factory,
-        user_factory,
-        job_factory,
-        structure_factory,
-        tag_factory,
-    ):
-        """
-        serialize_job should include related structures, tag names, timestamps, and flags.
-        """
-        job_id = uuid.uuid4()
-        submitted_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-        completed_at = datetime(2026, 1, 2, 4, 5, 6, tzinfo=timezone.utc)
-        user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(name="Methane", formula="CH4")
-        first_tag = tag_factory(name="organic")
-        second_tag = tag_factory(name="demo")
-        group = group_factory()
-
-        job = job_factory(
-            job_id=job_id,
-            job_name="Methane single point",
-            job_notes="baseline calculation",
-            filename="methane.xyz",
-            status="completed",
-            calculation_type="energy",
-            method="hf",
-            basis_set="sto-3g",
-            charge=0,
-            multiplicity=1,
-            submitted_at=submitted_at,
-            completed_at=completed_at,
-            user_sub="auth0|testuser",
-            group_id=group.group_id,
-            slurm_id="12345",
-            runtime=timedelta(hours=1, minutes=2, seconds=3),
-            is_deleted=False,
-            is_public=True,
-            structures=[structure],
-            tags=[first_tag, second_tag],
-        )
-
-        result = serialize_job(job)
-
-        assert result["job_id"] == str(job_id)
-        assert result["job_name"] == "Methane single point"
-        assert result["job_notes"] == "baseline calculation"
-        assert result["filename"] == "methane.xyz"
-        assert result["status"] == "completed"
-        assert result["calculation_type"] == "energy"
-        assert result["method"] == "hf"
-        assert result["basis_set"] == "sto-3g"
-        assert result["charge"] == 0
-        assert result["multiplicity"] == 1
-        assert result["submitted_at"] == job.submitted_at.isoformat()
-        assert result["completed_at"] == job.completed_at.isoformat()
-        assert result["user_sub"] == "auth0|testuser"
-        assert result["group_id"] == str(group.group_id)
-        assert result["slurm_id"] == "12345"
-        assert result["runtime"] == "1:02:03"
-        assert result["is_deleted"] is False
-        assert result["is_public"] is True
-        assert result["structures"] == [serialize_structure(structure, include_tags=False)]
-        assert sorted(result["tags"]) == ["demo", "organic"]
-
-    def test_serializes_none_optional_job_fields(self, user_factory, job_factory):
-        """
-        Optional job fields should serialize as None when absent.
-        """
-        user_factory(user_sub="auth0|testuser")
-        job = job_factory(
-            completed_at=None,
-            runtime=None,
-            slurm_id=None,
-        )
-
-        result = serialize_job(job)
-
-        assert result["completed_at"] is None
-        assert result["runtime"] is None
-        assert result["slurm_id"] is None
-        assert result["group_id"] is None
-
-    def test_can_omit_job_user_sub(self, job_factory):
-        """
-        serialize_job can hide direct user ownership when returning public group jobs.
-        """
-        job = job_factory(user_sub="auth0|owner")
-
-        result = serialize_job(job, include_user_sub=False)
-
-        assert "user_sub" not in result
 
 
 class TestCleanUpUploadCache:

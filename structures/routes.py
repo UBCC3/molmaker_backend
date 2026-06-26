@@ -5,6 +5,7 @@ from asset_service import (
     get_asset_or_404,
     list_user_assets,
     require_asset_permission,
+    serialize_structure,
     set_asset_tags,
     soft_delete_asset,
     update_asset_visibility,
@@ -17,11 +18,11 @@ from permissions import (
 from models import Structure, Tags
 from dependencies import get_db
 from auth import verify_token
-from query_helpers import get_current_user_or_404
+from user_service import get_user_or_404
 import os, uuid, shutil
 import boto3
 from pathlib import Path
-from utils import commit_or_rollback, get_user_sub, serialize_structure
+from utils import commit_or_rollback, get_user_sub
 from datetime import datetime, timezone
 from typing import List
 from ase.io import read
@@ -144,7 +145,7 @@ def get_presigned_url_for_structure(
     Generate a presigned URL when the authenticated user can read the structure.
     """
     structure = get_asset_or_404(db, Structure, structure_id)
-    db_user = get_current_user_or_404(db, user)
+    db_user = get_user_or_404(db, get_user_sub(user))
     require_asset_permission(db_user, structure, can_read_asset)
     key = f"structures/{structure.id}.xyz"
     try:
@@ -174,7 +175,7 @@ def get_structure_by_id(
     """
     try:
         structure = get_asset_or_404(db, Structure, structure_id)
-        db_user = get_current_user_or_404(db, user)
+        db_user = get_user_or_404(db, get_user_sub(user))
         require_asset_permission(db_user, structure, can_read_asset)
 
         return {
@@ -207,7 +208,7 @@ def update_structure_visibility(
     :return: Updated structure visibility details.
     """
     structure = get_asset_or_404(db, Structure, structure_id)
-    db_user = get_current_user_or_404(db, user)
+    db_user = get_user_or_404(db, get_user_sub(user))
     structure = update_asset_visibility(
         db,
         db_user,
@@ -245,7 +246,7 @@ def update_structure(
     """
     try:
         structure = get_asset_or_404(db, Structure, structure_id)
-        db_user = get_current_user_or_404(db, user)
+        db_user = get_user_or_404(db, get_user_sub(user))
         require_asset_permission(db_user, structure, can_write_asset)
 
         structure.name = name
@@ -291,7 +292,7 @@ def delete_structure(
     :return: Success message if deletion is successful.
     """
     structure = get_asset_or_404(db, Structure, structure_id)
-    db_user = get_current_user_or_404(db, user)
+    db_user = get_user_or_404(db, get_user_sub(user))
     soft_delete_asset(db, db_user, structure)
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
@@ -323,7 +324,7 @@ def create_and_upload_structure(
     """
     structure_path = None
     try:
-        db_user = get_current_user_or_404(db, user)
+        db_user = get_user_or_404(db, get_user_sub(user))
         user_id = db_user.user_sub
 
         # Create directory for the structure
