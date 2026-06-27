@@ -4,6 +4,7 @@ from permissions import (
     can_change_asset_visibility,
     can_delete_asset,
     can_read_asset,
+    can_transfer_asset_ownership,
     can_view_asset_user_owner,
     can_write_asset,
     is_group_admin_for_group,
@@ -221,3 +222,50 @@ class TestAssetOwnerFieldPermissions:
         asset = asset_factory(user_sub=owner.user_sub, group_id=group.group_id)
 
         assert can_view_asset_user_owner(group_admin, asset) is True
+
+
+class TestAssetOwnershipTransferPermissions:
+    def test_admin_can_transfer_group_asset(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        admin = user_factory(role="admin")
+        asset = asset_factory(user_sub=None, group_id=group.group_id)
+
+        assert can_transfer_asset_ownership(admin, asset) is True
+
+    def test_matching_group_admin_can_transfer_group_asset(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(group=group, role="group_admin")
+        asset = asset_factory(user_sub=None, group_id=group.group_id)
+
+        assert can_transfer_asset_ownership(group_admin, asset) is True
+
+    def test_group_admin_cannot_transfer_other_groups_asset(
+        self, group_factory, user_factory, asset_factory
+    ):
+        asset_group = group_factory()
+        admin_group = group_factory()
+        group_admin = user_factory(group=admin_group, role="group_admin")
+        asset = asset_factory(user_sub=None, group_id=asset_group.group_id)
+
+        assert can_transfer_asset_ownership(group_admin, asset) is False
+
+    def test_admin_can_transfer_user_only_asset(
+        self, user_factory, asset_factory
+    ):
+        admin = user_factory(role="admin")
+        asset = asset_factory(user_sub="auth0|owner", group_id=None)
+
+        assert can_transfer_asset_ownership(admin, asset) is True
+
+    def test_group_admin_cannot_transfer_user_only_asset(
+        self, group_factory, user_factory, asset_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(group=group, role="group_admin")
+        asset = asset_factory(user_sub="auth0|owner", group_id=None)
+
+        assert can_transfer_asset_ownership(group_admin, asset) is False

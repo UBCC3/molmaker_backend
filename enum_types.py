@@ -9,6 +9,13 @@ class CalculationType(str, Enum):
     transition = "transition"
     irc = "irc"
 
+
+class AssetOwnership(str, Enum):
+    user = "user"
+    group = "group"
+    co_owned = "co_owned"
+
+
 calculation_types = {
     'Molecular Energy': 'energy',
 	'Geometric Optimization': 'optimization',

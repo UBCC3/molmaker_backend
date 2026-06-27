@@ -5,12 +5,16 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from asset_service import list_group_assets
+from enum_types import AssetOwnership
 from models import Asset, Group, User
 from permissions import (
     can_delete_group,
+    can_transfer_asset_ownership,
     can_update_group,
     can_view_group_owner_metadata,
+    is_admin,
     is_admin_or_group_admin,
+    is_group_admin,
 )
 from utils import commit_or_rollback
 
@@ -118,6 +122,176 @@ def list_group_assets_for_user(
         )
         for asset in assets
     ]
+
+
+def _validate_transfer_request(
+    db: Session,
+    ownership: AssetOwnership,
+    requested_user_sub: Optional[str],
+    requested_group_id: Optional[str],
+) -> None:
+    if ownership == AssetOwnership.user:
+        if not requested_user_sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="user_sub is required for user ownership",
+            )
+        if requested_group_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="group_id must be omitted for user ownership",
+            )
+        _require_transfer_user_exists(db, requested_user_sub)
+        return
+
+    if ownership == AssetOwnership.group:
+        if not requested_group_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="group_id is required for group ownership",
+            )
+        if requested_user_sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="user_sub must be omitted for group ownership",
+            )
+        get_group_or_404(db, requested_group_id)
+        return
+
+    if not requested_user_sub:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_sub is required for co_owned ownership",
+        )
+    if not requested_group_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="group_id is required for co_owned ownership",
+        )
+    _require_transfer_user_exists(db, requested_user_sub)
+    get_group_or_404(db, requested_group_id)
+
+
+def _require_transfer_user_exists(db: Session, user_sub: str) -> None:
+    if not db.query(User).filter_by(user_sub=user_sub).first():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target user not found",
+        )
+
+
+def _require_base_transfer_permission(user: User, asset: Asset) -> None:
+    if not can_transfer_asset_ownership(user, asset):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied",
+        )
+
+
+def _require_target_group_allowed(
+    user: User,
+    requested_group_id: Optional[str],
+) -> None:
+    if is_admin(user):
+        return
+
+    if requested_group_id is None:
+        return
+
+    if str(requested_group_id) != str(user.group_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Group admins cannot transfer assets to another group",
+        )
+
+
+def _require_target_user_allowed(
+    db: Session,
+    user: User,
+    asset: Asset,
+    ownership: AssetOwnership,
+    requested_group_id: Optional[str],
+    requested_user_sub: Optional[str],
+) -> None:
+    if is_admin(user):
+        return
+
+    if ownership == AssetOwnership.user:
+        if not asset.user_sub:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Group admins cannot transfer group-only assets directly to a user",
+            )
+        if requested_user_sub != asset.user_sub:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Group admins can transfer user ownership only to the existing co-owner",
+            )
+        return
+
+    if ownership == AssetOwnership.group:
+        return
+
+    if asset.user_sub and requested_user_sub != asset.user_sub:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Group admins cannot replace a co-owner directly",
+        )
+
+    target_user = db.query(User).filter_by(user_sub=requested_user_sub).first()
+    if not target_user or str(target_user.group_id) != str(requested_group_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target user must belong to the group admin's group",
+        )
+
+
+def _apply_asset_ownership(
+    asset: Asset,
+    requested_user_sub: Optional[str],
+    requested_group_id: Optional[str],
+) -> None:
+    asset.user_sub = requested_user_sub
+    asset.group_id = uuid.UUID(str(requested_group_id)) if requested_group_id else None
+
+
+def transfer_asset_ownership(
+    db: Session,
+    user: User,
+    asset: AssetModel,
+    ownership: AssetOwnership,
+    requested_user_sub: Optional[str],
+    requested_group_id: Optional[str],
+) -> AssetModel:
+    """
+    Transfer an asset to user, group, or co-owned ownership.
+    Request shape is strict: user ownership requires only user_sub, group
+    ownership requires only group_id, and co-owned ownership requires both.
+    Overall admins can transfer any asset. Group admins can transfer only
+    assets already owned by their group, must provide their own group_id for
+    group/co-owned transfers, and cannot directly transfer group-only assets to
+    user-only ownership.
+    """
+    _validate_transfer_request(db, ownership, requested_user_sub, requested_group_id)
+    _require_base_transfer_permission(user, asset)
+    _require_target_group_allowed(user, requested_group_id)
+
+    _require_target_user_allowed(
+        db,
+        user,
+        asset,
+        ownership,
+        requested_group_id,
+        requested_user_sub,
+    )
+    _apply_asset_ownership(asset, requested_user_sub, requested_group_id)
+
+    commit_or_rollback(
+        db,
+        refresh=asset,
+        integrity_error_detail="Database integrity error",
+    )
+    return asset
 
 
 def update_group_name(

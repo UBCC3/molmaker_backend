@@ -112,5 +112,15 @@ def can_change_asset_visibility(user: User, asset: Asset) -> bool:
     return is_user_owner(user, asset)
 
 
+def can_transfer_asset_ownership(user: User, asset: Asset) -> bool:
+    if is_admin(user):
+        return True
+
+    if not is_group_asset(asset):
+        return False
+
+    return is_group_admin_for_group(user, asset.group_id)
+
+
 def can_view_asset_user_owner(user: User, asset: Asset) -> bool:
     return can_write_asset(user, asset)

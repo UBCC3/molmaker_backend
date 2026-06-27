@@ -1,12 +1,25 @@
 from datetime import datetime, timezone
 import uuid
 
+import pytest
+
 from conftest import make_auth0_payload
 from models import Group, User
 
 
 def _users_by_sub(response_json):
     return {user["user_sub"]: user for user in response_json}
+
+
+def _create_asset(asset_kind, job_factory, structure_factory, **overrides):
+    if asset_kind == "job":
+        return job_factory(**overrides)
+    return structure_factory(**overrides)
+
+
+def _ownership_url(asset_kind, asset):
+    asset_id = asset.job_id if asset_kind == "job" else asset.structure_id
+    return f"/group/{asset_kind}s/{asset_id}"
 
 
 class TestGroupsAPI:
@@ -284,6 +297,826 @@ class TestGroupsAPI:
         assert result[0]["name"] == "public"
         assert result[0]["group_id"] == str(group.group_id)
         assert "user_sub" not in result[0]
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_can_transfer_co_owned_asset_to_former_user(
+        self,
+        asset_kind,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        The group can relinquish ownership to the existing direct owner even
+        after that owner leaves the group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        former_owner = user_factory(user_sub="auth0|former", group_id=None)
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=former_owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "user",
+                "user_sub": former_owner.user_sub,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_sub"] == former_owner.user_sub
+        assert response.json()["group_id"] is None
+        db.refresh(asset)
+        assert asset.user_sub == former_owner.user_sub
+        assert asset.group_id is None
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_can_transfer_co_owned_asset_to_group(
+        self,
+        asset_kind,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Group admins should be able to remove the direct user owner.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_sub"] is None
+        assert response.json()["group_id"] == str(group.group_id)
+        db.refresh(asset)
+        assert asset.user_sub is None
+        assert asset.group_id == group.group_id
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_can_assign_group_member_as_co_owner(
+        self,
+        asset_kind,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        A group-only asset can become co-owned by a current group member.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        target_user = user_factory(group=group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": target_user.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_sub"] == target_user.user_sub
+        assert response.json()["group_id"] == str(group.group_id)
+        db.refresh(asset)
+        assert asset.user_sub == target_user.user_sub
+        assert asset.group_id == group.group_id
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_ownership_transfer_rejects_out_of_group_target_user(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        New user owners must belong to the asset's group.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        target_user = user_factory(group=other_group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": target_user.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Target user must belong to the group admin's group"
+        )
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_ownership_transfer_rejects_missing_target_user(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        A supplied user owner must exist.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": "auth0|missing",
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Target user not found"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_ownership_transfer_requires_user_for_group_only_asset(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        User and co-owned modes must not leave an asset without an owner.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={"ownership": "user"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "user_sub is required for user ownership"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_cannot_transfer_group_only_asset_directly_to_user(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Group admins must make a group-only asset co-owned before the group can
+        relinquish ownership to that user.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        target_user = user_factory(group=group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "user",
+                "user_sub": target_user.user_sub,
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == (
+            "Group admins cannot transfer group-only assets directly to a user"
+        )
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_ownership_rejects_user_sub(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Group-only ownership should reject an ambiguous user_sub parameter.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "user_sub": owner.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "user_sub must be omitted for group ownership"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_user_ownership_rejects_group_id(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        User-only ownership must not also include a destination group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "user",
+                "user_sub": owner.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group_id must be omitted for user ownership"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_cannot_replace_co_owner_directly(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Replacing a co-owner requires transferring to group ownership first.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        replacement = user_factory(group=group, user_sub="auth0|replacement")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": replacement.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Group admins cannot replace a co-owner directly"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_co_owned_ownership_requires_group_id(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Co-owned ownership must explicitly provide both owners.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        target_user = user_factory(group=group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": target_user.user_sub,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group_id is required for co_owned ownership"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_normal_member_cannot_transfer_asset_ownership(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Normal group members cannot change asset ownership.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_other_group_admin_cannot_transfer_asset_ownership(
+        self,
+        asset_kind,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Group admins cannot transfer assets owned by another group.
+        """
+        asset_group = group_factory()
+        admin_group = group_factory()
+        group_admin = user_factory(
+            group=admin_group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=asset_group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(asset_group.group_id),
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_admin_can_assign_asset_user_owner_from_asset_group(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Overall admins can transfer group assets without belonging to that group.
+        """
+        group = group_factory()
+        user_factory(user_sub="auth0|testuser", role="admin", group_id=None)
+        target_user = user_factory(group=group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": target_user.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_sub"] == target_user.user_sub
+        assert response.json()["group_id"] == str(group.group_id)
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_admin_can_transfer_user_only_asset_to_another_user(
+        self,
+        asset_kind,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Overall admins can replace the owner of a user-only asset.
+        """
+        user_factory(user_sub="auth0|testuser", role="admin")
+        original_owner = user_factory(user_sub="auth0|original")
+        target_group = group_factory()
+        target_user = user_factory(group=target_group, user_sub="auth0|target")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=original_owner.user_sub,
+            group_id=None,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "user",
+                "user_sub": target_user.user_sub,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user_sub"] == target_user.user_sub
+        assert response.json()["group_id"] is None
+        db.refresh(asset)
+        assert asset.user_sub == target_user.user_sub
+        assert asset.group_id is None
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    @pytest.mark.parametrize("ownership", ["group", "co_owned"])
+    def test_admin_can_add_group_ownership_to_user_only_asset(
+        self,
+        asset_kind,
+        ownership,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Overall admins can assign a destination group to a user-only asset.
+        """
+        user_factory(user_sub="auth0|testuser", role="admin")
+        owner = user_factory(user_sub="auth0|owner")
+        target_group = group_factory()
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=None,
+        )
+        data = {
+            "ownership": ownership,
+            "group_id": str(target_group.group_id),
+        }
+        if ownership == "co_owned":
+            data["user_sub"] = owner.user_sub
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data=data,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["group_id"] == str(target_group.group_id)
+        expected_user_sub = owner.user_sub if ownership == "co_owned" else None
+        assert response.json()["user_sub"] == expected_user_sub
+        db.refresh(asset)
+        assert asset.group_id == target_group.group_id
+        assert asset.user_sub == expected_user_sub
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_admin_must_select_group_when_adding_group_ownership(
+        self,
+        asset_kind,
+        client,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        A non-group asset has no group that the API can safely infer.
+        """
+        user_factory(user_sub="auth0|testuser", role="admin")
+        owner = user_factory(user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=None,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={"ownership": "group"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group_id is required for group ownership"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_admin_cannot_assign_missing_group(
+        self,
+        asset_kind,
+        client,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Overall-admin transfers must reference an existing destination group.
+        """
+        user_factory(user_sub="auth0|testuser", role="admin")
+        owner = user_factory(user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=None,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(uuid.uuid4()),
+            },
+        )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Group not found"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_admin_cannot_change_asset_group(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Supplying group_id does not let a group admin move assets across groups.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(other_group.group_id),
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == (
+            "Group admins cannot transfer assets to another group"
+        )
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_ownership_transfer_rejects_deleted_asset(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Deleted assets cannot be transferred from stale group lists.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=None,
+            group_id=group.group_id,
+            is_deleted=True,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={"ownership": "group"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_group_cannot_reclaim_user_only_asset(
+        self,
+        asset_kind,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Removing group ownership prevents later reclamation through group APIs.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=None,
+        )
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "co_owned",
+                "user_sub": owner.user_sub,
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    @pytest.mark.parametrize("asset_kind", ["job", "structure"])
+    def test_ownership_transfer_rolls_back_when_commit_fails(
+        self,
+        asset_kind,
+        client,
+        db,
+        monkeypatch,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        A failed transfer commit should preserve the original owners.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        asset = _create_asset(
+            asset_kind,
+            job_factory,
+            structure_factory,
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+        )
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+        response = client.patch(
+            _ownership_url(asset_kind, asset),
+            data={
+                "ownership": "group",
+                "group_id": str(group.group_id),
+            },
+        )
+
+        assert response.status_code == 500
+        assert "commit failed" in response.json()["detail"]
+        db.refresh(asset)
+        assert asset.user_sub == owner.user_sub
+        assert asset.group_id == group.group_id
 
     def test_group_structures_returns_404_when_group_has_no_structures(
         self, client, group_factory, user_factory
