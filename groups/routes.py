@@ -12,6 +12,7 @@ from dependencies import get_db
 from auth import verify_token
 from group_service import (
     delete_group as delete_group_by_id,
+    demember_group_user,
     get_group_or_404,
     list_group_assets_for_user,
     list_group_users,
@@ -148,13 +149,39 @@ def get_all_users(
     current_user=Depends(verify_token),
 ):
     """
-    Returns all users in the group of the currently authenticated user.
+    List users in the authenticated user's current group.
+    Only overall admins and group admins can use this endpoint. Normal group
+    members cannot enumerate other group members.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     return list_group_users(db, user)
+
+@router.delete("/users/{selected_user_sub}")
+def remove_group_user(
+    selected_user_sub: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Remove a user from a group without changing job or structure ownership.
+    Group admins may remove normal members from their own group and may remove
+    themselves. They cannot remove another group admin. Overall admins may
+    remove any user from any group.
+    :param selected_user_sub: User's unique identifier (sub from Auth0).
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    selected_user = get_user_or_404(
+        db,
+        selected_user_sub,
+        detail="Selected user not found",
+    )
+    return demember_group_user(db, user, selected_user)
 
 @router.patch("/{group_id}")
 def update_group(

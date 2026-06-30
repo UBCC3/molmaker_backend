@@ -1,4 +1,5 @@
 from permissions import (
+    can_demember_group_user,
     has_admin_permission,
     has_group_admin_permission,
 )
@@ -67,3 +68,19 @@ class TestAdminPermissionHelpers:
         )
 
         assert not has_group_admin_permission(db, group_admin, "auth0|missing")
+
+    def test_admin_can_demember_any_group_user(self, group_factory, user_factory):
+        group = group_factory()
+        admin = user_factory(role="admin")
+        target = user_factory(group=group, role="group_admin")
+
+        assert can_demember_group_user(admin, target) is True
+
+    def test_group_admin_cannot_demember_another_group_admin(
+        self, group_factory, user_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(group=group, role="group_admin")
+        target = user_factory(group=group, role="group_admin")
+
+        assert can_demember_group_user(group_admin, target) is False

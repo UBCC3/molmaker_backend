@@ -13,7 +13,7 @@ from auth import verify_token
 
 from asset_service import list_all_jobs_with_metadata
 from group_service import create_group as create_group_record, list_groups_with_users
-from permissions import has_admin_permission, has_group_admin_permission
+from permissions import has_admin_permission
 from user_service import (
     get_user_or_404,
     list_users_for_admin,
@@ -112,8 +112,9 @@ def update_user_role(
     current_user=Depends(verify_token),
 ):
     """
-    Updates the role and the group of a user.
-    :param user_sub: User's unique identifier (sub from Auth0).
+    Update a user's role and group.
+    Only overall admins may use this endpoint.
+    :param selected_user_sub: User's unique identifier (sub from Auth0).
     :param role: New role for the user ('admin', 'group_admin', 'member').
     :param group_id: Optional group ID to assign the user to.
     :param db: Database session dependency.
@@ -121,7 +122,7 @@ def update_user_role(
     :return: Details of the updated user.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    if not has_admin_permission(user) and not has_group_admin_permission(db, user, selected_user_sub):
+    if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     return update_user_role_and_group(db, selected_user_sub, role, group_id)

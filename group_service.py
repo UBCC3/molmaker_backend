@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Optional, Protocol, Type, TypeVar
 
 from fastapi import HTTPException, status
@@ -8,13 +9,14 @@ from asset_service import list_group_assets
 from enum_types import AssetOwnership
 from models import Asset, Group, User
 from permissions import (
+    can_demember_group_user,
     can_delete_group,
+    can_list_group_users,
     can_transfer_asset_ownership,
     can_update_group,
     can_view_group_owner_metadata,
     is_admin,
     is_admin_or_group_admin,
-    is_group_admin,
 )
 from utils import commit_or_rollback
 
@@ -99,7 +101,26 @@ def require_group_membership(user: User) -> None:
 
 def list_group_users(db: Session, user: User) -> list[User]:
     require_group_membership(user)
+    if not can_list_group_users(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
     return db.query(User).filter_by(group_id=user.group_id).all()
+
+
+def demember_group_user(
+    db: Session,
+    acting_user: User,
+    selected_user: User,
+) -> dict:
+    if not can_demember_group_user(acting_user, selected_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+
+    selected_user.group_id = None
+    if selected_user.role == "group_admin":
+        selected_user.role = "member"
+    selected_user.member_since = datetime.now(timezone.utc)
+    commit_or_rollback(db)
+    return {"detail": "User removed from group successfully"}
 
 
 def list_group_assets_for_user(

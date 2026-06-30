@@ -79,16 +79,16 @@ def update_user_role_and_group(
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
 
-    if role == "group_admin" and not group_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="group_admin role requires group_id",
-        )
-
     selected_user = get_user_or_404(
         db,
         selected_user_sub,
         detail="Selected user not found",
+    )
+
+    if role == "group_admin" and not group_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="group_admin role requires group_id",
     )
 
     if group_id:

@@ -27,12 +27,12 @@ class TestGroupsAPI:
         self, client, group_factory, user_factory
     ):
         """
-        GET /group/users should return users in the authenticated user's group only.
+        GET /group/users should let group admins list users in their own group only.
         """
         group = group_factory(name="Current Group")
         other_group = group_factory(name="Other Group")
-        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
-        group_member = user_factory(group=group, user_sub="auth0|member", role="group_admin")
+        current_user = user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        group_member = user_factory(group=group, user_sub="auth0|member", role="member")
         user_factory(group=other_group, user_sub="auth0|other", role="member")
 
         response = client.get("/group/users")
@@ -42,7 +42,23 @@ class TestGroupsAPI:
         assert set(users) == {current_user.user_sub, group_member.user_sub}
         assert users[current_user.user_sub]["email"] == current_user.email
         assert users[current_user.user_sub]["group_id"] == str(group.group_id)
-        assert users[group_member.user_sub]["role"] == "group_admin"
+        assert users[current_user.user_sub]["role"] == "group_admin"
+        assert users[group_member.user_sub]["role"] == "member"
+
+    def test_group_users_rejects_normal_group_members(
+        self, client, group_factory, user_factory
+    ):
+        """
+        GET /group/users should not let normal members enumerate group users.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+        user_factory(group=group, user_sub="auth0|other", role="member")
+
+        response = client.get("/group/users")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
 
     def test_group_users_returns_403_when_current_user_has_no_group(
         self, client, user_factory
@@ -65,6 +81,195 @@ class TestGroupsAPI:
 
         assert response.status_code == 404
         assert response.json()["detail"] == "User not found"
+
+    def test_group_admin_can_demember_same_group_member(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        DELETE /group/users/{user_sub} should let group admins remove normal members.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 200
+        assert response.json()["detail"] == "User removed from group successfully"
+        db.refresh(target)
+        assert target.role == "member"
+        assert target.group_id is None
+
+    def test_group_admin_demembering_does_not_change_asset_ownership(
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        De-membering should leave co-owned jobs and structures co-owned.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        job = job_factory(user_sub=target.user_sub, group_id=group.group_id)
+        structure = structure_factory(user_sub=target.user_sub, group_id=group.group_id)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 200
+        db.refresh(target)
+        db.refresh(job)
+        db.refresh(structure)
+        assert target.group_id is None
+        assert job.user_sub == target.user_sub
+        assert job.group_id == group.group_id
+        assert structure.user_sub == target.user_sub
+        assert structure.group_id == group.group_id
+
+    def test_group_admin_can_demember_self_and_leave_empty_group(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        A group admin can remove themself; groups may be left empty.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{group_admin.user_sub}")
+
+        assert response.status_code == 200
+        db.refresh(group_admin)
+        assert group_admin.role == "member"
+        assert group_admin.group_id is None
+        assert db.query(Group).filter_by(group_id=group.group_id).first() is not None
+        assert db.query(User).filter_by(group_id=group.group_id).count() == 0
+
+    def test_group_admin_cannot_demember_another_group_admin(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Group admins should not be able to remove another group admin.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="group_admin")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+        db.refresh(target)
+        assert target.role == "group_admin"
+        assert target.group_id == group.group_id
+
+    def test_admin_can_demember_any_group_user(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Overall admins can remove users from any group.
+        """
+        target_group = group_factory()
+        admin = user_factory(user_sub="auth0|admin", role="admin")
+        target = user_factory(
+            group=target_group,
+            user_sub="auth0|target",
+            role="group_admin",
+        )
+        set_auth_user(make_auth0_payload(admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 200
+        db.refresh(target)
+        assert target.group_id is None
+        assert target.role == "member"
+
+    def test_demembering_overall_admin_preserves_admin_role(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Removing an overall admin from a group should not demote them.
+        """
+        group = group_factory()
+        acting_admin = user_factory(user_sub="auth0|admin", role="admin")
+        target_admin = user_factory(
+            group=group,
+            user_sub="auth0|target-admin",
+            role="admin",
+        )
+        set_auth_user(make_auth0_payload(acting_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target_admin.user_sub}")
+
+        assert response.status_code == 200
+        db.refresh(target_admin)
+        assert target_admin.group_id is None
+        assert target_admin.role == "admin"
+
+    def test_group_admin_cannot_demember_other_group_user(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Group admins should not be able to remove users from another group.
+        """
+        admin_group = group_factory()
+        target_group = group_factory()
+        group_admin = user_factory(
+            group=admin_group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        target = user_factory(group=target_group, user_sub="auth0|target", role="member")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+        db.refresh(target)
+        assert target.group_id == target_group.group_id
+
+    def test_normal_member_cannot_demember_group_user(
+        self, client, db, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Normal members should not be able to remove users from a group.
+        """
+        group = group_factory()
+        member = user_factory(group=group, user_sub="auth0|member", role="member")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        set_auth_user(make_auth0_payload(member.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+        db.refresh(target)
+        assert target.group_id == group.group_id
+
+    def test_demember_group_user_returns_404_for_missing_user(
+        self, client, set_auth_user, group_factory, user_factory
+    ):
+        """
+        DELETE /group/users/{user_sub} should return 404 for missing users.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete("/group/users/auth0|missing")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Selected user not found"
 
     def test_group_admin_can_list_all_jobs_with_persisted_group_id(
         self, client, group_factory, user_factory, job_factory

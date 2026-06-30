@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from conftest import make_auth0_payload
-from models import Group, User
+from models import Group
 
 
 def _users_by_sub(response_json):
@@ -291,11 +291,11 @@ class TestAdminAPI:
         assert target.group_id == group.group_id
         assert target.role == "group_admin"
 
-    def test_group_admin_can_update_same_group_user(
+    def test_group_admin_cannot_update_user_through_admin_route(
         self, client, db, set_auth_user, group_factory, user_factory
     ):
         """
-        Group admins should be able to update users in their own group.
+        PUT /admin/users/{user_sub} should be overall-admin-only.
         """
         group = group_factory()
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
@@ -304,10 +304,11 @@ class TestAdminAPI:
 
         response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
 
-        assert response.status_code == 200
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
         db.refresh(target)
         assert target.role == "member"
-        assert target.group_id is None
+        assert target.group_id == group.group_id
 
     def test_group_admin_cannot_update_user_in_another_group(
         self, client, set_auth_user, group_factory, user_factory

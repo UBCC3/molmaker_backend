@@ -39,6 +39,23 @@ def can_delete_user(user: User) -> bool:
     return is_admin(user)
 
 
+def can_demember_group_user(actor: User, target: User) -> bool:
+    if is_admin(actor):
+        return True
+
+    if not is_group_admin(actor):
+        return False
+
+    if not _same_id(actor.group_id, target.group_id):
+        return False
+
+    target_is_another_group_admin = (
+        is_group_admin(target)
+        and not _same_id(actor.user_sub, target.user_sub)
+    )
+    return not target_is_another_group_admin
+
+
 # Group permissions
 
 def can_update_group(user: User, group: Group) -> bool:
@@ -50,6 +67,10 @@ def can_delete_group(user: User) -> bool:
 
 
 def can_view_group_owner_metadata(user: User) -> bool:
+    return is_admin_or_group_admin(user)
+
+
+def can_list_group_users(user: User) -> bool:
     return is_admin_or_group_admin(user)
 
 
