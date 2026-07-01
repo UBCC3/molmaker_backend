@@ -132,7 +132,10 @@ class Job(Asset):
     api_created_at_field = "submitted_at"
     not_found_detail = "Job not found"
     __table_args__ = (
-        CheckConstraint("user_sub IS NOT NULL OR group_id IS NOT NULL", name="ck_jobs_owner_present"),
+        CheckConstraint(
+            "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
+            name="ck_jobs_owner_present",
+        ),
         Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
         Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
     )
@@ -172,7 +175,10 @@ class Structure(Asset):
     api_created_at_field = "uploaded_at"
     not_found_detail = "Structure not found."
     __table_args__ = (
-        CheckConstraint("user_sub IS NOT NULL OR group_id IS NOT NULL", name="ck_structures_owner_present"),
+        CheckConstraint(
+            "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
+            name="ck_structures_owner_present",
+        ),
         Index("idx_structures_user_active_uploaded", "user_sub", "is_deleted", "uploaded_at"),
         Index("idx_structures_group_active_uploaded", "group_id", "is_deleted", "uploaded_at"),
     )

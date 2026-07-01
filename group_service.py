@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from asset_service import list_group_assets
 from enum_types import AssetOwnership
-from models import Asset, Group, User
+from models import Asset, Group, Job, Structure, User
 from permissions import (
     can_demember_group_user,
     can_delete_group,
@@ -347,7 +347,15 @@ def delete_group(db: Session, user: User, group_id: str) -> dict:
     users_in_group = db.query(User).filter_by(group_id=group.group_id).all()
     for group_user in users_in_group:
         group_user.group_id = None
-        group_user.role = "member"
+        if group_user.role == "group_admin":
+            group_user.role = "member"
+
+    for asset_model in (Job, Structure):
+        assets = db.query(asset_model).filter_by(group_id=group.group_id).all()
+        for asset in assets:
+            asset.group_id = None
+            if not asset.user_sub:
+                asset.is_deleted = True
 
     db.delete(group)
     commit_or_rollback(db)

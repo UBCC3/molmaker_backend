@@ -4,7 +4,7 @@ import uuid
 import pytest
 
 from conftest import make_auth0_payload
-from models import Group, User
+from models import Group, Job, Structure, User
 
 
 def _users_by_sub(response_json):
@@ -1544,15 +1544,25 @@ class TestGroupsAPI:
         assert group.name == "Original"
 
     def test_admin_can_delete_group_and_unassign_users(
-        self, client, db, group_factory, user_factory
+        self, client, db, group_factory, user_factory, job_factory, structure_factory
     ):
         """
-        DELETE /group/{group_id} should let admins delete groups and reset members.
+        DELETE /group/{group_id} should soft-delete group-only assets, convert
+        co-owned assets to user-owned, and reset members.
         """
         group = group_factory(name="Delete Me")
-        admin = user_factory(user_sub="auth0|testuser", role="admin")
+        admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
         member = user_factory(group=group, user_sub="auth0|member", role="member")
+        co_owned_job = job_factory(user_sub=member.user_sub, group_id=group.group_id)
+        co_owned_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
+        linked_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
+        group_only_job = job_factory(
+            user_sub=None,
+            group_id=group.group_id,
+            structures=[linked_structure],
+        )
+        group_only_structure = structure_factory(user_sub=None, group_id=group.group_id)
 
         response = client.delete(f"/group/{group.group_id}")
 
@@ -1563,10 +1573,28 @@ class TestGroupsAPI:
         db.refresh(group_admin)
         db.refresh(member)
         assert admin.role == "admin"
+        assert admin.group_id is None
         assert group_admin.group_id is None
         assert group_admin.role == "member"
         assert member.group_id is None
         assert member.role == "member"
+        db.refresh(group_only_job)
+        db.refresh(group_only_structure)
+        assert group_only_job.is_deleted is True
+        assert group_only_job.user_sub is None
+        assert group_only_job.group_id is None
+        assert group_only_structure.is_deleted is True
+        assert group_only_structure.user_sub is None
+        assert group_only_structure.group_id is None
+        db.refresh(co_owned_job)
+        db.refresh(co_owned_structure)
+        db.refresh(linked_structure)
+        assert co_owned_job.user_sub == member.user_sub
+        assert co_owned_job.group_id is None
+        assert co_owned_structure.user_sub == member.user_sub
+        assert co_owned_structure.group_id is None
+        assert linked_structure.user_sub == member.user_sub
+        assert linked_structure.group_id is None
 
     def test_delete_group_requires_admin_user(self, client, group_factory, user_factory):
         """

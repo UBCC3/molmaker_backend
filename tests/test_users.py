@@ -116,7 +116,8 @@ class TestUsersAPI:
         job_factory,
     ):
         """
-        DELETE /users/{user_sub} should remove a user and their local backend data.
+        DELETE /users/{user_sub} should remove a user, soft-delete user-only
+        assets, and keep co-owned assets with the group.
         """
         import user_service
 
@@ -136,6 +137,17 @@ class TestUsersAPI:
         tag = tag_factory(user_sub=target.user_sub, name="target-tag")
         structure = structure_factory(user_sub=target.user_sub, tags=[tag])
         job = job_factory(user_sub=target.user_sub, tags=[tag], structures=[structure])
+        co_owned_structure = structure_factory(
+            user_sub=target.user_sub,
+            group_id=group.group_id,
+            tags=[tag],
+        )
+        co_owned_job = job_factory(
+            user_sub=target.user_sub,
+            group_id=group.group_id,
+            tags=[tag],
+            structures=[co_owned_structure],
+        )
 
         response = client.delete(f"/users/{target.user_sub}")
 
@@ -143,9 +155,21 @@ class TestUsersAPI:
         assert response.json()["detail"] == "User and all associated data deleted successfully"
         assert db.query(User).filter_by(user_sub=admin.user_sub).one()
         assert db.query(User).filter_by(user_sub=target.user_sub).first() is None
-        assert db.query(Job).filter_by(job_id=job.job_id).first() is None
-        assert db.query(Structure).filter_by(structure_id=structure.structure_id).first() is None
+        db.refresh(job)
+        db.refresh(structure)
+        assert job.is_deleted is True
+        assert job.user_sub is None
+        assert job.group_id is None
+        assert structure.is_deleted is True
+        assert structure.user_sub is None
+        assert structure.group_id is None
         assert db.query(Tags).filter_by(tag_id=tag.tag_id).first() is None
+        db.refresh(co_owned_job)
+        db.refresh(co_owned_structure)
+        assert co_owned_job.user_sub is None
+        assert co_owned_job.group_id == group.group_id
+        assert co_owned_structure.user_sub is None
+        assert co_owned_structure.group_id == group.group_id
         assert auth0_delete_calls == [
             (
                 "https://auth.example.com/api/v2/users/auth0|target",

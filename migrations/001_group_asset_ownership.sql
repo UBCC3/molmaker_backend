@@ -41,21 +41,17 @@ WHERE s.user_sub = u.user_sub
 
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'ck_jobs_owner_present'
-    ) THEN
-        ALTER TABLE public.jobs
-            ADD CONSTRAINT ck_jobs_owner_present
-            CHECK (user_sub IS NOT NULL OR group_id IS NOT NULL);
-    END IF;
+    ALTER TABLE public.jobs
+        DROP CONSTRAINT IF EXISTS ck_jobs_owner_present;
+    ALTER TABLE public.jobs
+        ADD CONSTRAINT ck_jobs_owner_present
+        CHECK (is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL);
 
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'ck_structures_owner_present'
-    ) THEN
-        ALTER TABLE public.structures
-            ADD CONSTRAINT ck_structures_owner_present
-            CHECK (user_sub IS NOT NULL OR group_id IS NOT NULL);
-    END IF;
+    ALTER TABLE public.structures
+        DROP CONSTRAINT IF EXISTS ck_structures_owner_present;
+    ALTER TABLE public.structures
+        ADD CONSTRAINT ck_structures_owner_present
+        CHECK (is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL);
 
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'fk_jobs_group_id'

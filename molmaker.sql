@@ -286,7 +286,7 @@ ALTER TABLE ONLY public.jobs
     ADD CONSTRAINT jobs_pkey PRIMARY KEY (job_id);
 
 ALTER TABLE ONLY public.jobs
-    ADD CONSTRAINT ck_jobs_owner_present CHECK (((user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
+    ADD CONSTRAINT ck_jobs_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
 
 
 --
@@ -321,7 +321,7 @@ ALTER TABLE ONLY public.structures
     ADD CONSTRAINT structures_pkey PRIMARY KEY (structure_id);
 
 ALTER TABLE ONLY public.structures
-    ADD CONSTRAINT ck_structures_owner_present CHECK (((user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
+    ADD CONSTRAINT ck_structures_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)));
 
 
 --

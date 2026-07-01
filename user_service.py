@@ -146,7 +146,9 @@ def delete_user_local_data(db: Session, user: User) -> None:
     for asset_model in (Job, Structure):
         assets = db.query(asset_model).filter_by(user_sub=user.user_sub).all()
         for asset in assets:
-            db.delete(asset)
+            asset.user_sub = None
+            if not asset.group_id:
+                asset.is_deleted = True
 
     tags = db.query(Tags).filter_by(user_sub=user.user_sub).all()
     for tag in tags:
