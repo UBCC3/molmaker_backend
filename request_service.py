@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from enum_types import RequestStatus, RequestType
@@ -20,7 +20,12 @@ from permissions import (
     can_view_request_user_metadata,
     is_admin_or_group_admin,
 )
-from user_service import assign_user_to_group, get_user_by_email_or_404
+from user_service import (
+    assign_user_to_group,
+    cancel_pending_demember_requests_for_group,
+    cancel_pending_membership_entry_requests,
+    get_user_by_email_or_404,
+)
 from utils import commit_or_rollback
 
 
@@ -515,38 +520,6 @@ def _resolve_request(
     commit_or_rollback(db, refresh=request)
 
 
-def _cancel_other_pending_membership_requests(
-    db: Session,
-    joined_user: User,
-    approved_request: Request,
-    resolved_by_sub: str,
-) -> None:
-    other_requests = (
-        db.query(Request)
-        .filter(Request.status == RequestStatus.pending.value)
-        .filter(Request.request_id != approved_request.request_id)
-        .filter(
-            or_(
-                and_(
-                    Request.request_type == RequestType.invite.value,
-                    Request.receiver_sub == joined_user.user_sub,
-                ),
-                and_(
-                    Request.request_type == RequestType.join_request.value,
-                    Request.sender_sub == joined_user.user_sub,
-                ),
-            )
-        )
-        .all()
-    )
-    resolved_at = _now()
-    for request in other_requests:
-        _set_request_snapshots(db, request)
-        request.status = RequestStatus.cancelled.value
-        request.resolved_at = resolved_at
-        request.resolved_by_sub = resolved_by_sub
-
-
 def _cancel_invalid_request(db: Session, request: Request, user: User) -> None:
     _resolve_request(
         db,
@@ -587,11 +560,11 @@ def _approve_invite(db: Session, request: Request, user: User) -> None:
         _cancel_invalid_request(db, request, user)
 
     assign_user_to_group(receiver, group)
-    _cancel_other_pending_membership_requests(
+    cancel_pending_membership_entry_requests(
         db,
         receiver,
-        request,
         resolved_by_sub=user.user_sub,
+        exclude_request_id=request.request_id,
     )
     _resolve_request(
         db,
@@ -610,11 +583,11 @@ def _approve_join_request(db: Session, request: Request, user: User) -> None:
         _cancel_invalid_request(db, request, user)
 
     assign_user_to_group(sender, group)
-    _cancel_other_pending_membership_requests(
+    cancel_pending_membership_entry_requests(
         db,
         sender,
-        request,
         resolved_by_sub=user.user_sub,
+        exclude_request_id=request.request_id,
     )
     _resolve_request(
         db,
@@ -632,6 +605,13 @@ def _approve_demember_request(db: Session, request: Request, user: User) -> None
     if not can_demember_group_user(user, sender):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
+    cancel_pending_demember_requests_for_group(
+        db,
+        sender,
+        request.group_id,
+        resolved_by_sub=user.user_sub,
+        exclude_request_id=request.request_id,
+    )
     remove_user_from_group(sender)
     _resolve_request(
         db,

@@ -1,6 +1,6 @@
 from sqlalchemy import inspect
 
-from models import Asset, Job, Structure, Tags
+from models import Asset, Job, Request, Structure, Tags
 
 
 class TestAssetModel:
@@ -36,3 +36,8 @@ class TestAssetModel:
         }
 
         assert "uq_tags_user_sub_name" in constraint_names
+
+    def test_requests_have_expiry_index(self):
+        index_names = {index.name for index in Request.__table__.indexes}
+
+        assert "idx_requests_status_expires_at" in index_names

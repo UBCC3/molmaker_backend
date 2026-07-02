@@ -103,6 +103,37 @@ class TestGroupsAPI:
         assert target.role == "member"
         assert target.group_id is None
 
+    def test_demembering_cancels_pending_demember_request(
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """
+        Direct de-membering should cancel stale pending de-member requests.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        request = request_factory(
+            sender=target,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.delete(f"/group/users/{target.user_sub}")
+
+        assert response.status_code == 200
+        db.refresh(request)
+        assert request.status == "cancelled"
+        assert request.resolved_by_sub == group_admin.user_sub
+        assert request.resolved_at is not None
+
     def test_group_admin_demembering_does_not_change_asset_ownership(
         self,
         client,

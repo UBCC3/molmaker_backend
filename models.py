@@ -99,7 +99,7 @@ class Asset(Base):
         return Column(
             cls.__created_at_column__,
             DateTime(timezone=True),
-            default=datetime.now(timezone.utc),
+            default=lambda: datetime.now(timezone.utc),
         )
 
     @declared_attr
@@ -240,7 +240,7 @@ class User(Base):
     email = Column(String, nullable=False, unique=True)
     role = Column(String, nullable=False, default='member')  # 'admin', 'group_admin', or 'member'
     group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
-    member_since = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
+    member_since = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # relationships
     group = relationship("Group", back_populates="users")
@@ -264,6 +264,7 @@ class Request(Base):
         Index("idx_requests_sender_status", "sender_sub", "status"),
         Index("idx_requests_group_status_type", "group_id", "status", "request_type"),
         Index("idx_requests_created_by_status", "created_by_sub", "status"),
+        Index("idx_requests_status_expires_at", "status", "expires_at"),
     )
 
     request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

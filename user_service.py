@@ -4,10 +4,10 @@ from typing import Dict, Optional
 
 import requests
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from enum_types import RequestStatus
+from enum_types import RequestStatus, RequestType
 from models import Group, Job, Request, Structure, Tags, User
 from permissions import can_view_user_profile
 from utils import commit_or_rollback, get_user_sub
@@ -86,6 +86,7 @@ def update_user_role_and_group(
     selected_user: User,
     role: str,
     group: Optional[Group],
+    updated_by_sub: Optional[str] = None,
 ) -> dict:
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
@@ -96,9 +97,17 @@ def update_user_role_and_group(
             detail="group_admin role requires group_id",
         )
 
+    previous_group_id = selected_user.group_id
     selected_user.group_id = group.group_id if group else None
     selected_user.role = role
     selected_user.member_since = datetime.now(timezone.utc)
+    cancel_pending_membership_requests_after_group_change(
+        db,
+        selected_user,
+        previous_group_id=previous_group_id,
+        new_group_id=selected_user.group_id,
+        resolved_by_sub=updated_by_sub,
+    )
     commit_or_rollback(db)
     return serialize_user_profile(selected_user)
 
@@ -106,6 +115,119 @@ def update_user_role_and_group(
 def assign_user_to_group(user: User, group: Group) -> None:
     user.group_id = group.group_id
     user.member_since = datetime.now(timezone.utc)
+
+
+def cancel_pending_membership_entry_requests(
+    db: Session,
+    user: User,
+    *,
+    resolved_by_sub: Optional[str],
+    exclude_request_id: Optional[object] = None,
+) -> None:
+    requests = (
+        db.query(Request)
+        .filter(Request.status == RequestStatus.pending.value)
+        .filter(
+            or_(
+                and_(
+                    Request.request_type == RequestType.invite.value,
+                    Request.receiver_sub == user.user_sub,
+                ),
+                and_(
+                    Request.request_type == RequestType.join_request.value,
+                    Request.sender_sub == user.user_sub,
+                ),
+            )
+        )
+    )
+    if exclude_request_id is not None:
+        requests = requests.filter(Request.request_id != exclude_request_id)
+
+    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
+
+
+def cancel_pending_demember_requests_for_group(
+    db: Session,
+    user: User,
+    group_id: object,
+    *,
+    resolved_by_sub: Optional[str],
+    exclude_request_id: Optional[object] = None,
+) -> None:
+    requests = (
+        db.query(Request)
+        .filter_by(
+            status=RequestStatus.pending.value,
+            request_type=RequestType.demember_request.value,
+            sender_sub=user.user_sub,
+            group_id=group_id,
+        )
+    )
+    if exclude_request_id is not None:
+        requests = requests.filter(Request.request_id != exclude_request_id)
+
+    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
+
+
+def cancel_pending_membership_requests_after_group_change(
+    db: Session,
+    user: User,
+    *,
+    previous_group_id: Optional[object],
+    new_group_id: Optional[object],
+    resolved_by_sub: Optional[str],
+) -> None:
+    if new_group_id is not None:
+        cancel_pending_membership_entry_requests(
+            db,
+            user,
+            resolved_by_sub=resolved_by_sub,
+        )
+
+    if previous_group_id is not None and str(previous_group_id) != str(new_group_id):
+        cancel_pending_demember_requests_for_group(
+            db,
+            user,
+            previous_group_id,
+            resolved_by_sub=resolved_by_sub,
+        )
+
+
+def _cancel_pending_requests(
+    db: Session,
+    requests: list[Request],
+    resolved_by_sub: Optional[str],
+) -> None:
+    resolved_at = datetime.now(timezone.utc)
+    for request in requests:
+        _snapshot_request_context(db, request)
+        request.status = RequestStatus.cancelled.value
+        request.resolved_at = resolved_at
+        request.resolved_by_sub = resolved_by_sub
+
+
+def _snapshot_request_context(db: Session, request: Request) -> None:
+    group = db.query(Group).filter_by(group_id=request.group_id).first()
+    if group and not request.group_name_snapshot:
+        request.group_name_snapshot = group.name
+
+    snapshot_pairs = [
+        ("sender_sub", "sender_email_snapshot"),
+        ("receiver_sub", "receiver_email_snapshot"),
+        ("created_by_sub", "created_by_email_snapshot"),
+        ("resolved_by_sub", "resolved_by_email_snapshot"),
+    ]
+    for sub_field, snapshot_field in snapshot_pairs:
+        if getattr(request, snapshot_field):
+            continue
+
+        user_sub = getattr(request, sub_field)
+        if not user_sub:
+            continue
+
+        request_user = db.query(User).filter_by(user_sub=user_sub).first()
+        if request_user:
+            setattr(request, snapshot_field, request_user.email)
 
 
 def get_auth0_management_token() -> Optional[str]:

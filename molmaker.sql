@@ -552,6 +552,12 @@ CREATE INDEX idx_requests_group_status_type ON public.requests USING btree (grou
 
 CREATE INDEX idx_requests_created_by_status ON public.requests USING btree (created_by_sub, status);
 
+--
+-- Name: idx_requests_status_expires_at; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_requests_status_expires_at ON public.requests USING btree (status, expires_at);
+
 
 --
 -- PostgreSQL database dump complete

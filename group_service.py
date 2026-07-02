@@ -18,7 +18,10 @@ from permissions import (
     is_admin,
     is_admin_or_group_admin,
 )
-from user_service import serialize_user_profile
+from user_service import (
+    cancel_pending_demember_requests_for_group,
+    serialize_user_profile,
+)
 from utils import commit_or_rollback
 
 
@@ -109,6 +112,14 @@ def demember_group_user(
     if not can_demember_group_user(acting_user, selected_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
+    previous_group_id = selected_user.group_id
+    if previous_group_id is not None:
+        cancel_pending_demember_requests_for_group(
+            db,
+            selected_user,
+            previous_group_id,
+            resolved_by_sub=acting_user.user_sub,
+        )
     remove_user_from_group(selected_user)
     commit_or_rollback(db)
     return {"detail": "User removed from group successfully"}

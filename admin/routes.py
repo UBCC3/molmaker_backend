@@ -135,4 +135,10 @@ def update_user_role(
         detail="Selected user not found",
     )
     group = get_group_or_404(db, group_id) if group_id else None
-    return update_user_role_and_group(db, selected_user, role, group)
+    return update_user_role_and_group(
+        db,
+        selected_user,
+        role,
+        group,
+        updated_by_sub=user.user_sub,
+    )

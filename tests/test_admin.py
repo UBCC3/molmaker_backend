@@ -233,15 +233,29 @@ class TestAdminAPI:
         assert db.query(Group).filter_by(name="New Group").first() is None
 
     def test_admin_can_update_user_role_and_group(
-        self, client, db, group_factory, user_factory
+        self, client, db, group_factory, user_factory, request_factory
     ):
         """
         PUT /admin/users/{user_sub} should let admins update role and group.
         """
         admin_group = group_factory(name="Admins")
         target_group = group_factory(name="Target Group")
-        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+        other_group = group_factory(name="Other Group")
+        admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
         target = user_factory(user_sub="auth0|target", role="member")
+        invite = request_factory(
+            sender=None,
+            receiver=target,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=admin.user_sub,
+        )
+        join_request = request_factory(
+            sender=target,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
 
         response = client.put(
             f"/admin/users/{target.user_sub}",
@@ -259,14 +273,28 @@ class TestAdminAPI:
         db.refresh(target)
         assert target.role == "group_admin"
         assert target.group_id == target_group.group_id
+        db.refresh(invite)
+        db.refresh(join_request)
+        assert invite.status == "cancelled"
+        assert invite.resolved_by_sub == admin.user_sub
+        assert join_request.status == "cancelled"
+        assert join_request.resolved_by_sub == admin.user_sub
 
-    def test_admin_can_clear_user_group(self, client, db, group_factory, user_factory):
+    def test_admin_can_clear_user_group(
+        self, client, db, group_factory, user_factory, request_factory
+    ):
         """
         Omitting group_id should clear the selected user's group.
         """
         group = group_factory()
-        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
         target = user_factory(group=group, user_sub="auth0|target", role="member")
+        demember_request = request_factory(
+            sender=target,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
 
         response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
 
@@ -275,6 +303,9 @@ class TestAdminAPI:
         db.refresh(target)
         assert target.group_id is None
         assert target.role == "member"
+        db.refresh(demember_request)
+        assert demember_request.status == "cancelled"
+        assert demember_request.resolved_by_sub == admin.user_sub
 
     def test_group_admin_role_requires_group_id(
         self, client, db, group_factory, user_factory

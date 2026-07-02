@@ -34,6 +34,10 @@ fields are nullable only so request history can survive user/group deletion.
 Snapshot fields preserve display context when referenced users or groups are
 later deleted.
 
+The lazy expiry query is backed by `idx_requests_status_expires_at` on
+`(status, expires_at)`. The main inbox queries are backed by receiver, sender,
+creator, and group/status indexes.
+
 ## Types And Statuses
 
 Supported `request_type` values:
@@ -181,6 +185,8 @@ the sender or receiver. Other users' identifiers and emails are hidden.
 - Approval revalidates current membership state before applying changes.
 - Successful invite or join approval cancels the joined user's other pending
   invites and join requests.
+- Successful de-member approval cancels any other pending de-member requests
+  for the removed user and group.
 
 `PUT /request/{request_id}/reject`
 
@@ -205,6 +211,14 @@ where `expires_at <= now`.
 Requests are also revalidated at resolution time. If a request can no longer be
 acted on, for example because the target user joined another group, it is marked
 `cancelled`.
+
+Direct membership changes outside the request approval endpoints also clean up
+pending request state:
+
+- Directly assigning a user to a group cancels that user's pending invites and
+  join requests.
+- Directly moving or removing a user from a group cancels pending de-member
+  requests for that user and previous group.
 
 When an associated user or group is deleted:
 

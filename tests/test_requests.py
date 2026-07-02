@@ -575,6 +575,39 @@ class TestRequestResolutionAPI:
         assert sender.role == "member"
         assert request.status == "approved"
 
+    def test_demember_approval_cancels_duplicate_pending_demember_requests(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Approving one de-member request should cancel duplicate pending rows.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        sender = user_factory(group=group, user_sub="auth0|member", role="member")
+        approved_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        duplicate_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{approved_request.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(approved_request)
+        db.refresh(duplicate_request)
+        assert approved_request.status == "approved"
+        assert duplicate_request.status == "cancelled"
+        assert duplicate_request.resolved_by_sub == group_admin.user_sub
+        assert duplicate_request.resolved_at is not None
+
     def test_group_admin_cannot_approve_another_group_admin_demember_request(
         self, client, set_auth_user, db, group_factory, user_factory, request_factory
     ):

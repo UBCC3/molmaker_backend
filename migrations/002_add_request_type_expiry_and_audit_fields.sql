@@ -107,4 +107,7 @@ ALTER TABLE public.requests
 CREATE INDEX IF NOT EXISTS idx_requests_created_by_status
 ON public.requests(created_by_sub, status);
 
+CREATE INDEX IF NOT EXISTS idx_requests_status_expires_at
+ON public.requests(status, expires_at);
+
 COMMIT;
