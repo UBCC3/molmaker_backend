@@ -12,7 +12,11 @@ from dependencies import get_db
 from auth import verify_token
 
 from asset_service import list_all_jobs_with_metadata
-from group_service import create_group as create_group_record, list_groups_with_users
+from group_service import (
+    create_group as create_group_record,
+    get_group_or_404,
+    list_groups_with_users,
+)
 from permissions import has_admin_permission
 from user_service import (
     get_user_or_404,
@@ -125,4 +129,10 @@ def update_user_role(
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    return update_user_role_and_group(db, selected_user_sub, role, group_id)
+    selected_user = get_user_or_404(
+        db,
+        selected_user_sub,
+        detail="Selected user not found",
+    )
+    group = get_group_or_404(db, group_id) if group_id else None
+    return update_user_role_and_group(db, selected_user, role, group)

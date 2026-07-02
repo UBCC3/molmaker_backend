@@ -15,6 +15,7 @@ class TestUsersAPI:
         assert result["email"] == "new-user@test.com"
         assert result["role"] == "member"
         assert result["group_id"] is None
+        assert result["member_since"] is not None
 
         user = db.query(User).filter_by(user_sub="auth0|testuser").one()
         assert user.email == "new-user@test.com"
@@ -43,6 +44,7 @@ class TestUsersAPI:
         assert result["email"] == "existing@test.com"
         assert result["role"] == "group_admin"
         assert result["group_id"] == str(group.group_id)
+        assert result["member_since"] == user.member_since.isoformat()
 
         db.refresh(user)
         assert user.email == "existing@test.com"
@@ -60,11 +62,12 @@ class TestUsersAPI:
         assert response.status_code == 401
         assert response.json()["detail"] == "Unauthorized"
 
-    def test_get_user_by_email_returns_matching_user(self, client, group_factory, user_factory):
+    def test_admin_can_get_user_by_email(self, client, group_factory, user_factory):
         """
-        GET /users/{email} should return the user matching the requested email.
+        Overall admins can look up any user by email.
         """
         group = group_factory()
+        user_factory(user_sub="auth0|testuser", role="admin")
         user = user_factory(
             group=group,
             user_sub="auth0|target",
@@ -80,6 +83,76 @@ class TestUsersAPI:
         assert result["email"] == "target@test.com"
         assert result["role"] == "member"
         assert result["group_id"] == str(group.group_id)
+        assert result["member_since"] == user.member_since.isoformat()
+
+    def test_group_admin_can_get_same_group_user_by_email(
+        self, client, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Group admins can look up users in their own group.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        user = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            email="target@test.com",
+            role="member",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.get("/users/target@test.com")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["user_sub"] == user.user_sub
+        assert result["email"] == "target@test.com"
+        assert result["role"] == "member"
+        assert result["group_id"] == str(group.group_id)
+        assert result["member_since"] == user.member_since.isoformat()
+
+    def test_user_can_get_self_by_email(self, client, user_factory):
+        """
+        Users can look up their own profile by email.
+        """
+        user = user_factory(user_sub="auth0|testuser", email="self@test.com")
+
+        response = client.get("/users/self@test.com")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["user_sub"] == user.user_sub
+        assert result["email"] == "self@test.com"
+        assert result["member_since"] == user.member_since.isoformat()
+
+    def test_member_cannot_get_other_user_by_email(self, client, group_factory, user_factory):
+        """
+        Normal members cannot use email lookup to discover other users.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+        user_factory(group=group, user_sub="auth0|target", email="target@test.com")
+
+        response = client.get("/users/target@test.com")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "User not found"
+
+    def test_group_admin_cannot_get_user_outside_group_by_email(
+        self, client, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Group admins cannot look up ungrouped or other-group users by email.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        user_factory(user_sub="auth0|target", email="target@test.com", group_id=None)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.get("/users/target@test.com")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "User not found"
 
     def test_get_user_by_email_returns_404_for_missing_user(self, client):
         """

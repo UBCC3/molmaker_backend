@@ -43,7 +43,9 @@ class TestGroupsAPI:
         assert users[current_user.user_sub]["email"] == current_user.email
         assert users[current_user.user_sub]["group_id"] == str(group.group_id)
         assert users[current_user.user_sub]["role"] == "group_admin"
+        assert users[current_user.user_sub]["member_since"] == current_user.member_since.isoformat()
         assert users[group_member.user_sub]["role"] == "member"
+        assert users[group_member.user_sub]["member_since"] == group_member.member_since.isoformat()
 
     def test_group_users_rejects_normal_group_members(
         self, client, group_factory, user_factory

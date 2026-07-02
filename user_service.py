@@ -6,8 +6,8 @@ import requests
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from group_service import get_group_or_404
-from models import Job, Structure, Tags, User
+from models import Group, Job, Structure, Tags, User
+from permissions import can_view_user_profile
 from utils import commit_or_rollback, get_user_sub
 
 
@@ -57,52 +57,48 @@ def get_user_by_email_or_404(db: Session, email: str) -> User:
     return user
 
 
-def serialize_user_for_admin(user: User) -> dict:
+def serialize_user_profile(user: User) -> dict:
     return {
         "user_sub": user.user_sub,
         "email": user.email,
         "role": user.role,
         "group_id": str(user.group_id) if user.group_id else None,
+        "member_since": user.member_since.isoformat() if user.member_since else None,
     }
 
 
+def lookup_user_by_email_for_user(db: Session, actor: User, email: str) -> dict:
+    target = get_user_by_email_or_404(db, email)
+    if not can_view_user_profile(actor, target):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return serialize_user_profile(target)
+
+
 def list_users_for_admin(db: Session) -> list[dict]:
-    return [serialize_user_for_admin(user) for user in db.query(User).all()]
+    return [serialize_user_profile(user) for user in db.query(User).all()]
 
 
 def update_user_role_and_group(
     db: Session,
-    selected_user_sub: str,
+    selected_user: User,
     role: str,
-    group_id: Optional[str],
+    group: Optional[Group],
 ) -> dict:
     if role not in VALID_USER_ROLES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
 
-    selected_user = get_user_or_404(
-        db,
-        selected_user_sub,
-        detail="Selected user not found",
-    )
-
-    if role == "group_admin" and not group_id:
+    if role == "group_admin" and not group:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="group_admin role requires group_id",
-    )
+        )
 
-    if group_id:
-        selected_user.group_id = get_group_or_404(db, group_id).group_id
-    else:
-        selected_user.group_id = None
-
+    selected_user.group_id = group.group_id if group else None
     selected_user.role = role
     selected_user.member_since = datetime.now(timezone.utc)
     commit_or_rollback(db)
-    return {
-        **serialize_user_for_admin(selected_user),
-        "member_since": selected_user.member_since.isoformat(),
-    }
+    return serialize_user_profile(selected_user)
 
 
 def get_auth0_management_token() -> Optional[str]:

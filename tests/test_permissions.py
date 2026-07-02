@@ -1,5 +1,6 @@
 from permissions import (
     can_demember_group_user,
+    can_view_user_profile,
     has_admin_permission,
     has_group_admin_permission,
 )
@@ -84,3 +85,41 @@ class TestAdminPermissionHelpers:
         target = user_factory(group=group, role="group_admin")
 
         assert can_demember_group_user(group_admin, target) is False
+
+    def test_admin_can_view_any_user_profile(self, group_factory, user_factory):
+        group = group_factory()
+        admin = user_factory(role="admin")
+        target = user_factory(group=group)
+
+        assert can_view_user_profile(admin, target) is True
+
+    def test_user_can_view_own_profile(self, user_factory):
+        user = user_factory(role="member")
+
+        assert can_view_user_profile(user, user) is True
+
+    def test_group_admin_can_view_same_group_user_profile(
+        self, group_factory, user_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(group=group, role="group_admin")
+        target = user_factory(group=group)
+
+        assert can_view_user_profile(group_admin, target) is True
+
+    def test_group_admin_cannot_view_outside_group_user_profile(
+        self, group_factory, user_factory
+    ):
+        group = group_factory()
+        other_group = group_factory()
+        group_admin = user_factory(group=group, role="group_admin")
+        target = user_factory(group=other_group)
+
+        assert can_view_user_profile(group_admin, target) is False
+
+    def test_member_cannot_view_other_user_profile(self, group_factory, user_factory):
+        group = group_factory()
+        member = user_factory(group=group, role="member")
+        target = user_factory(group=group)
+
+        assert can_view_user_profile(member, target) is False

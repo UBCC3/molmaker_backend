@@ -18,6 +18,7 @@ from permissions import (
     is_admin,
     is_admin_or_group_admin,
 )
+from user_service import serialize_user_profile
 from utils import commit_or_rollback
 
 
@@ -78,14 +79,7 @@ def list_groups_with_users(db: Session) -> list[dict]:
             {
                 "group_id": str(group.group_id),
                 "name": group.name,
-                "users": [
-                    {
-                        "user_sub": user.user_sub,
-                        "email": user.email,
-                        "role": user.role,
-                    }
-                    for user in users
-                ],
+                "users": [serialize_user_profile(user) for user in users],
             }
         )
     return result

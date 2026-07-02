@@ -22,7 +22,7 @@ from group_service import (
 )
 from asset_service import get_asset_or_404, serialize_job, serialize_structure
 from models import Job, Structure
-from user_service import get_user_or_404
+from user_service import get_user_or_404, serialize_user_profile
 from utils import get_user_sub
 
 router = APIRouter(prefix="/group", tags=["jobs"])
@@ -157,7 +157,10 @@ def get_all_users(
     :return: List of user details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return list_group_users(db, user)
+    return [
+        serialize_user_profile(group_user)
+        for group_user in list_group_users(db, user)
+    ]
 
 @router.delete("/users/{selected_user_sub}")
 def remove_group_user(

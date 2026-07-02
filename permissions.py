@@ -39,6 +39,13 @@ def can_delete_user(user: User) -> bool:
     return is_admin(user)
 
 
+def can_view_user_profile(actor: User, target: User) -> bool:
+    if is_admin(actor) or _same_id(actor.user_sub, target.user_sub):
+        return True
+
+    return is_group_admin(actor) and _same_id(actor.group_id, target.group_id)
+
+
 def can_demember_group_user(actor: User, target: User) -> bool:
     if is_admin(actor):
         return True

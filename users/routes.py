@@ -7,8 +7,9 @@ from permissions import can_delete_user
 from user_service import (
     delete_user_account,
     get_user_or_404,
-    get_user_by_email_or_404,
+    lookup_user_by_email_for_user,
     read_or_create_current_user,
+    serialize_user_profile,
 )
 from utils import get_user_sub
 
@@ -23,7 +24,7 @@ def read_or_create_me(
     """
     Get the current user's profile, creating it on first login.
     """
-    return read_or_create_current_user(db, current_user, email)
+    return serialize_user_profile(read_or_create_current_user(db, current_user, email))
 
 @router.get("/{email}")
 def get_user_by_email(
@@ -32,9 +33,17 @@ def get_user_by_email(
     current_user=Depends(verify_token),
 ):
     """
-    Get a user by their email address.
+    Get a user by email when the authenticated user is allowed to view them.
+    Overall admins may view any user. Group admins may view users in their
+    current group. Users may view themselves. Other lookups return 404 to avoid
+    revealing whether an email exists.
+    :param email: Email address to look up.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: User profile details.
     """
-    return get_user_by_email_or_404(db, email)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return lookup_user_by_email_for_user(db, user, email)
 
 
 @router.delete("/{user_sub}")

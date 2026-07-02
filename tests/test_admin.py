@@ -30,12 +30,14 @@ class TestAdminAPI:
             "email": admin.email,
             "role": "admin",
             "group_id": str(group.group_id),
+            "member_since": admin.member_since.isoformat(),
         }
         assert users[member.user_sub] == {
             "user_sub": member.user_sub,
             "email": member.email,
             "role": "member",
             "group_id": str(group.group_id),
+            "member_since": member.member_since.isoformat(),
         }
 
     def test_admin_users_list_requires_admin_user(self, client, user_factory):
@@ -77,6 +79,8 @@ class TestAdminAPI:
                 "user_sub": admin.user_sub,
                 "email": admin.email,
                 "role": "admin",
+                "group_id": str(admin_group.group_id),
+                "member_since": admin.member_since.isoformat(),
             }
         ]
         assert groups["Chemistry"]["group_id"] == str(chemistry_group.group_id)
@@ -85,6 +89,8 @@ class TestAdminAPI:
                 "user_sub": member.user_sub,
                 "email": member.email,
                 "role": "member",
+                "group_id": str(chemistry_group.group_id),
+                "member_since": member.member_since.isoformat(),
             }
         ]
 
