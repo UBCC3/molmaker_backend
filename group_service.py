@@ -6,8 +6,8 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from asset_service import list_group_assets
-from enum_types import AssetOwnership
-from models import Asset, Group, Job, Structure, User
+from enum_types import AssetOwnership, RequestStatus
+from models import Asset, Group, Job, Request, Structure, User
 from permissions import (
     can_demember_group_user,
     can_delete_group,
@@ -109,12 +109,16 @@ def demember_group_user(
     if not can_demember_group_user(acting_user, selected_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    selected_user.group_id = None
-    if selected_user.role == "group_admin":
-        selected_user.role = "member"
-    selected_user.member_since = datetime.now(timezone.utc)
+    remove_user_from_group(selected_user)
     commit_or_rollback(db)
     return {"detail": "User removed from group successfully"}
+
+
+def remove_user_from_group(user: User) -> None:
+    user.group_id = None
+    if user.role == "group_admin":
+        user.role = "member"
+    user.member_since = datetime.now(timezone.utc)
 
 
 def list_group_assets_for_user(
@@ -350,6 +354,17 @@ def delete_group(db: Session, user: User, group_id: str) -> dict:
             asset.group_id = None
             if not asset.user_sub:
                 asset.is_deleted = True
+
+    requests = db.query(Request).filter_by(group_id=group.group_id).all()
+    resolved_at = datetime.now(timezone.utc)
+    for request in requests:
+        if not request.group_name_snapshot:
+            request.group_name_snapshot = group.name
+        if request.status == RequestStatus.pending.value:
+            request.status = RequestStatus.cancelled.value
+            request.resolved_at = resolved_at
+            request.resolved_by_sub = None
+        request.group_id = None
 
     db.delete(group)
     commit_or_rollback(db)

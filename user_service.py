@@ -4,9 +4,11 @@ from typing import Dict, Optional
 
 import requests
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models import Group, Job, Structure, Tags, User
+from enum_types import RequestStatus
+from models import Group, Job, Request, Structure, Tags, User
 from permissions import can_view_user_profile
 from utils import commit_or_rollback, get_user_sub
 
@@ -101,6 +103,11 @@ def update_user_role_and_group(
     return serialize_user_profile(selected_user)
 
 
+def assign_user_to_group(user: User, group: Group) -> None:
+    user.group_id = group.group_id
+    user.member_since = datetime.now(timezone.utc)
+
+
 def get_auth0_management_token() -> Optional[str]:
     try:
         response = requests.post(
@@ -139,6 +146,35 @@ def delete_user_account(db: Session, user_sub: str) -> dict:
 
 
 def delete_user_local_data(db: Session, user: User) -> None:
+    requests = (
+        db.query(Request)
+        .filter(
+            or_(
+                Request.sender_sub == user.user_sub,
+                Request.receiver_sub == user.user_sub,
+                Request.created_by_sub == user.user_sub,
+                Request.resolved_by_sub == user.user_sub,
+            )
+        )
+        .all()
+    )
+    resolved_at = datetime.now(timezone.utc)
+    for request in requests:
+        _snapshot_deleted_user_request(request, user)
+        if request.status == RequestStatus.pending.value:
+            request.status = RequestStatus.cancelled.value
+            request.resolved_at = resolved_at
+            request.resolved_by_sub = None
+
+        if request.sender_sub == user.user_sub:
+            request.sender_sub = None
+        if request.receiver_sub == user.user_sub:
+            request.receiver_sub = None
+        if request.created_by_sub == user.user_sub:
+            request.created_by_sub = None
+        if request.resolved_by_sub == user.user_sub:
+            request.resolved_by_sub = None
+
     for asset_model in (Job, Structure):
         assets = db.query(asset_model).filter_by(user_sub=user.user_sub).all()
         for asset in assets:
@@ -151,6 +187,17 @@ def delete_user_local_data(db: Session, user: User) -> None:
         db.delete(tag)
 
     db.delete(user)
+
+
+def _snapshot_deleted_user_request(request: Request, user: User) -> None:
+    if request.sender_sub == user.user_sub and not request.sender_email_snapshot:
+        request.sender_email_snapshot = user.email
+    if request.receiver_sub == user.user_sub and not request.receiver_email_snapshot:
+        request.receiver_email_snapshot = user.email
+    if request.created_by_sub == user.user_sub and not request.created_by_email_snapshot:
+        request.created_by_email_snapshot = user.email
+    if request.resolved_by_sub == user.user_sub and not request.resolved_by_email_snapshot:
+        request.resolved_by_email_snapshot = user.email
 
 
 def delete_user_from_auth0(user_sub: str, token: str, db: Session) -> None:

@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
-from models import Asset, Group, User
+from enum_types import RequestType
+from models import Asset, Group, Request, User
 
 
 # Shared predicates
@@ -83,6 +84,43 @@ def can_list_group_users(user: User) -> bool:
 
 def can_access_user_requests(requesting_user_sub: str, target_user_sub: str) -> bool:
     return _same_id(requesting_user_sub, target_user_sub)
+
+
+# Request permissions
+
+def can_create_invite_request(user: User) -> bool:
+    return is_admin_or_group_admin(user) and user.group_id is not None
+
+
+def can_manage_group_requests(user: User, group_id: object) -> bool:
+    return is_admin(user) or is_group_admin_for_group(user, group_id)
+
+
+def can_list_group_requests(user: User) -> bool:
+    return is_admin_or_group_admin(user) and user.group_id is not None
+
+
+def can_approve_invite_request(user: User, request: Request) -> bool:
+    return _same_id(request.receiver_sub, user.user_sub)
+
+
+def can_reject_request(user: User, request: Request) -> bool:
+    if request.request_type == RequestType.invite.value:
+        return _same_id(request.receiver_sub, user.user_sub)
+
+    return can_manage_group_requests(user, request.group_id)
+
+
+def can_cancel_request(user: User, request: Request) -> bool:
+    return (
+        _same_id(request.sender_sub, user.user_sub)
+        or _same_id(request.created_by_sub, user.user_sub)
+        or can_manage_group_requests(user, request.group_id)
+    )
+
+
+def can_view_request_user_metadata(user: User, request: Request) -> bool:
+    return can_manage_group_requests(user, request.group_id)
 
 
 # Asset predicates

@@ -1,5 +1,5 @@
 from conftest import make_auth0_payload
-from models import Job, Structure, Tags, User
+from models import Job, Request, Structure, Tags, User
 
 
 class TestUsersAPI:
@@ -187,6 +187,7 @@ class TestUsersAPI:
         tag_factory,
         structure_factory,
         job_factory,
+        request_factory,
     ):
         """
         DELETE /users/{user_sub} should remove a user, soft-delete user-only
@@ -221,6 +222,35 @@ class TestUsersAPI:
             tags=[tag],
             structures=[co_owned_structure],
         )
+        sent_request = request_factory(
+            sender=target,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        received_request = request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=admin.user_sub,
+        )
+        created_request = request_factory(
+            sender=None,
+            receiver=admin,
+            group=group,
+            request_type="invite",
+            created_by_sub=target.user_sub,
+        )
+        resolved_request = request_factory(
+            sender=admin,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+            status="rejected",
+            resolved_at=target.member_since,
+            resolved_by_sub=target.user_sub,
+        )
 
         response = client.delete(f"/users/{target.user_sub}")
 
@@ -236,6 +266,29 @@ class TestUsersAPI:
         assert structure.is_deleted is True
         assert structure.user_sub is None
         assert structure.group_id is None
+        affected_request_ids = [
+            sent_request.request_id,
+            received_request.request_id,
+            created_request.request_id,
+            resolved_request.request_id,
+        ]
+        affected_requests = (
+            db.query(Request)
+            .filter(Request.request_id.in_(affected_request_ids))
+            .all()
+        )
+        assert len(affected_requests) == 4
+        affected_by_id = {request.request_id: request for request in affected_requests}
+        assert affected_by_id[sent_request.request_id].status == "cancelled"
+        assert affected_by_id[sent_request.request_id].sender_sub is None
+        assert affected_by_id[sent_request.request_id].sender_email_snapshot == target.email
+        assert affected_by_id[received_request.request_id].receiver_sub is None
+        assert affected_by_id[received_request.request_id].receiver_email_snapshot == target.email
+        assert affected_by_id[created_request.request_id].created_by_sub is None
+        assert affected_by_id[created_request.request_id].created_by_email_snapshot == target.email
+        assert affected_by_id[resolved_request.request_id].status == "rejected"
+        assert affected_by_id[resolved_request.request_id].resolved_by_sub is None
+        assert affected_by_id[resolved_request.request_id].resolved_by_email_snapshot == target.email
         assert db.query(Tags).filter_by(tag_id=tag.tag_id).first() is None
         db.refresh(co_owned_job)
         db.refresh(co_owned_structure)

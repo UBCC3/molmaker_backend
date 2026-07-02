@@ -81,10 +81,19 @@ CREATE TABLE public.requests (
     request_id uuid NOT NULL,
     status character varying NOT NULL,
     request_type character varying DEFAULT 'invite'::character varying NOT NULL,
-    requested_at timestamp with time zone,
-    sender_sub character varying NOT NULL,
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone DEFAULT (now() + '7 days'::interval) NOT NULL,
+    resolved_at timestamp with time zone,
+    sender_sub character varying,
     receiver_sub character varying,
-    group_id uuid NOT NULL
+    created_by_sub character varying,
+    resolved_by_sub character varying,
+    group_id uuid,
+    sender_email_snapshot character varying,
+    receiver_email_snapshot character varying,
+    created_by_email_snapshot character varying,
+    resolved_by_email_snapshot character varying,
+    group_name_snapshot character varying
 );
 
 --
@@ -191,10 +200,10 @@ c3383ec3-8f50-4162-90c8-7c6bf6ddda18	92d1dc3c-f6bc-429c-be29-4ae99c64c73d
 -- Data for Name: requests; Type: TABLE DATA; Schema: public
 --
 
-COPY public.requests (request_id, status, requested_at, sender_sub, receiver_sub, group_id) FROM stdin;
-a8cc679c-2354-4a77-8e9d-378de58f8ff9	approved	2025-07-24 12:59:08.642048-07	auth0|686ffc7aa0025875955dae19	auth0|686f5a35f24ed5b3e3b966ea	2ba29864-e9c7-47b3-a718-3e854857ce57
-98bec210-e1e6-4e1d-bade-a3f8d32fe0f8	pending	2025-07-29 16:19:00.833823-07	auth0|686ffc7aa0025875955dae19	auth0|6876a9bc512247093911921c	2ba29864-e9c7-47b3-a718-3e854857ce57
-4ab24dff-0e53-465a-9864-133b6c7853f7	approved	2025-07-31 10:03:05.833293-07	auth0|686ffc7aa0025875955dae19	auth0|686ffc1ea0025875955dadfe	2ba29864-e9c7-47b3-a718-3e854857ce57
+COPY public.requests (request_id, status, requested_at, expires_at, resolved_at, sender_sub, receiver_sub, created_by_sub, resolved_by_sub, group_id, sender_email_snapshot, receiver_email_snapshot, created_by_email_snapshot, resolved_by_email_snapshot, group_name_snapshot) FROM stdin;
+a8cc679c-2354-4a77-8e9d-378de58f8ff9	approved	2025-07-24 12:59:08.642048-07	2025-07-31 12:59:08.642048-07	2025-07-24 12:59:08.642048-07	auth0|686ffc7aa0025875955dae19	auth0|686f5a35f24ed5b3e3b966ea	auth0|686ffc7aa0025875955dae19	\\N	2ba29864-e9c7-47b3-a718-3e854857ce57	\\N	\\N	\\N	\\N	\\N
+98bec210-e1e6-4e1d-bade-a3f8d32fe0f8	pending	2025-07-29 16:19:00.833823-07	2025-08-05 16:19:00.833823-07	\\N	auth0|686ffc7aa0025875955dae19	auth0|6876a9bc512247093911921c	auth0|686ffc7aa0025875955dae19	\\N	2ba29864-e9c7-47b3-a718-3e854857ce57	\\N	\\N	\\N	\\N	\\N
+4ab24dff-0e53-465a-9864-133b6c7853f7	approved	2025-07-31 10:03:05.833293-07	2025-08-07 10:03:05.833293-07	2025-07-31 10:03:05.833293-07	auth0|686ffc7aa0025875955dae19	auth0|686ffc1ea0025875955dadfe	auth0|686ffc7aa0025875955dae19	\\N	2ba29864-e9c7-47b3-a718-3e854857ce57	\\N	\\N	\\N	\\N	\\N
 \.
 
 
@@ -431,7 +440,7 @@ ALTER TABLE ONLY public.jobs_tags
 --
 
 ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+    ADD CONSTRAINT requests_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(group_id) ON DELETE SET NULL;
 
 
 --
@@ -439,7 +448,7 @@ ALTER TABLE ONLY public.requests
 --
 
 ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_receiver_sub_fkey FOREIGN KEY (receiver_sub) REFERENCES public.users(user_sub);
+    ADD CONSTRAINT requests_receiver_sub_fkey FOREIGN KEY (receiver_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
 
 
 --
@@ -447,7 +456,23 @@ ALTER TABLE ONLY public.requests
 --
 
 ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_sender_sub_fkey FOREIGN KEY (sender_sub) REFERENCES public.users(user_sub);
+    ADD CONSTRAINT requests_sender_sub_fkey FOREIGN KEY (sender_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
+
+
+--
+-- Name: requests requests_created_by_sub_fkey; Type: FK CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_created_by_sub_fkey FOREIGN KEY (created_by_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
+
+
+--
+-- Name: requests requests_resolved_by_sub_fkey; Type: FK CONSTRAINT; Schema: public
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_resolved_by_sub_fkey FOREIGN KEY (resolved_by_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
 
 
 --
@@ -520,6 +545,12 @@ CREATE INDEX idx_requests_sender_status ON public.requests USING btree (sender_s
 --
 
 CREATE INDEX idx_requests_group_status_type ON public.requests USING btree (group_id, status, request_type);
+
+--
+-- Name: idx_requests_created_by_status; Type: INDEX; Schema: public
+--
+
+CREATE INDEX idx_requests_created_by_status ON public.requests USING btree (created_by_sub, status);
 
 
 --

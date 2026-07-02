@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -243,13 +243,25 @@ def request_factory(db):
     Factory for persisted Request rows between two users and a group.
     """
     def create_request(sender, receiver, group, **overrides):
+        sender_sub = sender.user_sub if hasattr(sender, "user_sub") else sender
+        receiver_sub = receiver.user_sub if hasattr(receiver, "user_sub") else receiver
         values = {
             "request_id": uuid.uuid4(),
             "status": "pending",
+            "request_type": "invite",
             "requested_at": datetime.now(timezone.utc),
-            "sender_sub": sender.user_sub if hasattr(sender, "user_sub") else sender,
-            "receiver_sub": receiver.user_sub if hasattr(receiver, "user_sub") else receiver,
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+            "resolved_at": None,
+            "sender_sub": sender_sub,
+            "receiver_sub": receiver_sub,
+            "created_by_sub": sender_sub or receiver_sub,
+            "resolved_by_sub": None,
             "group_id": group.group_id if hasattr(group, "group_id") else group,
+            "sender_email_snapshot": None,
+            "receiver_email_snapshot": None,
+            "created_by_email_snapshot": None,
+            "resolved_by_email_snapshot": None,
+            "group_name_snapshot": None,
         }
         values.update(overrides)
         return _save(db, Request(**values))

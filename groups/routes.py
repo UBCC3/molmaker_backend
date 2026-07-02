@@ -4,12 +4,17 @@ from fastapi import (
     APIRouter,
     Form,
     Depends,
+    Query,
 )
 from sqlalchemy.orm import Session
 
-from enum_types import AssetOwnership
+from enum_types import AssetOwnership, RequestStatus, RequestType
 from dependencies import get_db
 from auth import verify_token
+from request_service import (
+    DEFAULT_RECENT_DAYS,
+    list_group_requests,
+)
 from group_service import (
     delete_group as delete_group_by_id,
     demember_group_user,
@@ -185,6 +190,29 @@ def remove_group_user(
         detail="Selected user not found",
     )
     return demember_group_user(db, user, selected_user)
+
+
+@router.get("/requests")
+def get_group_requests(
+    request_status: RequestStatus = Query(RequestStatus.pending, alias="status"),
+    request_type: RequestType | None = None,
+    recent_days: int = DEFAULT_RECENT_DAYS,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    List requests associated with the authenticated group admin's current group.
+    This includes group invites, join requests, and de-member requests. Pending
+    requests are returned by default; terminal statuses use recent_days.
+    :param request_status: Request status filter, passed as query parameter status.
+    :param request_type: Optional request type filter.
+    :param recent_days: Recent terminal-request window in days.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Request details for the current group.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_requests(db, user, request_status, request_type, recent_days)
 
 @router.patch("/{group_id}")
 def update_group(

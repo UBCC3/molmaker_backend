@@ -16,6 +16,20 @@ class AssetOwnership(str, Enum):
     co_owned = "co_owned"
 
 
+class RequestType(str, Enum):
+    invite = "invite"
+    join_request = "join_request"
+    demember_request = "demember_request"
+
+
+class RequestStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    expired = "expired"
+    cancelled = "cancelled"
+
+
 calculation_types = {
     'Molecular Energy': 'energy',
 	'Geometric Optimization': 'optimization',

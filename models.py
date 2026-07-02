@@ -18,7 +18,7 @@ from sqlalchemy.orm import declared_attr, relationship, synonym
 
 from database import Base
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import ClassVar
 
 jobs_structures = Table(
@@ -250,13 +250,11 @@ class User(Base):
         "Request",
         foreign_keys="Request.sender_sub",
         back_populates="sender",
-        cascade="all, delete-orphan"
     )
     received_requests = relationship(
         "Request",
         foreign_keys="Request.receiver_sub",
         back_populates="receiver",
-        cascade="all, delete-orphan"
     )
 
 class Request(Base):
@@ -265,15 +263,33 @@ class Request(Base):
         Index("idx_requests_receiver_status", "receiver_sub", "status"),
         Index("idx_requests_sender_status", "sender_sub", "status"),
         Index("idx_requests_group_status_type", "group_id", "status", "request_type"),
+        Index("idx_requests_created_by_status", "created_by_sub", "status"),
     )
 
     request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    status = Column(String, nullable=False, default='pending') # 'pending', 'approved', 'rejected'
+    status = Column(String, nullable=False, default='pending')
     request_type = Column(String, nullable=False, default='invite')
-    requested_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
-    sender_sub = Column(String, ForeignKey('users.user_sub'), nullable=False)
-    receiver_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=False)
+    requested_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    sender_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
+    receiver_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
+    created_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
+    resolved_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
+    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id', ondelete='SET NULL'), nullable=True)
+    sender_email_snapshot = Column(String, nullable=True)
+    receiver_email_snapshot = Column(String, nullable=True)
+    created_by_email_snapshot = Column(String, nullable=True)
+    resolved_by_email_snapshot = Column(String, nullable=True)
+    group_name_snapshot = Column(String, nullable=True)
 
     sender = relationship("User", foreign_keys=[sender_sub], back_populates="sent_requests")
     receiver = relationship("User", foreign_keys=[receiver_sub], back_populates="received_requests")

@@ -4,7 +4,7 @@ import uuid
 import pytest
 
 from conftest import make_auth0_payload
-from models import Group, Job, Structure, User
+from models import Group, Job, Request, Structure, User
 
 
 def _users_by_sub(response_json):
@@ -1546,7 +1546,7 @@ class TestGroupsAPI:
         assert group.name == "Original"
 
     def test_admin_can_delete_group_and_unassign_users(
-        self, client, db, group_factory, user_factory, job_factory, structure_factory
+        self, client, db, group_factory, user_factory, job_factory, structure_factory, request_factory
     ):
         """
         DELETE /group/{group_id} should soft-delete group-only assets, convert
@@ -1565,6 +1565,13 @@ class TestGroupsAPI:
             structures=[linked_structure],
         )
         group_only_structure = structure_factory(user_sub=None, group_id=group.group_id)
+        request = request_factory(
+            sender=member,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+            created_by_sub=member.user_sub,
+        )
 
         response = client.delete(f"/group/{group.group_id}")
 
@@ -1588,6 +1595,10 @@ class TestGroupsAPI:
         assert group_only_structure.is_deleted is True
         assert group_only_structure.user_sub is None
         assert group_only_structure.group_id is None
+        db.refresh(request)
+        assert request.status == "cancelled"
+        assert request.group_id is None
+        assert request.group_name_snapshot == group.name
         db.refresh(co_owned_job)
         db.refresh(co_owned_structure)
         db.refresh(linked_structure)
