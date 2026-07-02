@@ -179,6 +179,8 @@ the sender or receiver. Other users' identifiers and emails are hidden.
   group.
 - A group admin cannot approve de-membering another group admin.
 - Approval revalidates current membership state before applying changes.
+- Successful invite or join approval cancels the joined user's other pending
+  invites and join requests.
 
 `PUT /request/{request_id}/reject`
 

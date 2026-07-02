@@ -422,6 +422,57 @@ class TestRequestResolutionAPI:
         assert request.resolved_by_sub == receiver.user_sub
         assert request.resolved_at is not None
 
+    def test_invite_approval_cancels_other_pending_membership_requests(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Accepting an invite cancels the user's other pending invites and join requests.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        receiver = user_factory(user_sub="auth0|invitee", group_id=None)
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        other_creator = user_factory(
+            group=other_group,
+            user_sub="auth0|other-group-admin",
+            role="group_admin",
+        )
+        approved_invite = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        other_invite = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=other_creator.user_sub,
+        )
+        other_join_request = request_factory(
+            sender=receiver,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
+        set_auth_user(make_auth0_payload(receiver.user_sub))
+
+        response = client.put(f"/request/{approved_invite.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(approved_invite)
+        db.refresh(other_invite)
+        db.refresh(other_join_request)
+        assert approved_invite.status == "approved"
+        assert other_invite.status == "cancelled"
+        assert other_invite.resolved_by_sub == receiver.user_sub
+        assert other_invite.resolved_at is not None
+        assert other_join_request.status == "cancelled"
+        assert other_join_request.resolved_by_sub == receiver.user_sub
+        assert other_join_request.resolved_at is not None
+
     def test_group_admin_can_approve_join_request(
         self, client, set_auth_user, db, group_factory, user_factory, request_factory
     ):
@@ -447,6 +498,56 @@ class TestRequestResolutionAPI:
         assert sender.group_id == group.group_id
         assert request.status == "approved"
         assert request.resolved_by_sub == group_admin.user_sub
+
+    def test_join_approval_cancels_other_pending_membership_requests(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Approving a join request cancels the user's other pending join requests and invites.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        other_creator = user_factory(
+            group=other_group,
+            user_sub="auth0|other-group-admin",
+            role="group_admin",
+        )
+        sender = user_factory(user_sub="auth0|joiner", group_id=None)
+        approved_join_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        other_join_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
+        other_invite = request_factory(
+            sender=None,
+            receiver=sender,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=other_creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{approved_join_request.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(approved_join_request)
+        db.refresh(other_join_request)
+        db.refresh(other_invite)
+        assert approved_join_request.status == "approved"
+        assert other_join_request.status == "cancelled"
+        assert other_join_request.resolved_by_sub == group_admin.user_sub
+        assert other_join_request.resolved_at is not None
+        assert other_invite.status == "cancelled"
+        assert other_invite.resolved_by_sub == group_admin.user_sub
+        assert other_invite.resolved_at is not None
 
     def test_group_admin_can_approve_demember_request(
         self, client, set_auth_user, db, group_factory, user_factory, request_factory

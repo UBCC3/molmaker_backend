@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from enum_types import RequestStatus, RequestType
@@ -515,6 +515,38 @@ def _resolve_request(
     commit_or_rollback(db, refresh=request)
 
 
+def _cancel_other_pending_membership_requests(
+    db: Session,
+    joined_user: User,
+    approved_request: Request,
+    resolved_by_sub: str,
+) -> None:
+    other_requests = (
+        db.query(Request)
+        .filter(Request.status == RequestStatus.pending.value)
+        .filter(Request.request_id != approved_request.request_id)
+        .filter(
+            or_(
+                and_(
+                    Request.request_type == RequestType.invite.value,
+                    Request.receiver_sub == joined_user.user_sub,
+                ),
+                and_(
+                    Request.request_type == RequestType.join_request.value,
+                    Request.sender_sub == joined_user.user_sub,
+                ),
+            )
+        )
+        .all()
+    )
+    resolved_at = _now()
+    for request in other_requests:
+        _set_request_snapshots(db, request)
+        request.status = RequestStatus.cancelled.value
+        request.resolved_at = resolved_at
+        request.resolved_by_sub = resolved_by_sub
+
+
 def _cancel_invalid_request(db: Session, request: Request, user: User) -> None:
     _resolve_request(
         db,
@@ -555,6 +587,12 @@ def _approve_invite(db: Session, request: Request, user: User) -> None:
         _cancel_invalid_request(db, request, user)
 
     assign_user_to_group(receiver, group)
+    _cancel_other_pending_membership_requests(
+        db,
+        receiver,
+        request,
+        resolved_by_sub=user.user_sub,
+    )
     _resolve_request(
         db,
         request,
@@ -572,6 +610,12 @@ def _approve_join_request(db: Session, request: Request, user: User) -> None:
         _cancel_invalid_request(db, request, user)
 
     assign_user_to_group(sender, group)
+    _cancel_other_pending_membership_requests(
+        db,
+        sender,
+        request,
+        resolved_by_sub=user.user_sub,
+    )
     _resolve_request(
         db,
         request,
