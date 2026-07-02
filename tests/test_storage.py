@@ -174,6 +174,88 @@ class TestConstructFetchScript:
         assert mock_get_urls == [result_key]
 
 
+class TestFetchJobFiles:
+    @pytest.fixture(autouse=True)
+    def mock_fetch_script(self, monkeypatch):
+        calls = []
+
+        def fake_construct_fetch_script(job_id, calculation, success):
+            calls.append((job_id, calculation, success))
+            return {"result": f"https://example.test/{job_id}/result.json"}
+
+        monkeypatch.setattr(
+            "s3.routes.construct_fetch_script",
+            fake_construct_fetch_script,
+        )
+        return calls
+
+    def test_owner_can_fetch_job_files(
+        self,
+        client,
+        set_auth_user,
+        user_factory,
+        job_factory,
+        mock_fetch_script,
+    ):
+        """
+        Job owners can fetch result/artifact URLs for their own jobs.
+        """
+        owner = user_factory(user_sub="auth0|owner")
+        job = job_factory(user_sub=owner.user_sub)
+        set_auth_user(make_auth0_payload(owner.user_sub))
+
+        response = client.get(f"/storage/files/{job.job_id}/energy/completed")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "job_id": str(job.job_id),
+            "calculation": "energy",
+            "status": "completed",
+            "urls": {"result": f"https://example.test/{job.job_id}/result.json"},
+        }
+        assert mock_fetch_script == [(str(job.job_id), "energy", True)]
+
+    def test_member_cannot_fetch_private_job_files_owned_by_another_user(
+        self,
+        client,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+        mock_fetch_script,
+    ):
+        """
+        Normal members cannot fetch file URLs for another user's private job.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        member = user_factory(group=group, user_sub="auth0|member")
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=False,
+        )
+        set_auth_user(make_auth0_payload(member.user_sub))
+
+        response = client.get(f"/storage/files/{job.job_id}/energy/completed")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+        assert mock_fetch_script == []
+
+    def test_missing_job_returns_404(self, client, user_factory, mock_fetch_script):
+        """
+        Missing jobs return 404 before S3 file URLs are generated.
+        """
+        user_factory(user_sub="auth0|testuser")
+
+        response = client.get(f"/storage/files/{uuid.uuid4()}/energy/completed")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+        assert mock_fetch_script == []
+
+
 class TestPresignZipDownloadUrl:
     def test_presigns_expected_archive_key(self, mock_get_urls):
         """
