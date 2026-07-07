@@ -30,7 +30,7 @@ from models import Job, Structure
 from user_service import get_user_or_404, serialize_user_profile
 from utils import get_user_sub
 
-router = APIRouter(prefix="/group", tags=["jobs"])
+router = APIRouter(prefix="/group", tags=["group"])
 
 @router.get("/jobs")
 def get_all_jobs(

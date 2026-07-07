@@ -25,7 +25,7 @@ from user_service import (
 )
 from utils import get_user_sub
 
-router = APIRouter(prefix="/admin", tags=["jobs"])
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/jobs")
 def get_all_jobs(
