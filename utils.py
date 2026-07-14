@@ -1,4 +1,5 @@
 import shutil
+import uuid
 from pathlib import Path
 from typing import Callable, Optional, Union
 
@@ -16,6 +17,13 @@ def _resolve_error_detail(detail: Optional[ErrorDetail], error: Exception) -> st
     if detail is not None:
         return detail
     return str(error)
+
+
+def parse_uuid_or_404(value: str, detail: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def commit_or_rollback(

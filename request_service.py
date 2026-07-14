@@ -1,6 +1,5 @@
-import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import NoReturn, Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import or_
@@ -26,7 +25,7 @@ from user_service import (
     cancel_pending_membership_entry_requests,
     get_user_by_email_or_404,
 )
-from utils import commit_or_rollback
+from utils import commit_or_rollback, parse_uuid_or_404
 
 
 DEFAULT_EXPIRES_IN_DAYS = 7
@@ -45,13 +44,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _parse_uuid_or_404(value: str, detail: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(str(value))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def _validate_expires_in_days(expires_in_days: int) -> int:
@@ -168,7 +160,7 @@ def get_request_or_404(
     db: Session,
     request_id: str,
 ) -> Request:
-    parsed_request_id = _parse_uuid_or_404(request_id, "Request not found")
+    parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
     request = db.query(Request).filter_by(request_id=parsed_request_id).first()
     if not request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
@@ -520,7 +512,7 @@ def _resolve_request(
     commit_or_rollback(db, refresh=request)
 
 
-def _cancel_invalid_request(db: Session, request: Request, user: User) -> None:
+def _cancel_invalid_request(db: Session, request: Request, user: User) -> NoReturn:
     _resolve_request(
         db,
         request,

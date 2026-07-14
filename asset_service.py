@@ -1,4 +1,3 @@
-import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar
 from uuid import UUID
 
@@ -10,7 +9,7 @@ from permissions import (
     can_delete_asset,
 )
 from models import Asset, Group, Job, Structure, Tags, User
-from utils import commit_or_rollback
+from utils import commit_or_rollback, parse_uuid_or_404
 
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
@@ -91,18 +90,12 @@ def list_group_assets(
     model: Type[AssetModel],
     group_id: UUID,
 ) -> List[AssetModel]:
-    assets = (
+    return (
         db.query(model)
         .filter(model.group_id == group_id, model.is_deleted == False)
         .order_by(model.created_at.desc())
         .all()
     )
-    if not assets:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No {model.__tablename__} found for the group",
-        )
-    return assets
 
 
 def list_all_jobs_with_metadata(db: Session) -> list[dict]:
@@ -131,13 +124,7 @@ def get_asset_or_404(
     not_found_detail: Optional[str] = None,
 ) -> AssetModel:
     detail = not_found_detail or model.not_found_detail
-    try:
-        parsed_asset_id = uuid.UUID(str(asset_id))
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=detail,
-        )
+    parsed_asset_id = parse_uuid_or_404(asset_id, detail)
     asset = db.get(model, parsed_asset_id)
     if not asset or asset.is_deleted:
         raise HTTPException(

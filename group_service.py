@@ -22,7 +22,7 @@ from user_service import (
     cancel_pending_demember_requests_for_group,
     serialize_user_profile,
 )
-from utils import commit_or_rollback
+from utils import commit_or_rollback, parse_uuid_or_404
 
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
@@ -38,15 +38,8 @@ class AssetSerializer(Protocol[AssetModel]):
         ...
 
 
-def _parse_uuid_or_404(value: str, detail: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(str(value))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-
-
 def get_group_or_404(db: Session, group_id: str) -> Group:
-    parsed_group_id = _parse_uuid_or_404(group_id, "Group not found")
+    parsed_group_id = parse_uuid_or_404(group_id, "Group not found")
     group = db.query(Group).filter_by(group_id=parsed_group_id).first()
     if not group:
         raise HTTPException(

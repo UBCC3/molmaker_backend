@@ -217,6 +217,17 @@ def test_list_group_assets_filters_by_group_and_orders_newest_first(
     assert list_group_assets(db, model, group.group_id) == [newer, older]
 
 
+@pytest.mark.parametrize("model", [Job, Structure])
+def test_list_group_assets_returns_empty_list_when_group_has_no_assets(
+    db,
+    group_factory,
+    model,
+):
+    group = group_factory()
+
+    assert list_group_assets(db, model, group.group_id) == []
+
+
 @pytest.mark.parametrize(
     "model, detail",
     [

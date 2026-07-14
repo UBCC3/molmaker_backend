@@ -440,6 +440,34 @@ class TestGroupsAPI:
         assert result[0]["group_id"] == str(group.group_id)
         assert "user_sub" not in result[0]
 
+    def test_group_member_gets_empty_jobs_list_when_no_group_jobs_are_public(
+        self, client, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal group members should receive an empty collection when every
+        group job is hidden by visibility filtering.
+        """
+        group = group_factory()
+        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        group_member = user_factory(group=group, user_sub="auth0|member", role="member")
+        job_factory(
+            user_sub=current_user.user_sub,
+            group_id=group.group_id,
+            job_name="current user's private group job",
+            is_public=False,
+        )
+        job_factory(
+            user_sub=group_member.user_sub,
+            group_id=group.group_id,
+            job_name="other member's private group job",
+            is_public=False,
+        )
+
+        response = client.get("/group/jobs")
+
+        assert response.status_code == 200
+        assert response.json() == []
+
     def test_group_admin_can_list_all_structures_with_persisted_group_id(
         self, client, group_factory, user_factory, structure_factory
     ):
@@ -535,6 +563,34 @@ class TestGroupsAPI:
         assert result[0]["name"] == "public"
         assert result[0]["group_id"] == str(group.group_id)
         assert "user_sub" not in result[0]
+
+    def test_group_member_gets_empty_structures_list_when_no_group_structures_are_public(
+        self, client, group_factory, user_factory, structure_factory
+    ):
+        """
+        Normal group members should receive an empty collection when every
+        group structure is hidden by visibility filtering.
+        """
+        group = group_factory()
+        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        group_member = user_factory(group=group, user_sub="auth0|member", role="member")
+        structure_factory(
+            user_sub=current_user.user_sub,
+            group_id=group.group_id,
+            name="current user's private group structure",
+            is_public=False,
+        )
+        structure_factory(
+            user_sub=group_member.user_sub,
+            group_id=group.group_id,
+            name="other member's private group structure",
+            is_public=False,
+        )
+
+        response = client.get("/group/structures")
+
+        assert response.status_code == 200
+        assert response.json() == []
 
     @pytest.mark.parametrize("asset_kind", ["job", "structure"])
     def test_group_admin_can_transfer_co_owned_asset_to_former_user(
@@ -1356,33 +1412,35 @@ class TestGroupsAPI:
         assert asset.user_sub == owner.user_sub
         assert asset.group_id == group.group_id
 
-    def test_group_structures_returns_404_when_group_has_no_structures(
+    def test_group_structures_returns_empty_list_when_group_has_no_structures(
         self, client, group_factory, user_factory
     ):
         """
-        GET /group/structures should return 404 when no structures exist for the group.
+        GET /group/structures should return an empty collection when no
+        structures exist for the group.
         """
         group = group_factory()
         user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
 
         response = client.get("/group/structures")
 
-        assert response.status_code == 404
-        assert response.json()["detail"] == "No structures found for the group"
+        assert response.status_code == 200
+        assert response.json() == []
 
-    def test_group_jobs_returns_404_when_group_has_no_jobs(
+    def test_group_jobs_returns_empty_list_when_group_has_no_jobs(
         self, client, group_factory, user_factory
     ):
         """
-        GET /group/jobs should return 404 when no jobs exist for the group.
+        GET /group/jobs should return an empty collection when no jobs exist
+        for the group.
         """
         group = group_factory()
         user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
 
         response = client.get("/group/jobs")
 
-        assert response.status_code == 404
-        assert response.json()["detail"] == "No jobs found for the group"
+        assert response.status_code == 200
+        assert response.json() == []
 
     def test_group_jobs_returns_403_when_current_user_has_no_group(
         self, client, user_factory
