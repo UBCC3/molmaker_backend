@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, Form, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from auth import verify_token
 from dependencies import get_db
 from enum_types import RequestStatus, RequestType
+from group_service import get_group_or_404
+from permissions import can_create_invite_request, is_admin_or_group_admin
 from request_service import (
     DEFAULT_EXPIRES_IN_DAYS,
     DEFAULT_RECENT_DAYS,
@@ -16,7 +18,7 @@ from request_service import (
     list_sent_requests,
     reject_request as reject_request_by_id,
 )
-from user_service import get_user_or_404
+from user_service import get_user_by_email_or_404, get_user_or_404
 from utils import get_user_sub
 
 router = APIRouter(prefix="/request", tags=["request"])
@@ -85,7 +87,14 @@ def send_join_request(
     :return: Created join request details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return create_join_request(db, user, group_id, expires_in_days)
+    if user.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User already in a group",
+        )
+
+    group = get_group_or_404(db, group_id)
+    return create_join_request(db, user, group, expires_in_days)
 
 
 @router.post("/invite")
@@ -106,7 +115,16 @@ def send_invite_request(
     :return: Created invite request details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return create_invite_request(db, user, email, expires_in_days)
+    if not is_admin_or_group_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not can_create_invite_request(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not part of a group",
+        )
+
+    receiver = get_user_by_email_or_404(db, email)
+    return create_invite_request(db, user, receiver, expires_in_days)
 
 
 @router.post("/demember")

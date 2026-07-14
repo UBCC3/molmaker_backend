@@ -1645,6 +1645,8 @@ class TestGroupsAPI:
         admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
         member = user_factory(group=group, user_sub="auth0|member", role="member")
+        previous_group_admin_member_since = group_admin.member_since
+        previous_member_since = member.member_since
         co_owned_job = job_factory(user_sub=member.user_sub, group_id=group.group_id)
         co_owned_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
         linked_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
@@ -1674,8 +1676,10 @@ class TestGroupsAPI:
         assert admin.group_id is None
         assert group_admin.group_id is None
         assert group_admin.role == "member"
+        assert group_admin.member_since != previous_group_admin_member_since
         assert member.group_id is None
         assert member.role == "member"
+        assert member.member_since != previous_member_since
         db.refresh(group_only_job)
         db.refresh(group_only_structure)
         assert group_only_job.is_deleted is True

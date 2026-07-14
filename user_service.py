@@ -4,12 +4,14 @@ from typing import Dict, Optional
 
 import requests
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from enum_types import RequestStatus, RequestType
-from models import Group, Job, Request, Structure, Tags, User
+from models import Group, Job, Structure, Tags, User
 from permissions import can_view_user_profile
+from request_service import (
+    anonymize_requests_for_deleted_user,
+    cancel_pending_membership_requests_after_group_change,
+)
 from utils import commit_or_rollback, get_user_sub
 
 
@@ -112,124 +114,6 @@ def update_user_role_and_group(
     return serialize_user_profile(selected_user)
 
 
-def assign_user_to_group(user: User, group: Group) -> None:
-    user.group_id = group.group_id
-    user.member_since = datetime.now(timezone.utc)
-
-
-def cancel_pending_membership_entry_requests(
-    db: Session,
-    user: User,
-    *,
-    resolved_by_sub: Optional[str],
-    exclude_request_id: Optional[object] = None,
-) -> None:
-    requests = (
-        db.query(Request)
-        .filter(Request.status == RequestStatus.pending.value)
-        .filter(
-            or_(
-                and_(
-                    Request.request_type == RequestType.invite.value,
-                    Request.receiver_sub == user.user_sub,
-                ),
-                and_(
-                    Request.request_type == RequestType.join_request.value,
-                    Request.sender_sub == user.user_sub,
-                ),
-            )
-        )
-    )
-    if exclude_request_id is not None:
-        requests = requests.filter(Request.request_id != exclude_request_id)
-
-    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
-
-
-def cancel_pending_demember_requests_for_group(
-    db: Session,
-    user: User,
-    group_id: object,
-    *,
-    resolved_by_sub: Optional[str],
-    exclude_request_id: Optional[object] = None,
-) -> None:
-    requests = (
-        db.query(Request)
-        .filter_by(
-            status=RequestStatus.pending.value,
-            request_type=RequestType.demember_request.value,
-            sender_sub=user.user_sub,
-            group_id=group_id,
-        )
-    )
-    if exclude_request_id is not None:
-        requests = requests.filter(Request.request_id != exclude_request_id)
-
-    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
-
-
-def cancel_pending_membership_requests_after_group_change(
-    db: Session,
-    user: User,
-    *,
-    previous_group_id: Optional[object],
-    new_group_id: Optional[object],
-    resolved_by_sub: Optional[str],
-) -> None:
-    if new_group_id is not None:
-        cancel_pending_membership_entry_requests(
-            db,
-            user,
-            resolved_by_sub=resolved_by_sub,
-        )
-
-    if previous_group_id is not None and str(previous_group_id) != str(new_group_id):
-        cancel_pending_demember_requests_for_group(
-            db,
-            user,
-            previous_group_id,
-            resolved_by_sub=resolved_by_sub,
-        )
-
-
-def _cancel_pending_requests(
-    db: Session,
-    requests: list[Request],
-    resolved_by_sub: Optional[str],
-) -> None:
-    resolved_at = datetime.now(timezone.utc)
-    for request in requests:
-        _snapshot_request_context(db, request)
-        request.status = RequestStatus.cancelled.value
-        request.resolved_at = resolved_at
-        request.resolved_by_sub = resolved_by_sub
-
-
-def _snapshot_request_context(db: Session, request: Request) -> None:
-    group = db.query(Group).filter_by(group_id=request.group_id).first()
-    if group and not request.group_name_snapshot:
-        request.group_name_snapshot = group.name
-
-    snapshot_pairs = [
-        ("sender_sub", "sender_email_snapshot"),
-        ("receiver_sub", "receiver_email_snapshot"),
-        ("created_by_sub", "created_by_email_snapshot"),
-        ("resolved_by_sub", "resolved_by_email_snapshot"),
-    ]
-    for sub_field, snapshot_field in snapshot_pairs:
-        if getattr(request, snapshot_field):
-            continue
-
-        user_sub = getattr(request, sub_field)
-        if not user_sub:
-            continue
-
-        request_user = db.query(User).filter_by(user_sub=user_sub).first()
-        if request_user:
-            setattr(request, snapshot_field, request_user.email)
-
-
 def get_auth0_management_token() -> Optional[str]:
     try:
         response = requests.post(
@@ -268,34 +152,7 @@ def delete_user_account(db: Session, user_sub: str) -> dict:
 
 
 def delete_user_local_data(db: Session, user: User) -> None:
-    requests = (
-        db.query(Request)
-        .filter(
-            or_(
-                Request.sender_sub == user.user_sub,
-                Request.receiver_sub == user.user_sub,
-                Request.created_by_sub == user.user_sub,
-                Request.resolved_by_sub == user.user_sub,
-            )
-        )
-        .all()
-    )
-    resolved_at = datetime.now(timezone.utc)
-    for request in requests:
-        _snapshot_deleted_user_request(request, user)
-        if request.status == RequestStatus.pending.value:
-            request.status = RequestStatus.cancelled.value
-            request.resolved_at = resolved_at
-            request.resolved_by_sub = None
-
-        if request.sender_sub == user.user_sub:
-            request.sender_sub = None
-        if request.receiver_sub == user.user_sub:
-            request.receiver_sub = None
-        if request.created_by_sub == user.user_sub:
-            request.created_by_sub = None
-        if request.resolved_by_sub == user.user_sub:
-            request.resolved_by_sub = None
+    anonymize_requests_for_deleted_user(db, user)
 
     for asset_model in (Job, Structure):
         assets = db.query(asset_model).filter_by(user_sub=user.user_sub).all()
@@ -309,17 +166,6 @@ def delete_user_local_data(db: Session, user: User) -> None:
         db.delete(tag)
 
     db.delete(user)
-
-
-def _snapshot_deleted_user_request(request: Request, user: User) -> None:
-    if request.sender_sub == user.user_sub and not request.sender_email_snapshot:
-        request.sender_email_snapshot = user.email
-    if request.receiver_sub == user.user_sub and not request.receiver_email_snapshot:
-        request.receiver_email_snapshot = user.email
-    if request.created_by_sub == user.user_sub and not request.created_by_email_snapshot:
-        request.created_by_email_snapshot = user.email
-    if request.resolved_by_sub == user.user_sub and not request.resolved_by_email_snapshot:
-        request.resolved_by_email_snapshot = user.email
 
 
 def delete_user_from_auth0(user_sub: str, token: str, db: Session) -> None:

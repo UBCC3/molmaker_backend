@@ -62,6 +62,20 @@ class TestRequestCreationAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == "User already in a group"
 
+    def test_join_request_checks_membership_before_group_lookup(
+        self, client, group_factory, user_factory
+    ):
+        current_group = group_factory()
+        user_factory(group=current_group, user_sub="auth0|testuser")
+
+        response = client.post(
+            "/request/join",
+            data={"group_id": str(uuid.uuid4())},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "User already in a group"
+
     def test_join_request_rejects_duplicate_pending_request(
         self, client, group_factory, user_factory, request_factory
     ):
@@ -127,6 +141,20 @@ class TestRequestCreationAPI:
         response = client.post(
             "/request/invite",
             data={"email": "target@test.com"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    def test_invite_does_not_reveal_unknown_user_to_non_admin(
+        self, client, group_factory, user_factory
+    ):
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+
+        response = client.post(
+            "/request/invite",
+            data={"email": "unknown@test.com"},
         )
 
         assert response.status_code == 403

@@ -2,28 +2,19 @@ from datetime import datetime, timedelta, timezone
 from typing import NoReturn, Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from enum_types import RequestStatus, RequestType
-from group_service import get_group_or_404, remove_user_from_group
 from models import Group, Request, User
 from permissions import (
     can_approve_invite_request,
     can_cancel_request,
-    can_create_invite_request,
     can_demember_group_user,
     can_list_group_requests,
     can_manage_group_requests,
     can_reject_request,
     can_view_request_user_metadata,
-    is_admin_or_group_admin,
-)
-from user_service import (
-    assign_user_to_group,
-    cancel_pending_demember_requests_for_group,
-    cancel_pending_membership_entry_requests,
-    get_user_by_email_or_404,
 )
 from utils import commit_or_rollback, parse_uuid_or_404
 
@@ -34,6 +25,18 @@ MAX_EXPIRES_IN_DAYS = 30
 DEFAULT_RECENT_DAYS = 30
 MIN_RECENT_DAYS = 1
 MAX_RECENT_DAYS = 90
+
+
+def assign_user_to_group(user: User, group: Group) -> None:
+    user.group_id = group.group_id
+    user.member_since = datetime.now(timezone.utc)
+
+
+def remove_user_from_group(user: User) -> None:
+    user.group_id = None
+    if user.role == "group_admin":
+        user.role = "member"
+    user.member_since = datetime.now(timezone.utc)
 
 
 def _now() -> datetime:
@@ -77,8 +80,7 @@ def _serialize_user_email(
 
 def _set_request_snapshots(db: Session, request: Request) -> None:
     group = db.query(Group).filter_by(group_id=request.group_id).first()
-    if group and not request.group_name_snapshot:
-        request.group_name_snapshot = group.name
+    _set_request_group_snapshot(request, group)
 
     snapshot_pairs = [
         ("sender_sub", "sender_email_snapshot"),
@@ -97,6 +99,154 @@ def _set_request_snapshots(db: Session, request: Request) -> None:
         user = db.query(User).filter_by(user_sub=user_sub).first()
         if user:
             setattr(request, snapshot_field, user.email)
+
+
+def _set_request_group_snapshot(request: Request, group: Optional[Group]) -> None:
+    if group and not request.group_name_snapshot:
+        request.group_name_snapshot = group.name
+
+
+def cancel_pending_membership_entry_requests(
+    db: Session,
+    user: User,
+    *,
+    resolved_by_sub: Optional[str],
+    exclude_request_id: Optional[object] = None,
+) -> None:
+    requests = (
+        db.query(Request)
+        .filter(Request.status == RequestStatus.pending.value)
+        .filter(
+            or_(
+                and_(
+                    Request.request_type == RequestType.invite.value,
+                    Request.receiver_sub == user.user_sub,
+                ),
+                and_(
+                    Request.request_type == RequestType.join_request.value,
+                    Request.sender_sub == user.user_sub,
+                ),
+            )
+        )
+    )
+    if exclude_request_id is not None:
+        requests = requests.filter(Request.request_id != exclude_request_id)
+
+    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
+
+
+def cancel_pending_demember_requests_for_group(
+    db: Session,
+    user: User,
+    group_id: object,
+    *,
+    resolved_by_sub: Optional[str],
+    exclude_request_id: Optional[object] = None,
+) -> None:
+    requests = (
+        db.query(Request)
+        .filter_by(
+            status=RequestStatus.pending.value,
+            request_type=RequestType.demember_request.value,
+            sender_sub=user.user_sub,
+            group_id=group_id,
+        )
+    )
+    if exclude_request_id is not None:
+        requests = requests.filter(Request.request_id != exclude_request_id)
+
+    _cancel_pending_requests(db, requests.all(), resolved_by_sub)
+
+
+def cancel_pending_membership_requests_after_group_change(
+    db: Session,
+    user: User,
+    *,
+    previous_group_id: Optional[object],
+    new_group_id: Optional[object],
+    resolved_by_sub: Optional[str],
+) -> None:
+    if new_group_id is not None:
+        cancel_pending_membership_entry_requests(
+            db,
+            user,
+            resolved_by_sub=resolved_by_sub,
+        )
+
+    if previous_group_id is not None and str(previous_group_id) != str(new_group_id):
+        cancel_pending_demember_requests_for_group(
+            db,
+            user,
+            previous_group_id,
+            resolved_by_sub=resolved_by_sub,
+        )
+
+
+def _cancel_pending_requests(
+    db: Session,
+    requests: list[Request],
+    resolved_by_sub: Optional[str],
+) -> None:
+    resolved_at = _now()
+    for request in requests:
+        request.status = RequestStatus.cancelled.value
+        request.resolved_at = resolved_at
+        request.resolved_by_sub = resolved_by_sub
+        _set_request_snapshots(db, request)
+
+
+def anonymize_requests_for_deleted_user(db: Session, user: User) -> None:
+    requests = (
+        db.query(Request)
+        .filter(
+            or_(
+                Request.sender_sub == user.user_sub,
+                Request.receiver_sub == user.user_sub,
+                Request.created_by_sub == user.user_sub,
+                Request.resolved_by_sub == user.user_sub,
+            )
+        )
+        .all()
+    )
+    resolved_at = _now()
+    for request in requests:
+        _snapshot_deleted_user_request(request, user)
+        if request.status == RequestStatus.pending.value:
+            request.status = RequestStatus.cancelled.value
+            request.resolved_at = resolved_at
+            request.resolved_by_sub = None
+
+        if request.sender_sub == user.user_sub:
+            request.sender_sub = None
+        if request.receiver_sub == user.user_sub:
+            request.receiver_sub = None
+        if request.created_by_sub == user.user_sub:
+            request.created_by_sub = None
+        if request.resolved_by_sub == user.user_sub:
+            request.resolved_by_sub = None
+
+
+def anonymize_requests_for_deleted_group(db: Session, group: Group) -> None:
+    requests = db.query(Request).filter_by(group_id=group.group_id).all()
+    resolved_at = _now()
+    for request in requests:
+        _set_request_group_snapshot(request, group)
+        if request.status == RequestStatus.pending.value:
+            request.status = RequestStatus.cancelled.value
+            request.resolved_at = resolved_at
+            request.resolved_by_sub = None
+        request.group_id = None
+
+
+def _snapshot_deleted_user_request(request: Request, user: User) -> None:
+    if request.sender_sub == user.user_sub and not request.sender_email_snapshot:
+        request.sender_email_snapshot = user.email
+    if request.receiver_sub == user.user_sub and not request.receiver_email_snapshot:
+        request.receiver_email_snapshot = user.email
+    if request.created_by_sub == user.user_sub and not request.created_by_email_snapshot:
+        request.created_by_email_snapshot = user.email
+    if request.resolved_by_sub == user.user_sub and not request.resolved_by_email_snapshot:
+        request.resolved_by_email_snapshot = user.email
 
 
 def serialize_request(
@@ -366,18 +516,11 @@ def _build_request(
 def create_join_request(
     db: Session,
     user: User,
-    group_id: str,
+    group: Group,
     expires_in_days: int = DEFAULT_EXPIRES_IN_DAYS,
 ) -> dict:
     expire_pending_requests(db)
 
-    if user.group_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User already in a group",
-        )
-
-    group = get_group_or_404(db, group_id)
     if _pending_request_exists(
         db,
         request_type=RequestType.join_request,
@@ -409,20 +552,11 @@ def create_join_request(
 def create_invite_request(
     db: Session,
     user: User,
-    email: str,
+    receiver: User,
     expires_in_days: int = DEFAULT_EXPIRES_IN_DAYS,
 ) -> dict:
     expire_pending_requests(db)
 
-    if not is_admin_or_group_admin(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-    if not can_create_invite_request(user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not part of a group",
-        )
-
-    receiver = get_user_by_email_or_404(db, email)
     if receiver.group_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

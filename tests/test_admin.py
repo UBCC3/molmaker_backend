@@ -277,8 +277,10 @@ class TestAdminAPI:
         db.refresh(join_request)
         assert invite.status == "cancelled"
         assert invite.resolved_by_sub == admin.user_sub
+        assert invite.resolved_by_email_snapshot == admin.email
         assert join_request.status == "cancelled"
         assert join_request.resolved_by_sub == admin.user_sub
+        assert join_request.resolved_by_email_snapshot == admin.email
 
     def test_admin_can_clear_user_group(
         self, client, db, group_factory, user_factory, request_factory

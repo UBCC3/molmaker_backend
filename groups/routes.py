@@ -22,10 +22,14 @@ from group_service import (
     list_group_assets_for_user,
     list_group_users,
     serialize_group,
-    transfer_asset_ownership,
     update_group_name,
 )
-from asset_service import get_asset_or_404, serialize_job, serialize_structure
+from asset_service import (
+    get_asset_or_404,
+    serialize_job,
+    serialize_structure,
+    transfer_asset_ownership,
+)
 from models import Job, Structure
 from user_service import get_user_or_404, serialize_user_profile
 from utils import get_user_sub
