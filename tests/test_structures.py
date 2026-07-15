@@ -134,11 +134,12 @@ class TestStructuresAPI:
         ]
 
     def test_get_structure_by_id_returns_owned_structure(
-        self, client, tag_factory, structure_factory
+        self, client, user_factory, tag_factory, structure_factory
     ):
         """
         GET /structures/{structure_id} should return a structure owned by the current user.
         """
+        user_factory(user_sub="auth0|testuser")
         tag = tag_factory(user_sub="auth0|testuser", name="baseline")
         structure = structure_factory(
             user_sub="auth0|testuser",
@@ -221,12 +222,13 @@ class TestStructuresAPI:
         assert response.json() == []
 
     def test_presigned_structure_url_returns_owned_structure_url(
-        self, client, monkeypatch, structure_factory
+        self, client, monkeypatch, user_factory, structure_factory
     ):
         """
         GET /structures/presigned/{structure_id} should return a download URL for owned structures.
         """
         fake_s3 = _mock_structure_s3(monkeypatch)
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory(user_sub="auth0|testuser")
 
         response = client.get(f"/structures/presigned/{structure.structure_id}")
@@ -277,10 +279,13 @@ class TestStructuresAPI:
         assert response.json()["detail"] == "Structure not found."
         assert fake_s3.calls == []
 
-    def test_owner_can_soft_delete_structure(self, client, db, structure_factory):
+    def test_owner_can_soft_delete_structure(
+        self, client, db, user_factory, structure_factory
+    ):
         """
         DELETE /structures/{structure_id} should soft-delete an owned structure.
         """
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory(user_sub="auth0|testuser", is_deleted=False)
 
         response = client.delete(f"/structures/{structure.structure_id}")
@@ -323,11 +328,12 @@ class TestStructuresAPI:
         assert response.json()["detail"] == "Structure not found."
 
     def test_delete_structure_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, structure_factory
+        self, client, db, monkeypatch, user_factory, structure_factory
     ):
         """
         DELETE /structures/{structure_id} should roll back if the DB commit fails.
         """
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory(user_sub="auth0|testuser", is_deleted=False)
 
         def fail_commit():
@@ -343,11 +349,12 @@ class TestStructuresAPI:
         assert structure.is_deleted is False
 
     def test_owner_can_update_structure_and_replace_tags(
-        self, client, db, tag_factory, structure_factory
+        self, client, db, user_factory, tag_factory, structure_factory
     ):
         """
         PATCH /structures/{structure_id} should update fields and replace tag relationships.
         """
+        user_factory(user_sub="auth0|testuser")
         old_tag = tag_factory(user_sub="auth0|testuser", name="old")
         existing_tag = tag_factory(user_sub="auth0|testuser", name="existing")
         structure = structure_factory(
@@ -399,11 +406,12 @@ class TestStructuresAPI:
         assert response.json()["detail"] == "Structure not found."
 
     def test_update_structure_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, tag_factory, structure_factory
+        self, client, db, monkeypatch, user_factory, tag_factory, structure_factory
     ):
         """
         PATCH /structures/{structure_id} should roll back field and tag changes on commit failure.
         """
+        user_factory(user_sub="auth0|testuser")
         old_tag = tag_factory(user_sub="auth0|testuser", name="old")
         structure = structure_factory(
             user_sub="auth0|testuser",
@@ -553,7 +561,7 @@ class TestStructuresAPI:
         assert not list(tmp_path.glob("temp_*.xyz"))
 
     def test_create_structure_saves_uploads_persists_and_links_tags(
-        self, client, db, monkeypatch, tmp_path, tag_factory
+        self, client, db, monkeypatch, tmp_path, user_factory, tag_factory
     ):
         """
         POST /structures/ should save files, upload to S3, persist the row, and link tags.
@@ -562,6 +570,7 @@ class TestStructuresAPI:
 
         fake_s3 = _mock_structure_s3(monkeypatch)
         monkeypatch.setattr(structures_routes, "JOB_DIR", str(tmp_path))
+        user_factory(user_sub="auth0|testuser")
         existing_tag = tag_factory(user_sub="auth0|testuser", name="existing")
 
         response = client.post(

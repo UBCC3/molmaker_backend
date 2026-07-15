@@ -1,10 +1,12 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import os
 import uuid
 from datetime import datetime, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from auth import verify_token
 from database import Base
@@ -12,15 +14,28 @@ from dependencies import get_db
 from main import create_app
 from models import Group, Job, Request, Structure, Tags, User
 
-# --- In-memory SQLite test database ---
+# --- Test database ---
 
-SQLALCHEMY_TEST_DATABASE_URL = "sqlite:///:memory:"
-
-engine = create_engine(
-    SQLALCHEMY_TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
+SQLALCHEMY_TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "sqlite:///:memory:",
 )
+
+if SQLALCHEMY_TEST_DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        SQLALCHEMY_TEST_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+else:
+    engine = create_engine(SQLALCHEMY_TEST_DATABASE_URL)
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -66,7 +81,7 @@ def app():
 @pytest.fixture
 def db():
     """
-    Create a clean in-memory database session for each test, tears it down after.
+    Create a clean database session for each test, then remove its tables.
     """
     Base.metadata.create_all(bind=engine)
     session = TestingSessionLocal()
