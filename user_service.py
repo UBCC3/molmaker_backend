@@ -1,5 +1,4 @@
 import os
-from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import requests
@@ -11,6 +10,7 @@ from permissions import can_view_user_profile
 from request_service import (
     anonymize_requests_for_deleted_user,
     cancel_pending_membership_requests_after_group_change,
+    set_user_role_and_group,
 )
 from utils import commit_or_rollback, get_user_sub
 
@@ -67,7 +67,7 @@ def serialize_user_profile(user: User) -> dict:
         "email": user.email,
         "role": user.role,
         "group_id": str(user.group_id) if user.group_id else None,
-        "member_since": user.member_since.isoformat() if user.member_since else None,
+        "role_or_group_updated_at": user.role_or_group_updated_at.isoformat(),
     }
 
 
@@ -100,9 +100,11 @@ def update_user_role_and_group(
         )
 
     previous_group_id = selected_user.group_id
-    selected_user.group_id = group.group_id if group else None
-    selected_user.role = role
-    selected_user.member_since = datetime.now(timezone.utc)
+    set_user_role_and_group(
+        selected_user,
+        role=role,
+        group_id=group.group_id if group else None,
+    )
     cancel_pending_membership_requests_after_group_change(
         db,
         selected_user,

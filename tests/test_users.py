@@ -15,12 +15,15 @@ class TestUsersAPI:
         assert result["email"] == "new-user@test.com"
         assert result["role"] == "member"
         assert result["group_id"] is None
-        assert result["member_since"] is not None
+        assert result["role_or_group_updated_at"] is not None
 
         user = db.query(User).filter_by(user_sub="auth0|testuser").one()
         assert user.email == "new-user@test.com"
         assert user.role == "member"
         assert user.group_id is None
+        assert result["role_or_group_updated_at"] == (
+            user.role_or_group_updated_at.isoformat()
+        )
 
     def test_read_or_create_me_returns_existing_user_without_overwriting(
         self, client, db, group_factory, user_factory
@@ -44,7 +47,9 @@ class TestUsersAPI:
         assert result["email"] == "existing@test.com"
         assert result["role"] == "group_admin"
         assert result["group_id"] == str(group.group_id)
-        assert result["member_since"] == user.member_since.isoformat()
+        assert result["role_or_group_updated_at"] == (
+            user.role_or_group_updated_at.isoformat()
+        )
 
         db.refresh(user)
         assert user.email == "existing@test.com"
@@ -83,7 +88,9 @@ class TestUsersAPI:
         assert result["email"] == "target@test.com"
         assert result["role"] == "member"
         assert result["group_id"] == str(group.group_id)
-        assert result["member_since"] == user.member_since.isoformat()
+        assert result["role_or_group_updated_at"] == (
+            user.role_or_group_updated_at.isoformat()
+        )
 
     def test_group_admin_can_get_same_group_user_by_email(
         self, client, set_auth_user, group_factory, user_factory
@@ -109,7 +116,9 @@ class TestUsersAPI:
         assert result["email"] == "target@test.com"
         assert result["role"] == "member"
         assert result["group_id"] == str(group.group_id)
-        assert result["member_since"] == user.member_since.isoformat()
+        assert result["role_or_group_updated_at"] == (
+            user.role_or_group_updated_at.isoformat()
+        )
 
     def test_user_can_get_self_by_email(self, client, user_factory):
         """
@@ -123,7 +132,9 @@ class TestUsersAPI:
         result = response.json()
         assert result["user_sub"] == user.user_sub
         assert result["email"] == "self@test.com"
-        assert result["member_since"] == user.member_since.isoformat()
+        assert result["role_or_group_updated_at"] == (
+            user.role_or_group_updated_at.isoformat()
+        )
 
     def test_member_cannot_get_other_user_by_email(self, client, group_factory, user_factory):
         """
@@ -248,7 +259,7 @@ class TestUsersAPI:
             group=group,
             request_type="join_request",
             status="rejected",
-            resolved_at=target.member_since,
+            resolved_at=target.role_or_group_updated_at,
             resolved_by_sub=target.user_sub,
         )
 

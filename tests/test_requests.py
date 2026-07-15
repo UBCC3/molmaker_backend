@@ -428,7 +428,13 @@ class TestRequestResolutionAPI:
         Invited users approve invites and join the request group.
         """
         group = group_factory()
-        receiver = user_factory(user_sub="auth0|invitee", group_id=None)
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        receiver = user_factory(
+            user_sub="auth0|invitee",
+            group_id=None,
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = receiver.role_or_group_updated_at
         creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
         request = request_factory(
             sender=None,
@@ -446,6 +452,7 @@ class TestRequestResolutionAPI:
         db.refresh(receiver)
         db.refresh(request)
         assert receiver.group_id == group.group_id
+        assert receiver.role_or_group_updated_at != previous_timestamp
         assert request.status == "approved"
         assert request.resolved_by_sub == receiver.user_sub
         assert request.resolved_at is not None
@@ -509,7 +516,13 @@ class TestRequestResolutionAPI:
         """
         group = group_factory()
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        sender = user_factory(user_sub="auth0|joiner", group_id=None)
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        sender = user_factory(
+            user_sub="auth0|joiner",
+            group_id=None,
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = sender.role_or_group_updated_at
         request = request_factory(
             sender=sender,
             receiver=None,
@@ -524,6 +537,7 @@ class TestRequestResolutionAPI:
         db.refresh(sender)
         db.refresh(request)
         assert sender.group_id == group.group_id
+        assert sender.role_or_group_updated_at != previous_timestamp
         assert request.status == "approved"
         assert request.resolved_by_sub == group_admin.user_sub
 
@@ -585,7 +599,14 @@ class TestRequestResolutionAPI:
         """
         group = group_factory()
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        sender = user_factory(group=group, user_sub="auth0|member", role="member")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        sender = user_factory(
+            group=group,
+            user_sub="auth0|member",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = sender.role_or_group_updated_at
         request = request_factory(
             sender=sender,
             receiver=None,
@@ -601,6 +622,7 @@ class TestRequestResolutionAPI:
         db.refresh(request)
         assert sender.group_id is None
         assert sender.role == "member"
+        assert sender.role_or_group_updated_at != previous_timestamp
         assert request.status == "approved"
 
     def test_demember_approval_cancels_duplicate_pending_demember_requests(

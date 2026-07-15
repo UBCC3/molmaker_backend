@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import NoReturn, Optional
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, or_
@@ -27,16 +28,36 @@ MIN_RECENT_DAYS = 1
 MAX_RECENT_DAYS = 90
 
 
+def set_user_role_and_group(
+    user: User,
+    *,
+    role: str,
+    group_id: Optional[UUID],
+) -> bool:
+    """Set a user's role and group, and record the time only when either changes."""
+    if user.role == role and user.group_id == group_id:
+        return False
+
+    user.role = role
+    user.group_id = group_id
+    user.role_or_group_updated_at = datetime.now(timezone.utc)
+    return True
+
+
 def assign_user_to_group(user: User, group: Group) -> None:
-    user.group_id = group.group_id
-    user.member_since = datetime.now(timezone.utc)
+    set_user_role_and_group(
+        user,
+        role=user.role,
+        group_id=group.group_id,
+    )
 
 
 def remove_user_from_group(user: User) -> None:
-    user.group_id = None
-    if user.role == "group_admin":
-        user.role = "member"
-    user.member_since = datetime.now(timezone.utc)
+    set_user_role_and_group(
+        user,
+        role="member" if user.role == "group_admin" else user.role,
+        group_id=None,
+    )
 
 
 def _now() -> datetime:

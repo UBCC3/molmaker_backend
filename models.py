@@ -240,7 +240,11 @@ class User(Base):
     email = Column(String, nullable=False, unique=True)
     role = Column(String, nullable=False, default='member')  # 'admin', 'group_admin', or 'member'
     group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
-    member_since = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    role_or_group_updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
 
     # relationships
     group = relationship("Group", back_populates="users")

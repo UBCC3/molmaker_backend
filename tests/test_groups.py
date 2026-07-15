@@ -43,9 +43,13 @@ class TestGroupsAPI:
         assert users[current_user.user_sub]["email"] == current_user.email
         assert users[current_user.user_sub]["group_id"] == str(group.group_id)
         assert users[current_user.user_sub]["role"] == "group_admin"
-        assert users[current_user.user_sub]["member_since"] == current_user.member_since.isoformat()
+        assert users[current_user.user_sub]["role_or_group_updated_at"] == (
+            current_user.role_or_group_updated_at.isoformat()
+        )
         assert users[group_member.user_sub]["role"] == "member"
-        assert users[group_member.user_sub]["member_since"] == group_member.member_since.isoformat()
+        assert users[group_member.user_sub]["role_or_group_updated_at"] == (
+            group_member.role_or_group_updated_at.isoformat()
+        )
 
     def test_group_users_rejects_normal_group_members(
         self, client, group_factory, user_factory
@@ -92,7 +96,14 @@ class TestGroupsAPI:
         """
         group = group_factory()
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        target = user_factory(group=group, user_sub="auth0|target", role="member")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        target = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.delete(f"/group/users/{target.user_sub}")
@@ -102,6 +113,7 @@ class TestGroupsAPI:
         db.refresh(target)
         assert target.role == "member"
         assert target.group_id is None
+        assert target.role_or_group_updated_at != previous_timestamp
 
     def test_demembering_cancels_pending_demember_request(
         self,
@@ -317,25 +329,25 @@ class TestGroupsAPI:
             group=group,
             user_sub="auth0|testuser",
             role="group_admin",
-            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         former_member = user_factory(
             group=None,
             user_sub="auth0|former",
             role="member",
-            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         member = user_factory(
             group=group,
             user_sub="auth0|member",
             role="member",
-            member_since=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
         other_user = user_factory(
             group=other_group,
             user_sub="auth0|other",
             role="member",
-            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         admin_job = job_factory(
             user_sub=group_admin.user_sub,
@@ -408,13 +420,13 @@ class TestGroupsAPI:
             group=group,
             user_sub="auth0|testuser",
             role="member",
-            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         group_member = user_factory(
             group=group,
             user_sub="auth0|member",
             role="member",
-            member_since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         public_job = job_factory(
             user_sub=group_member.user_sub,
@@ -1645,8 +1657,9 @@ class TestGroupsAPI:
         admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
         member = user_factory(group=group, user_sub="auth0|member", role="member")
-        previous_group_admin_member_since = group_admin.member_since
-        previous_member_since = member.member_since
+        previous_admin_update = admin.role_or_group_updated_at
+        previous_group_admin_update = group_admin.role_or_group_updated_at
+        previous_member_update = member.role_or_group_updated_at
         co_owned_job = job_factory(user_sub=member.user_sub, group_id=group.group_id)
         co_owned_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
         linked_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
@@ -1676,10 +1689,11 @@ class TestGroupsAPI:
         assert admin.group_id is None
         assert group_admin.group_id is None
         assert group_admin.role == "member"
-        assert group_admin.member_since != previous_group_admin_member_since
+        assert admin.role_or_group_updated_at != previous_admin_update
+        assert group_admin.role_or_group_updated_at != previous_group_admin_update
         assert member.group_id is None
         assert member.role == "member"
-        assert member.member_since != previous_member_since
+        assert member.role_or_group_updated_at != previous_member_update
         db.refresh(group_only_job)
         db.refresh(group_only_structure)
         assert group_only_job.is_deleted is True

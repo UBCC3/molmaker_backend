@@ -154,7 +154,7 @@ def user_factory(db):
             "email": f"{user_sub.replace('|', '_')}@test.com",
             "role": "member",
             "group_id": group.group_id if group is not None else None,
-            "member_since": datetime.now(timezone.utc),
+            "role_or_group_updated_at": datetime.now(timezone.utc),
         }
         values.update(overrides)
         return _save(db, User(**values))

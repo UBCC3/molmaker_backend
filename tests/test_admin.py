@@ -30,14 +30,14 @@ class TestAdminAPI:
             "email": admin.email,
             "role": "admin",
             "group_id": str(group.group_id),
-            "member_since": admin.member_since.isoformat(),
+            "role_or_group_updated_at": admin.role_or_group_updated_at.isoformat(),
         }
         assert users[member.user_sub] == {
             "user_sub": member.user_sub,
             "email": member.email,
             "role": "member",
             "group_id": str(group.group_id),
-            "member_since": member.member_since.isoformat(),
+            "role_or_group_updated_at": member.role_or_group_updated_at.isoformat(),
         }
 
     def test_admin_users_list_requires_admin_user(self, client, user_factory):
@@ -80,7 +80,7 @@ class TestAdminAPI:
                 "email": admin.email,
                 "role": "admin",
                 "group_id": str(admin_group.group_id),
-                "member_since": admin.member_since.isoformat(),
+                "role_or_group_updated_at": admin.role_or_group_updated_at.isoformat(),
             }
         ]
         assert groups["Chemistry"]["group_id"] == str(chemistry_group.group_id)
@@ -90,7 +90,7 @@ class TestAdminAPI:
                 "email": member.email,
                 "role": "member",
                 "group_id": str(chemistry_group.group_id),
-                "member_since": member.member_since.isoformat(),
+                "role_or_group_updated_at": member.role_or_group_updated_at.isoformat(),
             }
         ]
 
@@ -242,7 +242,13 @@ class TestAdminAPI:
         target_group = group_factory(name="Target Group")
         other_group = group_factory(name="Other Group")
         admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        target = user_factory(user_sub="auth0|target", role="member")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        target = user_factory(
+            user_sub="auth0|target",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
         invite = request_factory(
             sender=None,
             receiver=target,
@@ -268,11 +274,12 @@ class TestAdminAPI:
         assert result["email"] == target.email
         assert result["role"] == "group_admin"
         assert result["group_id"] == str(target_group.group_id)
-        assert result["member_since"] is not None
+        assert result["role_or_group_updated_at"] is not None
 
         db.refresh(target)
         assert target.role == "group_admin"
         assert target.group_id == target_group.group_id
+        assert target.role_or_group_updated_at != previous_timestamp
         db.refresh(invite)
         db.refresh(join_request)
         assert invite.status == "cancelled"
@@ -308,6 +315,57 @@ class TestAdminAPI:
         db.refresh(demember_request)
         assert demember_request.status == "cancelled"
         assert demember_request.resolved_by_sub == admin.user_sub
+
+    def test_admin_same_role_and_group_keep_timestamp(
+        self, client, db, group_factory, user_factory
+    ):
+        group = group_factory()
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "member", "group_id": str(group.group_id)},
+        )
+
+        assert response.status_code == 200
+        db.refresh(target)
+        assert target.role_or_group_updated_at == previous_timestamp
+
+    def test_admin_role_change_updates_timestamp(
+        self, client, db, group_factory, user_factory
+    ):
+        group = group_factory()
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            role="group_admin",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "member", "group_id": str(group.group_id)},
+        )
+
+        assert response.status_code == 200
+        db.refresh(target)
+        assert target.role == "member"
+        assert target.group_id == group.group_id
+        assert target.role_or_group_updated_at != previous_timestamp
+        assert response.json()["role_or_group_updated_at"] == (
+            target.role_or_group_updated_at.isoformat()
+        )
 
     def test_group_admin_role_requires_group_id(
         self, client, db, group_factory, user_factory
