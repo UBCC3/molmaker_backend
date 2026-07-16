@@ -257,7 +257,8 @@ class TestAssetOwnershipTransferPermissions:
         self, user_factory, asset_factory
     ):
         admin = user_factory(role="admin")
-        asset = asset_factory(user_sub="auth0|owner", group_id=None)
+        owner = user_factory(user_sub="auth0|owner")
+        asset = asset_factory(user_sub=owner.user_sub, group_id=None)
 
         assert can_transfer_asset_ownership(admin, asset) is True
 
@@ -266,6 +267,7 @@ class TestAssetOwnershipTransferPermissions:
     ):
         group = group_factory()
         group_admin = user_factory(group=group, role="group_admin")
-        asset = asset_factory(user_sub="auth0|owner", group_id=None)
+        owner = user_factory(user_sub="auth0|owner")
+        asset = asset_factory(user_sub=owner.user_sub, group_id=None)
 
         assert can_transfer_asset_ownership(group_admin, asset) is False

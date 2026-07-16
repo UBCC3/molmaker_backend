@@ -305,6 +305,7 @@ class TestRequestListingAPI:
         """
         group = group_factory()
         user = user_factory(user_sub="auth0|testuser", group_id=None)
+        resolver = user_factory(user_sub="auth0|resolver", group_id=None)
         recent = request_factory(
             sender=user,
             receiver=None,
@@ -312,7 +313,7 @@ class TestRequestListingAPI:
             request_type="join_request",
             status="approved",
             resolved_at=datetime.now(timezone.utc) - timedelta(days=5),
-            resolved_by_sub="auth0|resolver",
+            resolved_by_sub=resolver.user_sub,
         )
         request_factory(
             sender=user,

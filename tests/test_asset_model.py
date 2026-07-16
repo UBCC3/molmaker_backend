@@ -8,7 +8,8 @@ class TestAssetModel:
         assert Asset.__abstract__ is True
         assert "assets" not in Asset.metadata.tables
 
-    def test_job_uses_common_id_with_job_id_alias(self, job_factory):
+    def test_job_uses_common_id_with_job_id_alias(self, user_factory, job_factory):
+        user_factory(user_sub="auth0|testuser")
         job = job_factory()
 
         assert job.id == job.job_id
@@ -17,8 +18,9 @@ class TestAssetModel:
         assert Job.__table__.columns["submitted_at"].name == "submitted_at"
 
     def test_structure_uses_common_id_with_structure_id_alias(
-        self, structure_factory
+        self, user_factory, structure_factory
     ):
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory()
 
         assert structure.id == structure.structure_id
@@ -26,7 +28,10 @@ class TestAssetModel:
         assert structure.created_at == structure.uploaded_at
         assert Structure.__table__.columns["uploaded_at"].name == "uploaded_at"
 
-    def test_job_and_structure_are_assets(self, job_factory, structure_factory):
+    def test_job_and_structure_are_assets(
+        self, user_factory, job_factory, structure_factory
+    ):
+        user_factory(user_sub="auth0|testuser")
         assert isinstance(job_factory(), Asset)
         assert isinstance(structure_factory(), Asset)
 
