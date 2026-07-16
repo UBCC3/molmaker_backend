@@ -79,12 +79,15 @@ class TestGetUserSub:
 
 
 class TestSerializeStructure:
-    def test_serializes_expected_structure_fields(self, structure_factory):
+    def test_serializes_expected_structure_fields(
+        self, user_factory, structure_factory
+    ):
         """
         serialize_structure should convert IDs and datetimes into API-safe values.
         """
         structure_id = uuid.uuid4()
         uploaded_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory(
             structure_id=structure_id,
             user_sub="auth0|testuser",
@@ -108,7 +111,7 @@ class TestSerializeStructure:
 
 class TestSerializeJob:
     def test_serializes_job_with_relationships_and_runtime(
-        self, job_factory, structure_factory, tag_factory
+        self, user_factory, job_factory, structure_factory, tag_factory
     ):
         """
         serialize_job should include related structures, tag names, timestamps, and flags.
@@ -116,6 +119,7 @@ class TestSerializeJob:
         job_id = uuid.uuid4()
         submitted_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
         completed_at = datetime(2026, 1, 2, 4, 5, 6, tzinfo=timezone.utc)
+        user_factory(user_sub="auth0|testuser")
         structure = structure_factory(name="Methane", formula="CH4")
         first_tag = tag_factory(name="organic")
         second_tag = tag_factory(name="demo")
@@ -164,10 +168,11 @@ class TestSerializeJob:
         assert result["structures"] == [serialize_structure(structure)]
         assert sorted(result["tags"]) == ["demo", "organic"]
 
-    def test_serializes_none_optional_job_fields(self, job_factory):
+    def test_serializes_none_optional_job_fields(self, user_factory, job_factory):
         """
         Optional job fields should serialize as None when absent.
         """
+        user_factory(user_sub="auth0|testuser")
         job = job_factory(
             completed_at=None,
             runtime=None,

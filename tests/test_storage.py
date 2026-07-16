@@ -276,11 +276,9 @@ class TestVerifyJobAccess:
 
         assert verify_job_access(db, "auth0|missing-user", job.job_id) is False
 
-    def test_matching_owner_sub_allows_access_even_without_user_row(self, db, job_factory):
-        """
-        verify_job_access checks ownership before requiring a requester User row.
-        """
-        owner_sub = "auth0|external-owner"
-        job = job_factory(user_sub=owner_sub)
+    def test_matching_owner_sub_allows_access(self, db, user_factory, job_factory):
+        """Job owners can access their own archives."""
+        owner = user_factory(user_sub="auth0|owner")
+        job = job_factory(user_sub=owner.user_sub)
 
-        assert verify_job_access(db, owner_sub, job.job_id) is True
+        assert verify_job_access(db, owner.user_sub, job.job_id) is True
