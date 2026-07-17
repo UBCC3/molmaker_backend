@@ -96,7 +96,7 @@ class TestRequestCreationAPI:
             data={"group_id": str(group.group_id)},
         )
 
-        assert response.status_code == 400
+        assert response.status_code == 409
         assert response.json()["detail"] == "Request already exists"
 
     def test_group_admin_can_create_invite_request(
@@ -127,6 +127,37 @@ class TestRequestCreationAPI:
         assert created.sender_sub is None
         assert created.receiver_sub == target.user_sub
         assert created.group_id == group.group_id
+
+    def test_invite_rejects_duplicate_pending_request(
+        self, client, set_auth_user, group_factory, user_factory, request_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        target = user_factory(
+            user_sub="auth0|target",
+            email="target@test.com",
+            group_id=None,
+        )
+        request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=group_admin.user_sub,
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.post(
+            "/request/invite",
+            data={"email": target.email},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Request already exists"
 
     def test_invite_rejects_non_admin_creator(
         self, client, group_factory, user_factory
@@ -200,6 +231,23 @@ class TestRequestCreationAPI:
 
         created = _request(db, result["request_id"])
         assert created.group_id == group.group_id
+
+    def test_demember_rejects_duplicate_pending_request(
+        self, client, group_factory, user_factory, request_factory
+    ):
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+
+        response = client.post("/request/demember")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Request already exists"
 
     def test_demember_request_rejects_user_without_group(self, client, user_factory):
         """
@@ -625,39 +673,6 @@ class TestRequestResolutionAPI:
         assert sender.role == "member"
         assert sender.role_or_group_updated_at != previous_timestamp
         assert request.status == "approved"
-
-    def test_demember_approval_cancels_duplicate_pending_demember_requests(
-        self, client, set_auth_user, db, group_factory, user_factory, request_factory
-    ):
-        """
-        Approving one de-member request should cancel duplicate pending rows.
-        """
-        group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        sender = user_factory(group=group, user_sub="auth0|member", role="member")
-        approved_request = request_factory(
-            sender=sender,
-            receiver=None,
-            group=group,
-            request_type="demember_request",
-        )
-        duplicate_request = request_factory(
-            sender=sender,
-            receiver=None,
-            group=group,
-            request_type="demember_request",
-        )
-        set_auth_user(make_auth0_payload(group_admin.user_sub))
-
-        response = client.put(f"/request/{approved_request.request_id}/approve")
-
-        assert response.status_code == 200
-        db.refresh(approved_request)
-        db.refresh(duplicate_request)
-        assert approved_request.status == "approved"
-        assert duplicate_request.status == "cancelled"
-        assert duplicate_request.resolved_by_sub == group_admin.user_sub
-        assert duplicate_request.resolved_at is not None
 
     def test_group_admin_cannot_approve_another_group_admin_demember_request(
         self, client, set_auth_user, db, group_factory, user_factory, request_factory

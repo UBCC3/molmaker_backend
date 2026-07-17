@@ -104,6 +104,50 @@ ALTER TABLE public.requests
     FOREIGN KEY (resolved_by_sub) REFERENCES public.users(user_sub)
     ON DELETE SET NULL;
 
+WITH ranked_pending_requests AS (
+    SELECT
+        request_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                request_type,
+                group_id,
+                CASE
+                    WHEN request_type = 'invite' THEN receiver_sub
+                    ELSE sender_sub
+                END
+            ORDER BY requested_at, request_id::text
+        ) AS duplicate_number
+    FROM public.requests
+    WHERE status = 'pending'
+      AND (
+          (request_type = 'invite' AND receiver_sub IS NOT NULL)
+          OR (
+              request_type IN ('join_request', 'demember_request')
+              AND sender_sub IS NOT NULL
+          )
+      )
+)
+UPDATE public.requests AS request
+SET
+    status = 'cancelled',
+    resolved_at = COALESCE(request.resolved_at, NOW()),
+    resolved_by_sub = NULL
+FROM ranked_pending_requests AS ranked
+WHERE request.request_id = ranked.request_id
+  AND ranked.duplicate_number > 1;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_requests_pending_invite
+ON public.requests(group_id, receiver_sub)
+WHERE status = 'pending' AND request_type = 'invite';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_requests_pending_join
+ON public.requests(group_id, sender_sub)
+WHERE status = 'pending' AND request_type = 'join_request';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_requests_pending_demember
+ON public.requests(group_id, sender_sub)
+WHERE status = 'pending' AND request_type = 'demember_request';
+
 CREATE INDEX IF NOT EXISTS idx_requests_created_by_status
 ON public.requests(created_by_sub, status);
 

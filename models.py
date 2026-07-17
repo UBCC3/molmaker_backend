@@ -12,6 +12,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declared_attr, relationship, synonym
@@ -269,6 +270,42 @@ class Request(Base):
         Index("idx_requests_group_status_type", "group_id", "status", "request_type"),
         Index("idx_requests_created_by_status", "created_by_sub", "status"),
         Index("idx_requests_status_expires_at", "status", "expires_at"),
+        Index(
+            "uq_requests_pending_invite",
+            "group_id",
+            "receiver_sub",
+            unique=True,
+            postgresql_where=text(
+                "status = 'pending' AND request_type = 'invite'"
+            ),
+            sqlite_where=text(
+                "status = 'pending' AND request_type = 'invite'"
+            ),
+        ),
+        Index(
+            "uq_requests_pending_join",
+            "group_id",
+            "sender_sub",
+            unique=True,
+            postgresql_where=text(
+                "status = 'pending' AND request_type = 'join_request'"
+            ),
+            sqlite_where=text(
+                "status = 'pending' AND request_type = 'join_request'"
+            ),
+        ),
+        Index(
+            "uq_requests_pending_demember",
+            "group_id",
+            "sender_sub",
+            unique=True,
+            postgresql_where=text(
+                "status = 'pending' AND request_type = 'demember_request'"
+            ),
+            sqlite_where=text(
+                "status = 'pending' AND request_type = 'demember_request'"
+            ),
+        ),
     )
 
     request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

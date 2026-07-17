@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from enum_types import RequestStatus, RequestType
@@ -26,6 +27,14 @@ MAX_EXPIRES_IN_DAYS = 30
 DEFAULT_RECENT_DAYS = 30
 MIN_RECENT_DAYS = 1
 MAX_RECENT_DAYS = 90
+
+PENDING_REQUEST_UNIQUE_INDEXES = frozenset(
+    {
+        "uq_requests_pending_invite",
+        "uq_requests_pending_join",
+        "uq_requests_pending_demember",
+    }
+)
 
 
 def set_user_role_and_group(
@@ -330,12 +339,50 @@ def serialize_request(
 def get_request_or_404(
     db: Session,
     request_id: str,
+    *,
+    for_update: bool = False,
 ) -> Request:
     parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
-    request = db.query(Request).filter_by(request_id=parsed_request_id).first()
+    query = db.query(Request).filter_by(request_id=parsed_request_id)
+    if for_update:
+        query = query.with_for_update()
+    request = query.populate_existing().first()
     if not request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     return request
+
+
+def _lock_request_and_users(
+    db: Session,
+    request_id: str,
+    user: User,
+) -> tuple[Request, User, dict[str, User]]:
+    """Lock related users first, then lock and reload the request."""
+    request = get_request_or_404(db, request_id)
+    user_subs = {
+        user_sub
+        for user_sub in (
+            user.user_sub,
+            request.sender_sub,
+            request.receiver_sub,
+        )
+        if user_sub
+    }
+    locked_users = (
+        db.query(User)
+        .filter(User.user_sub.in_(user_subs))
+        .order_by(User.user_sub)
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
+    users_by_sub = {locked_user.user_sub: locked_user for locked_user in locked_users}
+    locked_user = users_by_sub.get(user.user_sub)
+    if not locked_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    request = get_request_or_404(db, request_id, for_update=True)
+    return request, locked_user, users_by_sub
 
 
 def expire_pending_requests(db: Session) -> None:
@@ -510,6 +557,45 @@ def _pending_request_exists(
     return query.first() is not None
 
 
+def _raise_duplicate_pending_request() -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Request already exists",
+    )
+
+
+def _is_duplicate_pending_request_error(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    if constraint_name in PENDING_REQUEST_UNIQUE_INDEXES:
+        return True
+
+    error_message = str(error.orig)
+    return any(
+        columns in error_message
+        for columns in (
+            "requests.group_id, requests.receiver_sub",
+            "requests.group_id, requests.sender_sub",
+        )
+    )
+
+
+def _save_new_request(db: Session, request: Request) -> None:
+    db.add(request)
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        if _is_duplicate_pending_request_error(error):
+            _raise_duplicate_pending_request()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create request",
+        ) from error
+
+    commit_or_rollback(db, refresh=request)
+
+
 def _build_request(
     *,
     request_type: RequestType,
@@ -548,10 +634,7 @@ def create_join_request(
         group_id=group.group_id,
         sender_sub=user.user_sub,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Request already exists",
-        )
+        _raise_duplicate_pending_request()
 
     request = _build_request(
         request_type=RequestType.join_request,
@@ -561,7 +644,7 @@ def create_join_request(
         expires_in_days=expires_in_days,
     )
     _set_request_snapshots(db, request)
-    commit_or_rollback(db, before_commit=lambda: db.add(request), refresh=request)
+    _save_new_request(db, request)
     return serialize_request(
         db,
         request,
@@ -590,10 +673,7 @@ def create_invite_request(
         group_id=user.group_id,
         receiver_sub=receiver.user_sub,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Request already exists",
-        )
+        _raise_duplicate_pending_request()
 
     request = _build_request(
         request_type=RequestType.invite,
@@ -603,7 +683,7 @@ def create_invite_request(
         expires_in_days=expires_in_days,
     )
     _set_request_snapshots(db, request)
-    commit_or_rollback(db, before_commit=lambda: db.add(request), refresh=request)
+    _save_new_request(db, request)
     return serialize_request(
         db,
         request,
@@ -631,10 +711,7 @@ def create_demember_request(
         group_id=user.group_id,
         sender_sub=user.user_sub,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Request already exists",
-        )
+        _raise_duplicate_pending_request()
 
     request = _build_request(
         request_type=RequestType.demember_request,
@@ -644,7 +721,7 @@ def create_demember_request(
         expires_in_days=expires_in_days,
     )
     _set_request_snapshots(db, request)
-    commit_or_rollback(db, before_commit=lambda: db.add(request), refresh=request)
+    _save_new_request(db, request)
     return serialize_request(
         db,
         request,
@@ -681,28 +758,38 @@ def _cancel_invalid_request(db: Session, request: Request, user: User) -> NoRetu
 
 
 def approve_request(db: Session, request_id: str, user: User) -> dict:
-    request = get_request_or_404(db, request_id)
+    request, user, locked_users = _lock_request_and_users(db, request_id, user)
     _expire_request_if_needed(db, request)
     _require_pending_request(request)
 
     if request.request_type == RequestType.invite.value:
-        _approve_invite(db, request, user)
+        _approve_invite(db, request, user, locked_users)
     elif request.request_type == RequestType.join_request.value:
-        _approve_join_request(db, request, user)
+        _approve_join_request(db, request, user, locked_users)
     elif request.request_type == RequestType.demember_request.value:
-        _approve_demember_request(db, request, user)
+        _approve_demember_request(db, request, user, locked_users)
     else:
         _cancel_invalid_request(db, request, user)
 
     return {"message": "Request approved successfully"}
 
 
-def _approve_invite(db: Session, request: Request, user: User) -> None:
+def _approve_invite(
+    db: Session,
+    request: Request,
+    user: User,
+    locked_users: dict[str, User],
+) -> None:
     if not can_approve_invite_request(user, request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
 
-    receiver = db.query(User).filter_by(user_sub=request.receiver_sub).first()
-    group = db.query(Group).filter_by(group_id=request.group_id).first()
+    receiver = locked_users.get(request.receiver_sub)
+    group = (
+        db.query(Group)
+        .filter_by(group_id=request.group_id)
+        .populate_existing()
+        .first()
+    )
     if not receiver or not group or receiver.group_id:
         _cancel_invalid_request(db, request, user)
 
@@ -721,11 +808,21 @@ def _approve_invite(db: Session, request: Request, user: User) -> None:
     )
 
 
-def _approve_join_request(db: Session, request: Request, user: User) -> None:
+def _approve_join_request(
+    db: Session,
+    request: Request,
+    user: User,
+    locked_users: dict[str, User],
+) -> None:
     _require_group_request_manager(user, request.group_id)
 
-    sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
-    group = db.query(Group).filter_by(group_id=request.group_id).first()
+    sender = locked_users.get(request.sender_sub)
+    group = (
+        db.query(Group)
+        .filter_by(group_id=request.group_id)
+        .populate_existing()
+        .first()
+    )
     if not sender or not group or sender.group_id:
         _cancel_invalid_request(db, request, user)
 
@@ -744,8 +841,13 @@ def _approve_join_request(db: Session, request: Request, user: User) -> None:
     )
 
 
-def _approve_demember_request(db: Session, request: Request, user: User) -> None:
-    sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
+def _approve_demember_request(
+    db: Session,
+    request: Request,
+    user: User,
+    locked_users: dict[str, User],
+) -> None:
+    sender = locked_users.get(request.sender_sub)
     if not sender or str(sender.group_id) != str(request.group_id):
         _cancel_invalid_request(db, request, user)
 
@@ -769,7 +871,7 @@ def _approve_demember_request(db: Session, request: Request, user: User) -> None
 
 
 def reject_request(db: Session, request_id: str, user: User) -> dict:
-    request = get_request_or_404(db, request_id)
+    request, user, _locked_users = _lock_request_and_users(db, request_id, user)
     _expire_request_if_needed(db, request)
     _require_pending_request(request)
     _require_reject_permission(request, user)
@@ -793,7 +895,7 @@ def _require_reject_permission(request: Request, user: User) -> None:
 
 
 def cancel_request(db: Session, request_id: str, user: User) -> dict:
-    request = get_request_or_404(db, request_id)
+    request, user, _locked_users = _lock_request_and_users(db, request_id, user)
     _expire_request_if_needed(db, request)
     _require_pending_request(request)
 
