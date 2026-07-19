@@ -397,7 +397,7 @@ class TestStructuresAPI:
         response = client.delete(f"/structures/{structure.structure_id}")
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(structure)
         assert structure.is_deleted is False
 

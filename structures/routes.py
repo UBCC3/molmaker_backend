@@ -264,7 +264,7 @@ def update_structure(
         commit_or_rollback(
             db,
             refresh=structure,
-            error_detail=lambda error: f"Could not update structure: {error}",
+            error_detail="Could not update structure",
         )
         return {
             **serialize_structure(
@@ -370,7 +370,7 @@ def create_and_upload_structure(
             db,
             refresh=structure,
             integrity_error_detail="Structure with this name already exists.",
-            error_detail=lambda error: f"Could not create structure: {error}",
+            error_detail="Could not create structure",
             on_error=lambda: shutil.rmtree(structure_path, ignore_errors=True),
         )
 

@@ -148,7 +148,7 @@ def delete_user_account(db: Session, user_sub: str) -> dict:
     delete_user_from_auth0(user_sub, token, db)
     commit_or_rollback(
         db,
-        error_detail=lambda error: f"Failed to delete local user data: {error}",
+        error_detail="Failed to delete local user data",
     )
     return {"detail": "User and all associated data deleted successfully"}
 

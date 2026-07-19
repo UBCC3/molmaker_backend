@@ -1419,7 +1419,7 @@ class TestGroupsAPI:
         )
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(asset)
         assert asset.user_sub == owner.user_sub
         assert asset.group_id == group.group_id
@@ -1642,7 +1642,7 @@ class TestGroupsAPI:
         response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(group)
         assert group.name == "Original"
 
@@ -1769,7 +1769,7 @@ class TestGroupsAPI:
         response = client.delete(f"/group/{group.group_id}")
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         assert db.query(Group).filter_by(group_id=group.group_id).one()
         db.refresh(group_admin)
         db.refresh(member)

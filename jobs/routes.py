@@ -208,12 +208,6 @@ def create_job(
                 )
             new_job.structures.append(structure)
 
-        commit_or_rollback(
-            db,
-            refresh=new_job,
-            error_detail="Failed to create job",
-        )
-
     except HTTPException:
         db.rollback()
         shutil.rmtree(job_path, ignore_errors=True)
@@ -225,6 +219,13 @@ def create_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create job",
         )
+
+    commit_or_rollback(
+        db,
+        refresh=new_job,
+        error_detail="Failed to create job",
+        on_error=lambda: shutil.rmtree(job_path, ignore_errors=True),
+    )
 
     headers = {"Location": f"/jobs/{job_id_str}"}
     return JSONResponse(

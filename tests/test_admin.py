@@ -229,7 +229,7 @@ class TestAdminAPI:
         response = client.post("/admin/groups", data={"name": "New Group"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         assert db.query(Group).filter_by(name="New Group").first() is None
 
     def test_admin_can_update_user_role_and_group(
@@ -490,7 +490,7 @@ class TestAdminAPI:
         )
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(target)
         assert target.role == "member"
         assert target.group_id is None

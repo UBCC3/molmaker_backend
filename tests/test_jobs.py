@@ -516,7 +516,7 @@ class TestJobsAPI:
         response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(job)
         assert job.is_public is False
 
@@ -579,7 +579,7 @@ class TestJobsAPI:
         response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(job)
         assert job.status == "pending"
         assert job.completed_at is None
@@ -1049,6 +1049,44 @@ class TestJobsAPI:
         assert response.json()["detail"] == "Failed to create job"
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert not (tmp_path / str(job_id)).exists()
+
+    def test_create_job_keeps_saved_row_and_file_when_refresh_fails(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        user_factory,
+    ):
+        """
+        A refresh failure happens after commit and must not undo saved work.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user_factory(user_sub="auth0|testuser")
+        job_id = uuid.uuid4()
+        real_refresh = db.refresh
+
+        def fail_for_created_job(instance, *args, **kwargs):
+            if isinstance(instance, Job) and instance.job_id == job_id:
+                raise RuntimeError("refresh failed")
+            return real_refresh(instance, *args, **kwargs)
+
+        monkeypatch.setattr(db, "refresh", fail_for_created_job)
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == (
+            "Changes were saved, but the updated data could not be loaded"
+        )
+        assert db.query(Job).filter_by(job_id=job_id).one().job_id == job_id
+        assert (tmp_path / str(job_id) / "input.xyz").exists()
 
     def test_advanced_analysis_saves_upload_transfers_and_submits(
         self, client, monkeypatch, tmp_path

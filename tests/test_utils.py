@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import HTTPException
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -29,47 +31,111 @@ class TestCommitOrRollback:
         stage.assert_called_once_with()
         db.commit.assert_called_once_with()
 
-    def test_rolls_back_when_staging_operation_fails(self, mocker):
+    def test_rolls_back_when_add_fails_and_hides_database_error(
+        self,
+        mocker,
+        caplog,
+    ):
         db = mocker.Mock()
-        stage = mocker.Mock(side_effect=RuntimeError("add failed"))
+        instance = object()
+        db.add.side_effect = RuntimeError("private add failure details")
 
-        with pytest.raises(HTTPException) as error:
-            commit_or_rollback(db, before_commit=stage)
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    before_commit=lambda: db.add(instance),
+                )
 
         assert error.value.status_code == 500
-        assert error.value.detail == "add failed"
+        assert error.value.detail == "Could not save changes"
+        assert "private add failure details" not in error.value.detail
+        assert "private add failure details" in caplog.text
+        db.add.assert_called_once_with(instance)
         db.rollback.assert_called_once_with()
         db.commit.assert_not_called()
 
-    def test_rolls_back_and_maps_integrity_error(self, mocker):
+    def test_rolls_back_when_flush_fails(self, mocker, caplog):
+        db = mocker.Mock()
+        db.flush.side_effect = RuntimeError("flush failed")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(db, before_commit=db.flush)
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save changes"
+        assert "flush failed" in caplog.text
+        db.flush.assert_called_once_with()
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+
+    def test_rolls_back_and_maps_constraint_error(self, mocker, caplog):
         db = mocker.Mock()
         db.commit.side_effect = IntegrityError("statement", {}, RuntimeError("duplicate"))
 
-        with pytest.raises(HTTPException) as error:
-            commit_or_rollback(
-                db,
-                integrity_error_detail="Duplicate record",
-            )
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    integrity_error_detail="Duplicate record",
+                )
 
         assert error.value.status_code == 400
         assert error.value.detail == "Duplicate record"
+        assert "duplicate" in caplog.text
         db.rollback.assert_called_once_with()
 
-    def test_rolls_back_with_custom_general_error_detail(self, mocker):
+    def test_rolls_back_when_commit_fails_and_uses_safe_detail(
+        self,
+        mocker,
+        caplog,
+    ):
         db = mocker.Mock()
-        db.commit.side_effect = RuntimeError("commit failed")
+        db.commit.side_effect = RuntimeError("private commit failure details")
 
-        with pytest.raises(HTTPException) as error:
-            commit_or_rollback(
-                db,
-                error_detail=lambda exception: f"Could not save: {exception}",
-            )
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    error_detail="Could not create record",
+                )
 
         assert error.value.status_code == 500
-        assert error.value.detail == "Could not save: commit failed"
+        assert error.value.detail == "Could not create record"
+        assert "private commit failure details" not in error.value.detail
+        assert "private commit failure details" in caplog.text
         db.rollback.assert_called_once_with()
 
-    def test_runs_cleanup_after_rollback(self, mocker):
+    def test_refresh_failure_does_not_roll_back_or_run_cleanup(
+        self,
+        mocker,
+        caplog,
+    ):
+        db = mocker.Mock()
+        instance = object()
+        cleanup = mocker.Mock()
+        db.refresh.side_effect = RuntimeError("refresh failed")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    refresh=instance,
+                    on_error=cleanup,
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == (
+            "Changes were saved, but the updated data could not be loaded"
+        )
+        assert "refresh failed" in caplog.text
+        db.commit.assert_called_once_with()
+        db.refresh.assert_called_once_with(instance)
+        db.rollback.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_runs_cleanup_after_save_failure(self, mocker):
         db = mocker.Mock()
         db.commit.side_effect = RuntimeError("commit failed")
         cleanup = mocker.Mock()
@@ -77,6 +143,26 @@ class TestCommitOrRollback:
         with pytest.raises(HTTPException):
             commit_or_rollback(db, on_error=cleanup)
 
+        db.rollback.assert_called_once_with()
+        cleanup.assert_called_once_with()
+
+    def test_cleanup_failure_does_not_replace_save_error(self, mocker, caplog):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("commit failed")
+        cleanup = mocker.Mock(side_effect=RuntimeError("cleanup failed"))
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    error_detail="Could not save record",
+                    on_error=cleanup,
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save record"
+        assert "commit failed" in caplog.text
+        assert "cleanup failed" in caplog.text
         db.rollback.assert_called_once_with()
         cleanup.assert_called_once_with()
 
