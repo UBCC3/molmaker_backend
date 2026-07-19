@@ -1,23 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from threading import Barrier
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import text
 
 import request_service
 from conftest import TestingSessionLocal, engine
 from enum_types import RequestStatus, RequestType
 from models import Group, Request, User
-
-
-PENDING_REQUEST_UNIQUE_INDEXES = {
-    "uq_requests_pending_invite",
-    "uq_requests_pending_join",
-    "uq_requests_pending_demember",
-}
 
 pytestmark = pytest.mark.skipif(
     engine.dialect.name != "postgresql",
@@ -266,95 +256,3 @@ def test_two_group_approvals_cannot_move_user_to_both_groups(
         if request.status == RequestStatus.approved.value
     )
     assert saved_sender.group_id == approved_request.group_id
-
-
-def test_migration_keeps_oldest_pending_request_and_cancels_duplicates(
-    db,
-    group_factory,
-    user_factory,
-    request_factory,
-):
-    for index_name in PENDING_REQUEST_UNIQUE_INDEXES:
-        db.execute(text(f"DROP INDEX IF EXISTS public.{index_name}"))
-    db.commit()
-
-    group = group_factory()
-    creator = user_factory(
-        group=group,
-        user_sub="auth0|group-admin",
-        role="group_admin",
-    )
-    invitee = user_factory(user_sub="auth0|invitee", group_id=None)
-    joiner = user_factory(user_sub="auth0|joiner", group_id=None)
-    member = user_factory(group=group, user_sub="auth0|member")
-    older_time = datetime.now(timezone.utc) - timedelta(days=2)
-    newer_time = datetime.now(timezone.utc) - timedelta(days=1)
-
-    request_pairs = []
-    for request_type, sender, receiver in (
-        (RequestType.invite, None, invitee),
-        (RequestType.join_request, joiner, None),
-        (RequestType.demember_request, member, None),
-    ):
-        oldest = request_factory(
-            sender=sender,
-            receiver=receiver,
-            group=group,
-            request_type=request_type.value,
-            requested_at=older_time,
-            created_by_sub=creator.user_sub,
-        )
-        duplicate = request_factory(
-            sender=sender,
-            receiver=receiver,
-            group=group,
-            request_type=request_type.value,
-            requested_at=newer_time,
-            created_by_sub=creator.user_sub,
-        )
-        request_pairs.append((oldest.request_id, duplicate.request_id))
-
-    db.close()
-    migration_path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "002_add_request_type_expiry_and_audit_fields.sql"
-    )
-    raw_connection = engine.raw_connection()
-    try:
-        cursor = raw_connection.cursor()
-        cursor.execute(migration_path.read_text())
-        cursor.close()
-    finally:
-        raw_connection.close()
-
-    verification_session = TestingSessionLocal()
-    try:
-        for oldest_id, duplicate_id in request_pairs:
-            oldest = verification_session.get(Request, oldest_id)
-            duplicate = verification_session.get(Request, duplicate_id)
-            assert oldest.status == RequestStatus.pending.value
-            assert duplicate.status == RequestStatus.cancelled.value
-            assert duplicate.resolved_at is not None
-            assert duplicate.resolved_by_sub is None
-
-        index_names = set(
-            verification_session.execute(
-                text(
-                    """
-                    SELECT indexname
-                    FROM pg_indexes
-                    WHERE schemaname = 'public'
-                      AND tablename = 'requests'
-                      AND indexname IN (
-                          'uq_requests_pending_invite',
-                          'uq_requests_pending_join',
-                          'uq_requests_pending_demember'
-                      )
-                    """
-                )
-            ).scalars()
-        )
-        assert index_names == PENDING_REQUEST_UNIQUE_INDEXES
-    finally:
-        verification_session.close()

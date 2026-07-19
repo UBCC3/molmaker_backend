@@ -84,11 +84,21 @@ psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f molmaker.sql
 
 Then set these values in `.env`.
 
-The database role that imports `molmaker.sql` owns the created schema objects. To keep schema dumps portable, generate future schema-only dumps with owner and grant statements omitted:
+The database role that imports `molmaker.sql` owns the created schema objects. Generate future dumps without owner or permission statements so they can be imported by a different database user:
 
 ```zsh
-pg_dump --schema-only --no-owner --no-acl ...
+pg_dump --format=plain --no-owner --no-acl --file=molmaker.sql "${DB_NAME}"
 ```
+
+This command includes both the database structure and its saved data.
+
+To update a database created from `main`, back it up and run the PR 14 migration once:
+
+```zsh
+psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/001_pr14_database_changes.sql
+```
+
+Running the migration again is safe, but it is not needed after importing the current `molmaker.sql` because the dump already contains these changes.
 
 Production deployments should confirm whether migrations run as the same role used by the backend or as a separate migration/admin role. If a separate role owns the schema, explicitly grant the backend role the required table privileges before starting the app.
 
