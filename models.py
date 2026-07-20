@@ -335,4 +335,6 @@ class Request(Base):
 
     sender = relationship("User", foreign_keys=[sender_sub], back_populates="sent_requests")
     receiver = relationship("User", foreign_keys=[receiver_sub], back_populates="received_requests")
+    created_by = relationship("User", foreign_keys=[created_by_sub])
+    resolved_by = relationship("User", foreign_keys=[resolved_by_sub])
     group = relationship("Group", back_populates="requests")

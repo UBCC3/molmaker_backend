@@ -12,6 +12,7 @@ from fastapi import (
     Form,
     HTTPException,
     Depends,
+    Query,
     status,
     Response,
 )
@@ -35,7 +36,12 @@ from models import Job, Structure
 from dependencies import get_db
 from auth import verify_token
 from user_service import get_user_or_404
-from utils import commit_or_rollback, get_user_sub
+from utils import (
+    DEFAULT_JOB_LIST_LIMIT,
+    MAX_JOB_LIST_LIMIT,
+    commit_or_rollback,
+    get_user_sub,
+)
 from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -44,6 +50,8 @@ CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
 @router.get("/")
 def get_all_jobs(
+    limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -52,12 +60,14 @@ def get_all_jobs(
     This includes co-owned jobs even if the user later leaves the group, but
     does not include public jobs owned only by the user's current group.
     Results are ordered by submission time, most recent first.
+    :param limit: Maximum number of jobs to return, up to 100.
+    :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    jobs = list_user_assets(db, Job, user_sub)
+    jobs = list_user_assets(db, Job, user_sub, limit=limit, offset=offset)
     return [serialize_job(job) for job in jobs]
 
 

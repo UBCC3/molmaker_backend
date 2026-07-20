@@ -4,6 +4,7 @@ from fastapi import (
     Form,
     HTTPException,
     Depends,
+    Query,
 )
 from sqlalchemy.orm import Session
 from fastapi import status
@@ -23,12 +24,14 @@ from user_service import (
     list_users_for_admin,
     update_user_role_and_group,
 )
-from utils import get_user_sub
+from utils import DEFAULT_JOB_LIST_LIMIT, MAX_JOB_LIST_LIMIT, get_user_sub
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/jobs")
 def get_all_jobs(
+    limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -36,6 +39,8 @@ def get_all_jobs(
     List all non-deleted jobs for all users, ordered by submission time - most recent first.
     Job group metadata comes from the job's persisted group_id, not from the
     owner's current group membership.
+    :param limit: Maximum number of jobs to return, up to 100.
+    :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
@@ -44,7 +49,7 @@ def get_all_jobs(
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     try:
-        return list_all_jobs_with_metadata(db)
+        return list_all_jobs_with_metadata(db, limit=limit, offset=offset)
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

@@ -83,6 +83,25 @@ def _mock_advanced_analysis_subprocess(monkeypatch, side_effects=None, stdout="1
     return calls
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/jobs/?limit=101",
+        "/structures/?limit=101",
+        "/group/jobs?limit=101",
+        "/group/structures?limit=101",
+        "/admin/jobs?limit=101",
+        "/request/received?limit=101",
+        "/request/sent?limit=101",
+        "/group/requests?limit=101",
+    ],
+)
+def test_list_endpoints_reject_limits_over_100(client, path):
+    response = client.get(path)
+
+    assert response.status_code == 422
+
+
 class TestJobsAPI:
     def test_list_jobs_returns_current_users_non_deleted_jobs_newest_first(
         self, client, group_factory, user_factory, job_factory

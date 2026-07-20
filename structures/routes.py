@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, status
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query, status
 from sqlalchemy.orm import Session
 from fastapi.responses import JSONResponse
 from asset_service import (
@@ -22,7 +22,12 @@ from user_service import get_user_or_404
 import os, uuid, shutil
 import boto3
 from pathlib import Path
-from utils import commit_or_rollback, get_user_sub
+from utils import (
+    DEFAULT_STRUCTURE_LIST_LIMIT,
+    MAX_STRUCTURE_LIST_LIMIT,
+    commit_or_rollback,
+    get_user_sub,
+)
 from datetime import datetime, timezone
 from typing import List
 from ase.io import read
@@ -45,6 +50,12 @@ s3 = boto3.client(
 
 @router.get("/")
 def get_all_structures(
+    limit: int = Query(
+        DEFAULT_STRUCTURE_LIST_LIMIT,
+        ge=1,
+        le=MAX_STRUCTURE_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
     user=Depends(verify_token),
     db: Session = Depends(get_db)
 ):
@@ -52,13 +63,21 @@ def get_all_structures(
     List non-deleted structures directly owned by the authenticated user.
     Results are ordered by upload time, most recent first. Each response item
     includes tags and a presigned image URL.
+    :param limit: Maximum number of structures to return, up to 100.
+    :param offset: Number of sorted structures to skip.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: List of serialized structure details.
     """
     try:
         user_id = get_user_sub(user)
-        structures = list_user_assets(db, Structure, user_id)
+        structures = list_user_assets(
+            db,
+            Structure,
+            user_id,
+            limit=limit,
+            offset=offset,
+        )
 
         return [
             {

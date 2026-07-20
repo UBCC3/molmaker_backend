@@ -3,6 +3,7 @@
 /results
 /test
 /tests/Molmaker_Backend_Testing_Plan.docx
+/PR14_IN_SCOPE_FIX_PLAN.md
 /jobs/*/input.xyz
 /jobs/*/urls.json
 **/__pycache__

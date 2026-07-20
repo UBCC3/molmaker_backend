@@ -32,12 +32,22 @@ from asset_service import (
 )
 from models import Job, Structure
 from user_service import get_user_or_404, serialize_user_profile
-from utils import get_user_sub
+from utils import (
+    DEFAULT_JOB_LIST_LIMIT,
+    DEFAULT_REQUEST_LIST_LIMIT,
+    DEFAULT_STRUCTURE_LIST_LIMIT,
+    MAX_JOB_LIST_LIMIT,
+    MAX_REQUEST_LIST_LIMIT,
+    MAX_STRUCTURE_LIST_LIMIT,
+    get_user_sub,
+)
 
 router = APIRouter(prefix="/group", tags=["group"])
 
 @router.get("/jobs")
 def get_all_jobs(
+    limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -48,12 +58,21 @@ def get_all_jobs(
     are hidden, while group_id remains visible. Normal members do not receive
     private group jobs from this endpoint even when they are the direct user
     owner; use GET /jobs/ for the authenticated user's own jobs.
+    :param limit: Maximum number of jobs to return, up to 100.
+    :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return list_group_assets_for_user(db, user, Job, serialize_job)
+    return list_group_assets_for_user(
+        db,
+        user,
+        Job,
+        serialize_job,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.patch("/jobs/{job_id}")
 def update_job_ownership(
@@ -92,6 +111,12 @@ def update_job_ownership(
 
 @router.get("/structures")
 def get_all_structures(
+    limit: int = Query(
+        DEFAULT_STRUCTURE_LIST_LIMIT,
+        ge=1,
+        le=MAX_STRUCTURE_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -103,12 +128,21 @@ def get_all_structures(
     receive private group structures from this endpoint even when they are the
     direct user owner; use GET /structures/ for the authenticated user's own
     structures.
+    :param limit: Maximum number of structures to return, up to 100.
+    :param offset: Number of sorted structures to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized structure details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return list_group_assets_for_user(db, user, Structure, serialize_structure)
+    return list_group_assets_for_user(
+        db,
+        user,
+        Structure,
+        serialize_structure,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.patch("/structures/{structure_id}")
 def update_structure_ownership(
@@ -201,6 +235,12 @@ def get_group_requests(
     request_status: RequestStatus = Query(RequestStatus.pending, alias="status"),
     request_type: RequestType | None = None,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    limit: int = Query(
+        DEFAULT_REQUEST_LIST_LIMIT,
+        ge=1,
+        le=MAX_REQUEST_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -211,12 +251,22 @@ def get_group_requests(
     :param request_status: Request status filter, passed as query parameter status.
     :param request_type: Optional request type filter.
     :param recent_days: Recent terminal-request window in days.
+    :param limit: Maximum number of requests to return, up to 100.
+    :param offset: Number of sorted requests to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: Request details for the current group.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
-    return list_group_requests(db, user, request_status, request_type, recent_days)
+    return list_group_requests(
+        db,
+        user,
+        request_status,
+        request_type,
+        recent_days,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.patch("/{group_id}")
 def update_group(

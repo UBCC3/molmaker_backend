@@ -93,6 +93,21 @@ def db():
 
 
 @pytest.fixture
+def sql_statements():
+    """Collect SQL statements so list tests can catch per-row queries."""
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+
+@pytest.fixture
 def auth_user():
     """
     Default authenticated user payload for API tests.

@@ -120,13 +120,21 @@ def list_group_assets_for_user(
     user: User,
     model: Type[AssetModel],
     serialize_asset: AssetSerializer[AssetModel],
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> list[dict]:
     require_group_membership(user)
 
-    assets = list_group_assets(db, model, user.group_id)
     include_all_owner_metadata = can_view_group_owner_metadata(user)
-    if not include_all_owner_metadata:
-        assets = [asset for asset in assets if asset.is_public]
+    assets = list_group_assets(
+        db,
+        model,
+        user.group_id,
+        public_only=not include_all_owner_metadata,
+        limit=limit,
+        offset=offset,
+    )
 
     return [
         serialize_asset(

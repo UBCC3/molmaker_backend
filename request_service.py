@@ -3,9 +3,9 @@ from typing import NoReturn, Optional
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from enum_types import RequestStatus, RequestType
 from models import Group, Request, User
@@ -18,7 +18,7 @@ from permissions import (
     can_reject_request,
     can_view_request_user_metadata,
 )
-from utils import commit_or_rollback, parse_uuid_or_404
+from utils import DEFAULT_REQUEST_LIST_LIMIT, commit_or_rollback, parse_uuid_or_404
 
 
 DEFAULT_EXPIRES_IN_DAYS = 7
@@ -98,13 +98,9 @@ def _validate_recent_days(recent_days: int) -> int:
 
 
 def _serialize_user_email(
-    db: Session,
-    user_sub: Optional[str],
+    user: Optional[User],
     snapshot: Optional[str],
 ) -> Optional[str]:
-    if not user_sub:
-        return snapshot
-    user = db.query(User).filter_by(user_sub=user_sub).first()
     return user.email if user else snapshot
 
 
@@ -280,13 +276,11 @@ def _snapshot_deleted_user_request(request: Request, user: User) -> None:
 
 
 def serialize_request(
-    db: Session,
     request: Request,
     *,
     viewer: Optional[User] = None,
     include_user_metadata: bool = False,
 ) -> dict:
-    group = db.query(Group).filter_by(group_id=request.group_id).first()
     result = {
         "request_id": str(request.request_id),
         "status": request.status,
@@ -295,7 +289,7 @@ def serialize_request(
         "expires_at": request.expires_at.isoformat(),
         "resolved_at": request.resolved_at.isoformat() if request.resolved_at else None,
         "group_id": str(request.group_id) if request.group_id else None,
-        "group_name": group.name if group else request.group_name_snapshot,
+        "group_name": request.group.name if request.group else request.group_name_snapshot,
     }
 
     if include_user_metadata:
@@ -306,23 +300,19 @@ def serialize_request(
                 "created_by_sub": request.created_by_sub,
                 "resolved_by_sub": request.resolved_by_sub,
                 "sender_name": _serialize_user_email(
-                    db,
-                    request.sender_sub,
+                    request.sender,
                     request.sender_email_snapshot,
                 ),
                 "receiver_name": _serialize_user_email(
-                    db,
-                    request.receiver_sub,
+                    request.receiver,
                     request.receiver_email_snapshot,
                 ),
                 "created_by_name": _serialize_user_email(
-                    db,
-                    request.created_by_sub,
+                    request.created_by,
                     request.created_by_email_snapshot,
                 ),
                 "resolved_by_name": _serialize_user_email(
-                    db,
-                    request.resolved_by_sub,
+                    request.resolved_by,
                     request.resolved_by_email_snapshot,
                 ),
             }
@@ -386,23 +376,57 @@ def _lock_request_and_users(
 
 
 def expire_pending_requests(db: Session) -> None:
-    expired_requests = (
-        db.query(Request)
-        .filter(Request.status == RequestStatus.pending.value)
-        .filter(Request.expires_at <= _now())
-        .all()
+    def user_email(user_sub_column):
+        return (
+            select(User.email)
+            .where(User.user_sub == user_sub_column)
+            .correlate(Request)
+            .scalar_subquery()
+        )
+
+    group_name = (
+        select(Group.name)
+        .where(Group.group_id == Request.group_id)
+        .correlate(Request)
+        .scalar_subquery()
     )
-    if not expired_requests:
-        return
 
     resolved_at = _now()
-    for request in expired_requests:
-        _set_request_snapshots(db, request)
-        request.status = RequestStatus.expired.value
-        request.resolved_at = resolved_at
-        request.resolved_by_sub = None
-
-    commit_or_rollback(db)
+    updated_count = (
+        db.query(Request)
+        .filter(Request.status == RequestStatus.pending.value)
+        .filter(Request.expires_at <= resolved_at)
+        .update(
+            {
+                Request.status: RequestStatus.expired.value,
+                Request.resolved_at: resolved_at,
+                Request.resolved_by_sub: None,
+                Request.sender_email_snapshot: func.coalesce(
+                    Request.sender_email_snapshot,
+                    user_email(Request.sender_sub),
+                ),
+                Request.receiver_email_snapshot: func.coalesce(
+                    Request.receiver_email_snapshot,
+                    user_email(Request.receiver_sub),
+                ),
+                Request.created_by_email_snapshot: func.coalesce(
+                    Request.created_by_email_snapshot,
+                    user_email(Request.created_by_sub),
+                ),
+                Request.resolved_by_email_snapshot: func.coalesce(
+                    Request.resolved_by_email_snapshot,
+                    user_email(Request.resolved_by_sub),
+                ),
+                Request.group_name_snapshot: func.coalesce(
+                    Request.group_name_snapshot,
+                    group_name,
+                ),
+            },
+            synchronize_session=False,
+        )
+    )
+    if updated_count:
+        commit_or_rollback(db)
 
 
 def _expire_request_if_needed(db: Session, request: Request) -> None:
@@ -449,26 +473,51 @@ def _apply_request_type_filter(query, request_type: Optional[RequestType]):
     return query
 
 
+def _serialize_request_list(
+    query,
+    user: User,
+    *,
+    limit: int,
+    offset: int,
+) -> list[dict]:
+    requests = (
+        query.options(
+            joinedload(Request.group),
+            joinedload(Request.sender),
+            joinedload(Request.receiver),
+            joinedload(Request.created_by),
+            joinedload(Request.resolved_by),
+        )
+        .order_by(Request.requested_at.desc(), Request.request_id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [
+        serialize_request(
+            request,
+            viewer=user,
+            include_user_metadata=can_view_request_user_metadata(user, request),
+        )
+        for request in requests
+    ]
+
+
 def list_received_requests(
     db: Session,
     user: User,
     request_status: RequestStatus = RequestStatus.pending,
     request_type: Optional[RequestType] = None,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    *,
+    limit: int = DEFAULT_REQUEST_LIST_LIMIT,
+    offset: int = 0,
 ) -> list[dict]:
     expire_pending_requests(db)
     query = db.query(Request).filter(Request.receiver_sub == user.user_sub)
     query = _request_query_for_status(query, request_status, recent_days)
     query = _apply_request_type_filter(query, request_type)
-    return [
-        serialize_request(
-            db,
-            request,
-            viewer=user,
-            include_user_metadata=can_view_request_user_metadata(user, request),
-        )
-        for request in query.all()
-    ]
+    return _serialize_request_list(query, user, limit=limit, offset=offset)
 
 
 def list_sent_requests(
@@ -477,6 +526,9 @@ def list_sent_requests(
     request_status: RequestStatus = RequestStatus.pending,
     request_type: Optional[RequestType] = None,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    *,
+    limit: int = DEFAULT_REQUEST_LIST_LIMIT,
+    offset: int = 0,
 ) -> list[dict]:
     expire_pending_requests(db)
     query = db.query(Request).filter(
@@ -487,15 +539,7 @@ def list_sent_requests(
     )
     query = _request_query_for_status(query, request_status, recent_days)
     query = _apply_request_type_filter(query, request_type)
-    return [
-        serialize_request(
-            db,
-            request,
-            viewer=user,
-            include_user_metadata=can_view_request_user_metadata(user, request),
-        )
-        for request in query.all()
-    ]
+    return _serialize_request_list(query, user, limit=limit, offset=offset)
 
 
 def list_group_requests(
@@ -504,6 +548,9 @@ def list_group_requests(
     request_status: RequestStatus = RequestStatus.pending,
     request_type: Optional[RequestType] = None,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    *,
+    limit: int = DEFAULT_REQUEST_LIST_LIMIT,
+    offset: int = 0,
 ) -> list[dict]:
     if not user.group_id:
         raise HTTPException(
@@ -517,15 +564,7 @@ def list_group_requests(
     query = db.query(Request).filter(Request.group_id == user.group_id)
     query = _request_query_for_status(query, request_status, recent_days)
     query = _apply_request_type_filter(query, request_type)
-    return [
-        serialize_request(
-            db,
-            request,
-            viewer=user,
-            include_user_metadata=can_view_request_user_metadata(user, request),
-        )
-        for request in query.all()
-    ]
+    return _serialize_request_list(query, user, limit=limit, offset=offset)
 
 
 def _require_group_request_manager(user: User, group_id: object) -> None:
@@ -646,7 +685,6 @@ def create_join_request(
     _set_request_snapshots(db, request)
     _save_new_request(db, request)
     return serialize_request(
-        db,
         request,
         viewer=user,
         include_user_metadata=can_view_request_user_metadata(user, request),
@@ -685,7 +723,6 @@ def create_invite_request(
     _set_request_snapshots(db, request)
     _save_new_request(db, request)
     return serialize_request(
-        db,
         request,
         viewer=user,
         include_user_metadata=can_view_request_user_metadata(user, request),
@@ -723,7 +760,6 @@ def create_demember_request(
     _set_request_snapshots(db, request)
     _save_new_request(db, request)
     return serialize_request(
-        db,
         request,
         viewer=user,
         include_user_metadata=can_view_request_user_metadata(user, request),

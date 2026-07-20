@@ -165,6 +165,57 @@ class TestAdminAPI:
         assert result[2]["group_id"] == str(admin_group.group_id)
         assert result[2]["group_name"] == "Admins"
 
+    def test_admin_jobs_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Admin job pages should use the job ID when submission times tie."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        submitted_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        jobs = [
+            job_factory(
+                user_sub=owner.user_sub,
+                group_id=group.group_id,
+                submitted_at=submitted_at,
+            )
+            for _ in range(3)
+        ]
+        expected_job = sorted(jobs, key=lambda job: job.job_id)[1]
+
+        response = client.get("/admin/jobs?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [job["job_id"] for job in response.json()] == [
+            str(expected_job.job_id)
+        ]
+
+    def test_admin_job_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        sql_statements,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Owner, group, tag, and structure loading must not query per job."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        for _ in range(5):
+            job_factory(user_sub=owner.user_sub, group_id=group.group_id)
+        sql_statements.clear()
+
+        response = client.get("/admin/jobs")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 5
+        assert len(sql_statements) == 4
+
     def test_admin_jobs_list_requires_admin_user(self, client, user_factory):
         """
         Non-admin users should not be able to list all jobs.

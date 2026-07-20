@@ -11,6 +11,15 @@ from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_JOB_LIST_LIMIT = 100
+MAX_JOB_LIST_LIMIT = 100
+
+DEFAULT_STRUCTURE_LIST_LIMIT = 100
+MAX_STRUCTURE_LIST_LIMIT = 100
+
+DEFAULT_REQUEST_LIST_LIMIT = 25
+MAX_REQUEST_LIST_LIMIT = 100
+
 DEFAULT_SAVE_ERROR_DETAIL = "Could not save changes"
 DEFAULT_REFRESH_ERROR_DETAIL = (
     "Changes were saved, but the updated data could not be loaded"

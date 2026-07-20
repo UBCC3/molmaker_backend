@@ -2,7 +2,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from enum_types import AssetOwnership
 from permissions import (
@@ -12,11 +12,37 @@ from permissions import (
     is_admin,
 )
 from models import Asset, Group, Job, Structure, Tags, User
-from utils import commit_or_rollback, parse_uuid_or_404
+from utils import (
+    DEFAULT_JOB_LIST_LIMIT,
+    DEFAULT_STRUCTURE_LIST_LIMIT,
+    commit_or_rollback,
+    parse_uuid_or_404,
+)
 
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
 PermissionCheck = Callable[[User, Asset], bool]
+
+
+def _default_asset_list_limit(model: Type[AssetModel]) -> int:
+    if model is Job:
+        return DEFAULT_JOB_LIST_LIMIT
+    if model is Structure:
+        return DEFAULT_STRUCTURE_LIST_LIMIT
+    raise ValueError(f"Unsupported asset model: {model.__name__}")
+
+
+def _asset_list_options(
+    model: Type[AssetModel],
+    *,
+    include_owner_metadata: bool = False,
+) -> list:
+    options = [selectinload(model.tags)]
+    if model is Job:
+        options.append(selectinload(Job.structures))
+    if include_owner_metadata:
+        options.extend((joinedload(model.user), joinedload(model.group)))
+    return options
 
 
 def serialize_asset(
@@ -79,11 +105,18 @@ def list_user_assets(
     db: Session,
     model: Type[AssetModel],
     user_sub: str,
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> List[AssetModel]:
+    result_limit = limit if limit is not None else _default_asset_list_limit(model)
     return (
         db.query(model)
-        .filter(model.user_sub == user_sub, model.is_deleted == False)
-        .order_by(model.created_at.desc())
+        .options(*_asset_list_options(model))
+        .filter(model.user_sub == user_sub, model.is_deleted.is_(False))
+        .order_by(model.created_at.desc(), model.id.asc())
+        .offset(offset)
+        .limit(result_limit)
         .all()
     )
 
@@ -92,30 +125,48 @@ def list_group_assets(
     db: Session,
     model: Type[AssetModel],
     group_id: UUID,
+    *,
+    public_only: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> List[AssetModel]:
-    return (
+    result_limit = limit if limit is not None else _default_asset_list_limit(model)
+    query = (
         db.query(model)
-        .filter(model.group_id == group_id, model.is_deleted == False)
-        .order_by(model.created_at.desc())
+        .options(*_asset_list_options(model))
+        .filter(model.group_id == group_id, model.is_deleted.is_(False))
+    )
+    if public_only:
+        query = query.filter(model.is_public.is_(True))
+    return (
+        query.order_by(model.created_at.desc(), model.id.asc())
+        .offset(offset)
+        .limit(result_limit)
         .all()
     )
 
 
-def list_all_jobs_with_metadata(db: Session) -> list[dict]:
+def list_all_jobs_with_metadata(
+    db: Session,
+    *,
+    limit: int = DEFAULT_JOB_LIST_LIMIT,
+    offset: int = 0,
+) -> list[dict]:
     jobs = (
         db.query(Job)
-        .filter_by(is_deleted=False)
-        .order_by(Job.submitted_at.desc())
+        .options(*_asset_list_options(Job, include_owner_metadata=True))
+        .filter(Job.is_deleted.is_(False))
+        .order_by(Job.submitted_at.desc(), Job.job_id.asc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
     result = []
     for job in jobs:
-        owner = db.query(User).filter_by(user_sub=job.user_sub).first() if job.user_sub else None
-        group = db.query(Group).filter_by(group_id=job.group_id).first() if job.group_id else None
         payload = serialize_job(job)
-        payload["user_email"] = owner.email if owner else None
-        payload["group_name"] = group.name if group else None
+        payload["user_email"] = job.user.email if job.user else None
+        payload["group_name"] = job.group.name if job.group else None
         result.append(payload)
     return result
 

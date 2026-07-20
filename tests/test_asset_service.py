@@ -215,6 +215,13 @@ def test_list_user_assets_filters_deleted_and_orders_newest_first(
     factory(user_sub=other.user_sub, created_at=now + timedelta(hours=2))
 
     assert list_user_assets(db, model, owner.user_sub) == [newer, older]
+    assert list_user_assets(
+        db,
+        model,
+        owner.user_sub,
+        limit=1,
+        offset=1,
+    ) == [older]
 
 
 @pytest.mark.parametrize("model,factory_name", ASSET_CASES)
@@ -256,6 +263,19 @@ def test_list_group_assets_filters_by_group_and_orders_newest_first(
     )
 
     assert list_group_assets(db, model, group.group_id) == [newer, older]
+    assert list_group_assets(
+        db,
+        model,
+        group.group_id,
+        public_only=True,
+    ) == [newer]
+    assert list_group_assets(
+        db,
+        model,
+        group.group_id,
+        limit=1,
+        offset=1,
+    ) == [older]
 
 
 @pytest.mark.parametrize("model", [Job, Structure])

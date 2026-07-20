@@ -440,10 +440,10 @@ class TestGroupsAPI:
             group_id=group.group_id,
             job_name="private",
             is_public=False,
-            submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         )
 
-        response = client.get("/group/jobs")
+        response = client.get("/group/jobs?limit=1")
 
         assert response.status_code == 200
         result = response.json()
@@ -479,6 +479,72 @@ class TestGroupsAPI:
 
         assert response.status_code == 200
         assert response.json() == []
+
+    def test_group_jobs_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Jobs with the same submission time should keep a stable page order."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        submitted_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        jobs = [
+            job_factory(
+                user_sub=owner.user_sub,
+                group_id=group.group_id,
+                submitted_at=submitted_at,
+            )
+            for _ in range(3)
+        ]
+        expected_job = sorted(jobs, key=lambda job: job.job_id)[1]
+
+        response = client.get("/group/jobs?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [job["job_id"] for job in response.json()] == [
+            str(expected_job.job_id)
+        ]
+
+    @pytest.mark.parametrize(
+        ("path", "factory_name", "expected_query_count"),
+        [
+            ("/group/jobs", "job_factory", 4),
+            ("/group/structures", "structure_factory", 3),
+        ],
+    )
+    def test_group_asset_lists_use_fixed_number_of_queries(
+        self,
+        request,
+        client,
+        sql_statements,
+        group_factory,
+        user_factory,
+        path,
+        factory_name,
+        expected_query_count,
+    ):
+        """Adding assets must not add more SQL queries to a group list call."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        factory = request.getfixturevalue(factory_name)
+        for _ in range(5):
+            factory(
+                user_sub=owner.user_sub,
+                group_id=group.group_id,
+                is_public=False,
+            )
+        sql_statements.clear()
+
+        response = client.get(path)
+
+        assert response.status_code == 200
+        assert len(response.json()) == 5
+        assert len(sql_statements) == expected_query_count
 
     def test_group_admin_can_list_all_structures_with_persisted_group_id(
         self, client, group_factory, user_factory, structure_factory

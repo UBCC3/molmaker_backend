@@ -345,6 +345,105 @@ class TestRequestListingAPI:
         requests = _requests_by_id(response.json())
         assert set(requests) == {str(join_request.request_id), str(invite.request_id)}
 
+    def test_request_lists_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Requests with the same time should keep a stable order across pages."""
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        requested_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        request_ids = [
+            uuid.UUID(f"aaaaaaaa-0000-0000-0000-{value:012x}")
+            for value in (3, 1, 2)
+        ]
+        for request_id in request_ids:
+            request_factory(
+                sender=user,
+                receiver=None,
+                group=group_factory(),
+                request_id=request_id,
+                request_type="join_request",
+                requested_at=requested_at,
+            )
+
+        response = client.get("/request/sent?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [item["request_id"] for item in response.json()] == [
+            str(uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002"))
+        ]
+
+    def test_request_lists_default_to_25_results(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Request lists should use their smaller default page size."""
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        requested_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        requests = [
+            request_factory(
+                sender=user,
+                receiver=None,
+                group=group_factory(),
+                request_type="join_request",
+                requested_at=requested_at + timedelta(minutes=index),
+            )
+            for index in range(26)
+        ]
+
+        response = client.get("/request/sent")
+
+        assert response.status_code == 200
+        result_ids = {item["request_id"] for item in response.json()}
+        assert len(result_ids) == 25
+        assert str(requests[0].request_id) not in result_ids
+
+    def test_group_request_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        set_auth_user,
+        sql_statements,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Adding request rows must not add more SQL queries to the list call."""
+        group = group_factory()
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        for index in range(5):
+            invitee = user_factory(
+                user_sub=f"auth0|invitee-{index}",
+                group_id=None,
+            )
+            request_factory(
+                sender=None,
+                receiver=invitee,
+                group=group,
+                request_type="invite",
+                created_by_sub=group_admin.user_sub,
+            )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+        sql_statements.clear()
+
+        response = client.get("/group/requests")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 5
+        assert [
+            statement.lstrip().split(None, 1)[0].upper()
+            for statement in sql_statements
+        ] == ["SELECT", "UPDATE", "SELECT"]
+
     def test_request_lists_filter_by_status_type_and_recent_days(
         self, client, group_factory, user_factory, request_factory
     ):
@@ -440,12 +539,19 @@ class TestRequestListingAPI:
         assert response.json()["detail"] == "Permission denied"
 
     def test_listing_lazily_expires_pending_requests(
-        self, client, db, group_factory, user_factory, request_factory
+        self,
+        client,
+        db,
+        sql_statements,
+        group_factory,
+        user_factory,
+        request_factory,
     ):
         """
-        Listing requests should mark expired pending rows as expired.
+        Listing requests should expire all matching rows with one UPDATE.
         """
         group = group_factory()
+        other_group = group_factory()
         user = user_factory(user_sub="auth0|testuser", group_id=None)
         expired_request = request_factory(
             sender=user,
@@ -454,19 +560,41 @@ class TestRequestListingAPI:
             request_type="join_request",
             expires_at=datetime.now(timezone.utc) - timedelta(days=1),
         )
+        other_expired_request = request_factory(
+            sender=user,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        sql_statements.clear()
 
         pending_response = client.get("/request/sent")
 
         assert pending_response.status_code == 200
         assert pending_response.json() == []
+        assert len(
+            [
+                statement
+                for statement in sql_statements
+                if statement.lstrip().upper().startswith("UPDATE REQUESTS")
+            ]
+        ) == 1
         db.refresh(expired_request)
+        db.refresh(other_expired_request)
         assert expired_request.status == "expired"
         assert expired_request.resolved_at is not None
+        assert expired_request.sender_email_snapshot == user.email
+        assert expired_request.group_name_snapshot == group.name
+        assert other_expired_request.status == "expired"
 
         expired_response = client.get("/request/sent?status=expired")
 
         assert expired_response.status_code == 200
-        assert expired_response.json()[0]["request_id"] == str(expired_request.request_id)
+        assert {item["request_id"] for item in expired_response.json()} == {
+            str(expired_request.request_id),
+            str(other_expired_request.request_id),
+        }
 
 
 class TestRequestResolutionAPI:
