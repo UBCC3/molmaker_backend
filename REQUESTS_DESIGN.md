@@ -137,10 +137,15 @@ All list endpoints support:
 status optional, default pending
 request_type optional
 recent_days optional, default 30, max 90
+limit optional, default 25, max 100
+offset optional, default 0
 ```
 
 `recent_days` applies only to terminal-status queries and filters by
 `resolved_at`.
+
+Results are ordered by `requested_at`, newest first. When two requests have
+the same `requested_at`, `request_id` keeps pagination stable.
 
 ## Serialization
 

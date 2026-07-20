@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from enum_types import AssetOwnership
@@ -437,13 +438,39 @@ def set_asset_tags(
     if not tag_names_to_link:
         return
 
-    reusable_tags = (
-        db.query(Tags)
-        .filter(Tags.user_sub == user_sub, Tags.name.in_(tag_names_to_link))
-        .all()
-    )
-    reusable_tag_names = {tag.name for tag in reusable_tags}
-    new_tag_names = tag_names_to_link - reusable_tag_names
+    if db.get_bind().dialect.name == "postgresql":
+        # Two requests may try to create the same new tag at the same time.
+        # PostgreSQL keeps one row, then both requests link to that row.
+        with db.no_autoflush:
+            db.execute(
+                postgresql_insert(Tags)
+                .values(
+                    [
+                        {"user_sub": user_sub, "name": tag_name}
+                        for tag_name in sorted(tag_names_to_link)
+                    ]
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[Tags.user_sub, Tags.name],
+                )
+            )
+            reusable_tags = (
+                db.query(Tags)
+                .filter(
+                    Tags.user_sub == user_sub,
+                    Tags.name.in_(tag_names_to_link),
+                )
+                .all()
+            )
+        new_tag_names = set()
+    else:
+        reusable_tags = (
+            db.query(Tags)
+            .filter(Tags.user_sub == user_sub, Tags.name.in_(tag_names_to_link))
+            .all()
+        )
+        reusable_tag_names = {tag.name for tag in reusable_tags}
+        new_tag_names = tag_names_to_link - reusable_tag_names
 
     for tag in reusable_tags:
         asset.tags.append(tag)

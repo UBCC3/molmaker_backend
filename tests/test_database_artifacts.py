@@ -360,6 +360,37 @@ def test_combined_migration_can_run_twice(db):
     assert _database_state() == state_after_first_run
 
 
+def test_migration_does_not_restore_removed_group_ownership(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+
+    session = TestingSessionLocal()
+    try:
+        session.execute(
+            text("UPDATE public.jobs SET group_id = NULL WHERE job_id = :job_id"),
+            {"job_id": NEW_JOB_ID},
+        )
+        session.execute(
+            text(
+                """
+                UPDATE public.structures
+                SET group_id = NULL
+                WHERE structure_id = :structure_id
+                """
+            ),
+            {"structure_id": NEW_STRUCTURE_ID},
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    state_before_second_run = _database_state()
+    _run_sql_file(MIGRATION_PATH)
+
+    assert _database_state() == state_before_second_run
+
+
 @pytest.mark.parametrize(
     ("schema_change", "expected_error"),
     [

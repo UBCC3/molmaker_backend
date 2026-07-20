@@ -36,9 +36,11 @@ from utils import (
     DEFAULT_JOB_LIST_LIMIT,
     DEFAULT_REQUEST_LIST_LIMIT,
     DEFAULT_STRUCTURE_LIST_LIMIT,
+    DEFAULT_USER_LIST_LIMIT,
     MAX_JOB_LIST_LIMIT,
     MAX_REQUEST_LIST_LIMIT,
     MAX_STRUCTURE_LIST_LIMIT,
+    MAX_USER_LIST_LIMIT,
     get_user_sub,
 )
 
@@ -188,6 +190,8 @@ def update_structure_ownership(
 
 @router.get("/users")
 def get_all_users(
+    limit: int = Query(DEFAULT_USER_LIST_LIMIT, ge=1, le=MAX_USER_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
@@ -195,6 +199,9 @@ def get_all_users(
     List users in the authenticated user's current group.
     Only overall admins and group admins can use this endpoint. Normal group
     members cannot enumerate other group members.
+    Results are ordered by email.
+    :param limit: Maximum number of users to return, up to 100.
+    :param offset: Number of sorted users to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
@@ -202,7 +209,12 @@ def get_all_users(
     user = get_user_or_404(db, get_user_sub(current_user))
     return [
         serialize_user_profile(group_user)
-        for group_user in list_group_users(db, user)
+        for group_user in list_group_users(
+            db,
+            user,
+            limit=limit,
+            offset=offset,
+        )
     ]
 
 @router.delete("/users/{selected_user_sub}")

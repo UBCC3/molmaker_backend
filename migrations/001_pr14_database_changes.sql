@@ -40,14 +40,57 @@ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE public.jobs
-    ADD COLUMN IF NOT EXISTS group_id uuid;
+-- Add and fill ownership only during the first upgrade. A later run must not
+-- restore group ownership that an admin intentionally removed.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'jobs'
+          AND column_name = 'group_id'
+    ) THEN
+        ALTER TABLE public.jobs
+            ADD COLUMN group_id uuid;
+
+        UPDATE public.jobs j
+        SET group_id = u.group_id
+        FROM public.users u
+        WHERE j.user_sub = u.user_sub
+          AND u.group_id IS NOT NULL
+          AND u.role_or_group_updated_at IS NOT NULL
+          AND j.submitted_at >= u.role_or_group_updated_at;
+    END IF;
+END $$;
 
 ALTER TABLE public.jobs
     ALTER COLUMN user_sub DROP NOT NULL;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'structures'
+          AND column_name = 'group_id'
+    ) THEN
+        ALTER TABLE public.structures
+            ADD COLUMN group_id uuid;
+
+        UPDATE public.structures s
+        SET group_id = u.group_id
+        FROM public.users u
+        WHERE s.user_sub = u.user_sub
+          AND u.group_id IS NOT NULL
+          AND u.role_or_group_updated_at IS NOT NULL
+          AND s.uploaded_at >= u.role_or_group_updated_at;
+    END IF;
+END $$;
+
 ALTER TABLE public.structures
-    ADD COLUMN IF NOT EXISTS group_id uuid,
     ADD COLUMN IF NOT EXISTS is_public boolean NOT NULL DEFAULT false;
 
 ALTER TABLE public.structures
@@ -58,24 +101,6 @@ ALTER TABLE public.requests
 
 ALTER TABLE public.requests
     ALTER COLUMN receiver_sub DROP NOT NULL;
-
-UPDATE public.jobs j
-SET group_id = u.group_id
-FROM public.users u
-WHERE j.user_sub = u.user_sub
-  AND j.group_id IS NULL
-  AND u.group_id IS NOT NULL
-  AND u.role_or_group_updated_at IS NOT NULL
-  AND j.submitted_at >= u.role_or_group_updated_at;
-
-UPDATE public.structures s
-SET group_id = u.group_id
-FROM public.users u
-WHERE s.user_sub = u.user_sub
-  AND s.group_id IS NULL
-  AND u.group_id IS NOT NULL
-  AND u.role_or_group_updated_at IS NOT NULL
-  AND s.uploaded_at >= u.role_or_group_updated_at;
 
 DO $$
 BEGIN

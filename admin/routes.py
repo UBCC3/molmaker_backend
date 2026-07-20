@@ -24,7 +24,15 @@ from user_service import (
     list_users_for_admin,
     update_user_role_and_group,
 )
-from utils import DEFAULT_JOB_LIST_LIMIT, MAX_JOB_LIST_LIMIT, get_user_sub
+from utils import (
+    DEFAULT_GROUP_LIST_LIMIT,
+    DEFAULT_JOB_LIST_LIMIT,
+    DEFAULT_USER_LIST_LIMIT,
+    MAX_GROUP_LIST_LIMIT,
+    MAX_JOB_LIST_LIMIT,
+    MAX_USER_LIST_LIMIT,
+    get_user_sub,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -56,11 +64,15 @@ def get_all_jobs(
 
 @router.get("/users")
 def get_all_users(
+    limit: int = Query(DEFAULT_USER_LIST_LIMIT, ge=1, le=MAX_USER_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all users in the system.
+    List users in the system, ordered by email.
+    :param limit: Maximum number of users to return, up to 100.
+    :param offset: Number of sorted users to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
@@ -69,17 +81,21 @@ def get_all_users(
     if not has_admin_permission(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
     try:
-        return list_users_for_admin(db)
+        return list_users_for_admin(db, limit=limit, offset=offset)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @router.get("/groups")
 def get_all_groups(
+    limit: int = Query(DEFAULT_GROUP_LIST_LIMIT, ge=1, le=MAX_GROUP_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all groups in the system.
+    List groups and their users, ordered by group name.
+    :param limit: Maximum number of groups to return, up to 100.
+    :param offset: Number of sorted groups to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of group details.
@@ -89,7 +105,7 @@ def get_all_groups(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     try:
-        return list_groups_with_users(db)
+        return list_groups_with_users(db, limit=limit, offset=offset)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 

@@ -60,6 +60,25 @@ class TestAdminAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "User not found"
 
+    def test_admin_users_use_stable_pagination(self, client, user_factory):
+        user_factory(
+            user_sub="auth0|testuser",
+            email="z-admin@example.com",
+            role="admin",
+        )
+        user_factory(user_sub="auth0|first", email="a-first@example.com")
+        expected_user = user_factory(
+            user_sub="auth0|second",
+            email="b-second@example.com",
+        )
+
+        response = client.get("/admin/users?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [user["user_sub"] for user in response.json()] == [
+            expected_user.user_sub
+        ]
+
     def test_admin_can_list_groups_with_users(self, client, group_factory, user_factory):
         """
         GET /admin/groups should return groups and their users for admins.
@@ -104,6 +123,44 @@ class TestAdminAPI:
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
+
+    def test_admin_groups_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+    ):
+        group_factory(name="Alpha")
+        expected_group = group_factory(name="Beta")
+        admin_group = group_factory(name="Zulu")
+        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+
+        response = client.get("/admin/groups?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [group["group_id"] for group in response.json()] == [
+            str(expected_group.group_id)
+        ]
+
+    def test_admin_group_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        sql_statements,
+        group_factory,
+        user_factory,
+    ):
+        admin_group = group_factory(name="Admin group")
+        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+        for group_number in range(5):
+            group = group_factory(name=f"Group {group_number}")
+            user_factory(group=group)
+        sql_statements.clear()
+
+        response = client.get("/admin/groups")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 6
+        assert len(sql_statements) == 3
 
     def test_admin_can_list_all_non_deleted_jobs_with_user_metadata(
         self, client, group_factory, user_factory, job_factory

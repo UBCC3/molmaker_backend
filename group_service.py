@@ -1,7 +1,7 @@
 from typing import Optional, Protocol, Type, TypeVar
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from asset_service import list_group_assets
 from models import Asset, Group, Job, Structure, User
@@ -19,7 +19,12 @@ from request_service import (
     remove_user_from_group,
 )
 from user_service import serialize_user_profile
-from utils import commit_or_rollback, parse_uuid_or_404
+from utils import (
+    DEFAULT_GROUP_LIST_LIMIT,
+    DEFAULT_USER_LIST_LIMIT,
+    commit_or_rollback,
+    parse_uuid_or_404,
+)
 
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
@@ -63,19 +68,37 @@ def create_group(db: Session, name: str) -> dict:
     return serialize_group(group)
 
 
-def list_groups_with_users(db: Session) -> list[dict]:
-    groups = db.query(Group).all()
-    result = []
-    for group in groups:
-        users = db.query(User).filter_by(group_id=group.group_id).all()
-        result.append(
-            {
-                "group_id": str(group.group_id),
-                "name": group.name,
-                "users": [serialize_user_profile(user) for user in users],
-            }
-        )
-    return result
+def list_groups_with_users(
+    db: Session,
+    *,
+    limit: int = DEFAULT_GROUP_LIST_LIMIT,
+    offset: int = 0,
+) -> list[dict]:
+    groups = (
+        db.query(Group)
+        .options(selectinload(Group.users))
+        .order_by(Group.name.asc(), Group.group_id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "group_id": str(group.group_id),
+            "name": group.name,
+            "users": [
+                serialize_user_profile(group_user)
+                for group_user in sorted(
+                    group.users,
+                    key=lambda group_user: (
+                        group_user.email,
+                        group_user.user_sub,
+                    ),
+                )
+            ],
+        }
+        for group in groups
+    ]
 
 
 def require_group_membership(user: User) -> None:
@@ -86,12 +109,25 @@ def require_group_membership(user: User) -> None:
         )
 
 
-def list_group_users(db: Session, user: User) -> list[User]:
+def list_group_users(
+    db: Session,
+    user: User,
+    *,
+    limit: int = DEFAULT_USER_LIST_LIMIT,
+    offset: int = 0,
+) -> list[User]:
     require_group_membership(user)
     if not can_list_group_users(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    return db.query(User).filter_by(group_id=user.group_id).all()
+    return (
+        db.query(User)
+        .filter_by(group_id=user.group_id)
+        .order_by(User.email.asc(), User.user_sub.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
 
 def demember_group_user(

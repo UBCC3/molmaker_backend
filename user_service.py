@@ -12,7 +12,7 @@ from request_service import (
     cancel_pending_membership_requests_after_group_change,
     set_user_role_and_group,
 )
-from utils import commit_or_rollback, get_user_sub
+from utils import DEFAULT_USER_LIST_LIMIT, commit_or_rollback, get_user_sub
 
 
 VALID_USER_ROLES = {"admin", "group_admin", "member"}
@@ -79,8 +79,20 @@ def lookup_user_by_email_for_user(db: Session, actor: User, email: str) -> dict:
     return serialize_user_profile(target)
 
 
-def list_users_for_admin(db: Session) -> list[dict]:
-    return [serialize_user_profile(user) for user in db.query(User).all()]
+def list_users_for_admin(
+    db: Session,
+    *,
+    limit: int = DEFAULT_USER_LIST_LIMIT,
+    offset: int = 0,
+) -> list[dict]:
+    users = (
+        db.query(User)
+        .order_by(User.email.asc(), User.user_sub.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [serialize_user_profile(user) for user in users]
 
 
 def update_user_role_and_group(

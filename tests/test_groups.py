@@ -88,6 +88,37 @@ class TestGroupsAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "User not found"
 
+    def test_group_users_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+    ):
+        group = group_factory()
+        user_factory(
+            group=group,
+            user_sub="auth0|testuser",
+            email="z-admin@example.com",
+            role="group_admin",
+        )
+        user_factory(
+            group=group,
+            user_sub="auth0|first",
+            email="a-first@example.com",
+        )
+        expected_user = user_factory(
+            group=group,
+            user_sub="auth0|second",
+            email="b-second@example.com",
+        )
+
+        response = client.get("/group/users?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [user["user_sub"] for user in response.json()] == [
+            expected_user.user_sub
+        ]
+
     def test_group_admin_can_demember_same_group_member(
         self, client, db, set_auth_user, group_factory, user_factory
     ):
