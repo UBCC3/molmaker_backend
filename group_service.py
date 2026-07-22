@@ -16,6 +16,7 @@ from permissions import (
 from request_service import (
     anonymize_requests_for_deleted_group,
     cancel_pending_demember_requests_for_group,
+    lock_users_for_membership_change,
     remove_user_from_group,
 )
 from user_service import serialize_user_profile
@@ -135,6 +136,11 @@ def demember_group_user(
     acting_user: User,
     selected_user: User,
 ) -> dict:
+    acting_user, selected_user = lock_users_for_membership_change(
+        db,
+        acting_user,
+        selected_user,
+    )
     if not can_demember_group_user(acting_user, selected_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
@@ -210,7 +216,14 @@ def delete_group(db: Session, user: User, group_id: str) -> dict:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
     group = get_group_or_404(db, group_id)
-    users_in_group = db.query(User).filter_by(group_id=group.group_id).all()
+    users_in_group = (
+        db.query(User)
+        .filter_by(group_id=group.group_id)
+        .order_by(User.user_sub)
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
     for group_user in users_in_group:
         remove_user_from_group(group_user)
 

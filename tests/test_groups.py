@@ -4,6 +4,7 @@ import uuid
 import pytest
 
 from conftest import make_auth0_payload
+from enum_types import RequestType
 from models import Group, Job, Request, Structure, User
 
 
@@ -1742,6 +1743,38 @@ class TestGroupsAPI:
         assert response.json()["detail"] == "Could not save changes"
         db.refresh(group)
         assert group.name == "Original"
+
+    def test_group_deletion_keeps_latest_group_name_in_request_history(
+        self,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Deleting a renamed group should keep its latest name in request history."""
+        group = group_factory(name="Original name")
+        user_factory(user_sub="auth0|testuser", role="admin")
+        member = user_factory(group=group, user_sub="auth0|member")
+        request = request_factory(
+            sender=member,
+            receiver=None,
+            group=group,
+            request_type=RequestType.demember_request.value,
+            group_name_snapshot=group.name,
+        )
+
+        rename_response = client.patch(
+            f"/group/{group.group_id}",
+            data={"group_name": "Renamed group"},
+        )
+        delete_response = client.delete(f"/group/{group.group_id}")
+
+        assert rename_response.status_code == 200
+        assert delete_response.status_code == 200
+        db.refresh(request)
+        assert request.group_id is None
+        assert request.group_name_snapshot == "Renamed group"
 
     def test_admin_can_delete_group_and_unassign_users(
         self, client, db, group_factory, user_factory, job_factory, structure_factory, request_factory

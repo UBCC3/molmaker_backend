@@ -66,7 +66,6 @@ def test_concurrent_duplicate_creation_returns_conflict(
     db,
     group_factory,
     user_factory,
-    monkeypatch,
     request_type,
 ):
     group = group_factory()
@@ -84,24 +83,13 @@ def test_concurrent_duplicate_creation_returns_conflict(
         actor = user_factory(group=group, user_sub="auth0|member")
         subject = actor
 
-    original_pending_request_exists = request_service._pending_request_exists
-    barrier = Barrier(2)
-
-    def synchronized_pending_request_exists(*args, **kwargs):
-        exists = original_pending_request_exists(*args, **kwargs)
-        barrier.wait(timeout=10)
-        return exists
-
-    monkeypatch.setattr(
-        request_service,
-        "_pending_request_exists",
-        synchronized_pending_request_exists,
-    )
+    ready_to_create = Barrier(2)
 
     def create_request():
         def action(session):
             current_actor = session.get(User, actor.user_sub)
             current_group = session.get(Group, group.group_id)
+            ready_to_create.wait(timeout=10)
             if request_type == RequestType.invite:
                 receiver = session.get(User, subject.user_sub)
                 request_service.create_invite_request(
@@ -138,6 +126,79 @@ def test_concurrent_duplicate_creation_returns_conflict(
     else:
         pending_query = pending_query.filter_by(sender_sub=subject.user_sub)
     assert pending_query.count() == 1
+
+
+def test_invite_creation_reloads_user_after_another_invite_is_approved(
+    db,
+    group_factory,
+    user_factory,
+    request_factory,
+):
+    """A stale session must not invite a user who just joined another group."""
+    first_group = group_factory()
+    second_group = group_factory()
+    first_admin = user_factory(
+        group=first_group,
+        user_sub="auth0|first-admin",
+        role="group_admin",
+    )
+    second_admin = user_factory(
+        group=second_group,
+        user_sub="auth0|second-admin",
+        role="group_admin",
+    )
+    target = user_factory(user_sub="auth0|target", group_id=None)
+    first_invite = request_factory(
+        sender=None,
+        receiver=target,
+        group=first_group,
+        request_type=RequestType.invite.value,
+        created_by_sub=first_admin.user_sub,
+    )
+
+    stale_session = TestingSessionLocal()
+    try:
+        stale_admin = stale_session.get(User, second_admin.user_sub)
+        stale_target = stale_session.get(User, target.user_sub)
+        assert stale_target.group_id is None
+
+        approval_session = TestingSessionLocal()
+        try:
+            approving_user = approval_session.get(User, target.user_sub)
+            request_service.approve_request(
+                approval_session,
+                str(first_invite.request_id),
+                approving_user,
+            )
+        finally:
+            approval_session.close()
+
+        with pytest.raises(HTTPException) as error:
+            request_service.create_invite_request(
+                stale_session,
+                stale_admin,
+                stale_target,
+            )
+
+        assert error.value.status_code == 400
+        assert error.value.detail == "User already in a group"
+    finally:
+        stale_session.rollback()
+        stale_session.close()
+
+    db.expire_all()
+    assert db.get(User, target.user_sub).group_id == first_group.group_id
+    assert (
+        db.query(Request)
+        .filter_by(
+            request_type=RequestType.invite.value,
+            group_id=second_group.group_id,
+            receiver_sub=target.user_sub,
+            status=RequestStatus.pending.value,
+        )
+        .count()
+        == 0
+    )
 
 
 def test_two_approvals_of_same_request_only_apply_once(

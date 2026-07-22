@@ -10,6 +10,7 @@ from permissions import can_view_user_profile
 from request_service import (
     anonymize_requests_for_deleted_user,
     cancel_pending_membership_requests_after_group_change,
+    lock_users_for_membership_change,
     set_user_role_and_group,
 )
 from utils import DEFAULT_USER_LIST_LIMIT, commit_or_rollback, get_user_sub
@@ -111,6 +112,7 @@ def update_user_role_and_group(
             detail="group_admin role requires group_id",
         )
 
+    (selected_user,) = lock_users_for_membership_change(db, selected_user)
     previous_group_id = selected_user.group_id
     set_user_role_and_group(
         selected_user,

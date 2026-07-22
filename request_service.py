@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import NoReturn, Optional
+from typing import Iterable, NoReturn, Optional
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -12,11 +12,13 @@ from models import Group, Request, User
 from permissions import (
     can_approve_invite_request,
     can_cancel_request,
+    can_create_invite_request,
     can_demember_group_user,
     can_list_group_requests,
     can_manage_group_requests,
     can_reject_request,
     can_view_request_user_metadata,
+    is_admin_or_group_admin,
 )
 from utils import DEFAULT_REQUEST_LIST_LIMIT, commit_or_rollback, parse_uuid_or_404
 
@@ -77,6 +79,40 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _lock_users_by_sub(
+    db: Session,
+    user_subs: Iterable[Optional[str]],
+) -> dict[str, User]:
+    unique_user_subs = sorted({user_sub for user_sub in user_subs if user_sub})
+    if not unique_user_subs:
+        return {}
+
+    locked_users = (
+        db.query(User)
+        .filter(User.user_sub.in_(unique_user_subs))
+        .order_by(User.user_sub)
+        .with_for_update()
+        .populate_existing()
+        .all()
+    )
+    return {locked_user.user_sub: locked_user for locked_user in locked_users}
+
+
+def lock_users_for_membership_change(
+    db: Session,
+    *users: User,
+) -> tuple[User, ...]:
+    """Reload and lock users before checking or changing their membership."""
+    locked_users = _lock_users_by_sub(
+        db,
+        (user.user_sub for user in users),
+    )
+    if len(locked_users) != len({user.user_sub for user in users}):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return tuple(locked_users[user.user_sub] for user in users)
 
 
 def _validate_expires_in_days(expires_in_days: int) -> int:
@@ -256,7 +292,7 @@ def anonymize_requests_for_deleted_group(db: Session, group: Group) -> None:
     requests = db.query(Request).filter_by(group_id=group.group_id).all()
     resolved_at = _now()
     for request in requests:
-        _set_request_group_snapshot(request, group)
+        request.group_name_snapshot = group.name
         if request.status == RequestStatus.pending.value:
             request.status = RequestStatus.cancelled.value
             request.resolved_at = resolved_at
@@ -358,15 +394,7 @@ def _lock_request_and_users(
         )
         if user_sub
     }
-    locked_users = (
-        db.query(User)
-        .filter(User.user_sub.in_(user_subs))
-        .order_by(User.user_sub)
-        .with_for_update()
-        .populate_existing()
-        .all()
-    )
-    users_by_sub = {locked_user.user_sub: locked_user for locked_user in locked_users}
+    users_by_sub = _lock_users_by_sub(db, user_subs)
     locked_user = users_by_sub.get(user.user_sub)
     if not locked_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -666,6 +694,13 @@ def create_join_request(
     expires_in_days: int = DEFAULT_EXPIRES_IN_DAYS,
 ) -> dict:
     expire_pending_requests(db)
+    (user,) = lock_users_for_membership_change(db, user)
+
+    if user.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User already in a group",
+        )
 
     if _pending_request_exists(
         db,
@@ -698,6 +733,15 @@ def create_invite_request(
     expires_in_days: int = DEFAULT_EXPIRES_IN_DAYS,
 ) -> dict:
     expire_pending_requests(db)
+    user, receiver = lock_users_for_membership_change(db, user, receiver)
+
+    if not is_admin_or_group_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not can_create_invite_request(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not part of a group",
+        )
 
     if receiver.group_id:
         raise HTTPException(
@@ -735,6 +779,7 @@ def create_demember_request(
     expires_in_days: int = DEFAULT_EXPIRES_IN_DAYS,
 ) -> dict:
     expire_pending_requests(db)
+    (user,) = lock_users_for_membership_change(db, user)
 
     if not user.group_id:
         raise HTTPException(
