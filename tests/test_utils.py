@@ -1,10 +1,170 @@
-from datetime import datetime, timedelta, timezone
-import uuid
+import logging
 
 from fastapi import HTTPException
 import pytest
+from sqlalchemy.exc import IntegrityError
 
-from utils import clean_up_upload_cache, get_user_sub, serialize_job, serialize_structure
+from utils import (
+    clean_up_upload_cache,
+    commit_or_rollback,
+    get_user_sub,
+)
+
+
+class TestCommitOrRollback:
+    def test_commits_and_refreshes_requested_object(self, mocker):
+        db = mocker.Mock()
+        instance = object()
+
+        commit_or_rollback(db, refresh=instance)
+
+        db.commit.assert_called_once_with()
+        db.refresh.assert_called_once_with(instance)
+        db.rollback.assert_not_called()
+
+    def test_runs_staging_operation_inside_protected_block(self, mocker):
+        db = mocker.Mock()
+        stage = mocker.Mock()
+
+        commit_or_rollback(db, before_commit=stage)
+
+        stage.assert_called_once_with()
+        db.commit.assert_called_once_with()
+
+    def test_rolls_back_when_add_fails_and_hides_database_error(
+        self,
+        mocker,
+        caplog,
+    ):
+        db = mocker.Mock()
+        instance = object()
+        db.add.side_effect = RuntimeError("private add failure details")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    before_commit=lambda: db.add(instance),
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save changes"
+        assert "private add failure details" not in error.value.detail
+        assert "private add failure details" in caplog.text
+        db.add.assert_called_once_with(instance)
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+
+    def test_rolls_back_when_flush_fails(self, mocker, caplog):
+        db = mocker.Mock()
+        db.flush.side_effect = RuntimeError("flush failed")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(db, before_commit=db.flush)
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save changes"
+        assert "flush failed" in caplog.text
+        db.flush.assert_called_once_with()
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+
+    def test_rolls_back_and_maps_constraint_error(self, mocker, caplog):
+        db = mocker.Mock()
+        db.commit.side_effect = IntegrityError("statement", {}, RuntimeError("duplicate"))
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    integrity_error_detail="Duplicate record",
+                )
+
+        assert error.value.status_code == 400
+        assert error.value.detail == "Duplicate record"
+        assert "duplicate" in caplog.text
+        db.rollback.assert_called_once_with()
+
+    def test_rolls_back_when_commit_fails_and_uses_safe_detail(
+        self,
+        mocker,
+        caplog,
+    ):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("private commit failure details")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    error_detail="Could not create record",
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not create record"
+        assert "private commit failure details" not in error.value.detail
+        assert "private commit failure details" in caplog.text
+        db.rollback.assert_called_once_with()
+
+    def test_refresh_failure_does_not_roll_back_or_run_cleanup(
+        self,
+        mocker,
+        caplog,
+    ):
+        db = mocker.Mock()
+        instance = object()
+        cleanup = mocker.Mock()
+        db.refresh.side_effect = RuntimeError("refresh failed")
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    refresh=instance,
+                    on_error=cleanup,
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == (
+            "Changes were saved, but the updated data could not be loaded"
+        )
+        assert "refresh failed" in caplog.text
+        db.commit.assert_called_once_with()
+        db.refresh.assert_called_once_with(instance)
+        db.rollback.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_runs_cleanup_after_save_failure(self, mocker):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("commit failed")
+        cleanup = mocker.Mock()
+
+        with pytest.raises(HTTPException):
+            commit_or_rollback(db, on_error=cleanup)
+
+        db.rollback.assert_called_once_with()
+        cleanup.assert_called_once_with()
+
+    def test_cleanup_failure_does_not_replace_save_error(self, mocker, caplog):
+        db = mocker.Mock()
+        db.commit.side_effect = RuntimeError("commit failed")
+        cleanup = mocker.Mock(side_effect=RuntimeError("cleanup failed"))
+
+        with caplog.at_level(logging.ERROR, logger="utils"):
+            with pytest.raises(HTTPException) as error:
+                commit_or_rollback(
+                    db,
+                    error_detail="Could not save record",
+                    on_error=cleanup,
+                )
+
+        assert error.value.status_code == 500
+        assert error.value.detail == "Could not save record"
+        assert "commit failed" in caplog.text
+        assert "cleanup failed" in caplog.text
+        db.rollback.assert_called_once_with()
+        cleanup.assert_called_once_with()
 
 
 class TestGetUserSub:
@@ -76,114 +236,6 @@ class TestGetUserSub:
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Unauthorized"
-
-
-class TestSerializeStructure:
-    def test_serializes_expected_structure_fields(
-        self, user_factory, structure_factory
-    ):
-        """
-        serialize_structure should convert IDs and datetimes into API-safe values.
-        """
-        structure_id = uuid.uuid4()
-        uploaded_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-        user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(
-            structure_id=structure_id,
-            user_sub="auth0|testuser",
-            name="Water",
-            formula="H2O",
-            location="s3://test-bucket/structures/water.xyz",
-            notes="stable molecule",
-            uploaded_at=uploaded_at,
-        )
-
-        result = serialize_structure(structure)
-
-        assert result == {
-            "structure_id": str(structure_id),
-            "name": "Water",
-            "location": "s3://test-bucket/structures/water.xyz",
-            "notes": "stable molecule",
-            "uploaded_at": structure.uploaded_at.isoformat(),
-        }
-
-
-class TestSerializeJob:
-    def test_serializes_job_with_relationships_and_runtime(
-        self, user_factory, job_factory, structure_factory, tag_factory
-    ):
-        """
-        serialize_job should include related structures, tag names, timestamps, and flags.
-        """
-        job_id = uuid.uuid4()
-        submitted_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-        completed_at = datetime(2026, 1, 2, 4, 5, 6, tzinfo=timezone.utc)
-        user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(name="Methane", formula="CH4")
-        first_tag = tag_factory(name="organic")
-        second_tag = tag_factory(name="demo")
-
-        job = job_factory(
-            job_id=job_id,
-            job_name="Methane single point",
-            job_notes="baseline calculation",
-            filename="methane.xyz",
-            status="completed",
-            calculation_type="energy",
-            method="hf",
-            basis_set="sto-3g",
-            charge=0,
-            multiplicity=1,
-            submitted_at=submitted_at,
-            completed_at=completed_at,
-            user_sub="auth0|testuser",
-            slurm_id="12345",
-            runtime=timedelta(hours=1, minutes=2, seconds=3),
-            is_deleted=False,
-            is_public=True,
-            structures=[structure],
-            tags=[first_tag, second_tag],
-        )
-
-        result = serialize_job(job)
-
-        assert result["job_id"] == str(job_id)
-        assert result["job_name"] == "Methane single point"
-        assert result["job_notes"] == "baseline calculation"
-        assert result["filename"] == "methane.xyz"
-        assert result["status"] == "completed"
-        assert result["calculation_type"] == "energy"
-        assert result["method"] == "hf"
-        assert result["basis_set"] == "sto-3g"
-        assert result["charge"] == 0
-        assert result["multiplicity"] == 1
-        assert result["submitted_at"] == job.submitted_at.isoformat()
-        assert result["completed_at"] == job.completed_at.isoformat()
-        assert result["user_sub"] == "auth0|testuser"
-        assert result["slurm_id"] == "12345"
-        assert result["runtime"] == "1:02:03"
-        assert result["is_deleted"] is False
-        assert result["is_public"] is True
-        assert result["structures"] == [serialize_structure(structure)]
-        assert sorted(result["tags"]) == ["demo", "organic"]
-
-    def test_serializes_none_optional_job_fields(self, user_factory, job_factory):
-        """
-        Optional job fields should serialize as None when absent.
-        """
-        user_factory(user_sub="auth0|testuser")
-        job = job_factory(
-            completed_at=None,
-            runtime=None,
-            slurm_id=None,
-        )
-
-        result = serialize_job(job)
-
-        assert result["completed_at"] is None
-        assert result["runtime"] is None
-        assert result["slurm_id"] is None
 
 
 class TestCleanUpUploadCache:

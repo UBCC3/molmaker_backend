@@ -4,6 +4,8 @@ import uuid
 
 import pytest
 
+from conftest import make_auth0_payload
+
 
 def _xyz_file(content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
     return {"file": ("input.xyz", content, "chemical/x-xyz")}
@@ -387,26 +389,39 @@ class TestClusterStatusAPI:
     @pytest.mark.parametrize(
         "endpoint, command_name",
         [
-            ("/cluster/result/job-1", "result"),
-            ("/cluster/error/job-1", "error"),
+            ("/cluster/result/{job_id}", "result"),
+            ("/cluster/error/{job_id}", "error"),
         ],
     )
     def test_result_endpoints_return_output(
-        self, client, monkeypatch, tmp_path, endpoint, command_name
+        self,
+        client,
+        monkeypatch,
+        tmp_path,
+        user_factory,
+        job_factory,
+        endpoint,
+        command_name,
     ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub="auth0|testuser")
         cluster_routes, _backend_dir, cluster_dir, _cleanup_calls = _configure_cluster(
             monkeypatch,
             tmp_path,
         )
         subprocess_calls = _mock_subprocess_run(monkeypatch, cluster_routes, stdout=["payload\n"])
 
-        response = client.get(endpoint)
+        response = client.get(endpoint.format(job_id=job.job_id))
 
         assert response.status_code == 200
-        assert response.json() == {"job_id": "job-1", "output": "payload\n"}
+        assert response.json() == {"job_id": str(job.job_id), "output": "payload\n"}
         assert subprocess_calls == [
             (
-                ["ssh", "cluster", f"python3 {cluster_dir}/dispatch.py {command_name} job-1"],
+                [
+                    "ssh",
+                    "cluster",
+                    f"python3 {cluster_dir}/dispatch.py {command_name} {job.job_id}",
+                ],
                 {"check": True, "capture_output": True, "text": True, "timeout": 120},
             )
         ]
@@ -414,13 +429,15 @@ class TestClusterStatusAPI:
     @pytest.mark.parametrize(
         "endpoint",
         [
-            "/cluster/result/job-1",
-            "/cluster/error/job-1",
+            "/cluster/result/{job_id}",
+            "/cluster/error/{job_id}",
         ],
     )
     def test_result_endpoints_return_404_when_missing(
-        self, client, monkeypatch, tmp_path, endpoint
+        self, client, monkeypatch, tmp_path, user_factory, job_factory, endpoint
     ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub="auth0|testuser")
         cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
             monkeypatch,
             tmp_path,
@@ -433,7 +450,7 @@ class TestClusterStatusAPI:
             ],
         )
 
-        response = client.get(endpoint)
+        response = client.get(endpoint.format(job_id=job.job_id))
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Result not found yet"
@@ -441,13 +458,15 @@ class TestClusterStatusAPI:
     @pytest.mark.parametrize(
         "endpoint",
         [
-            "/cluster/result/job-1",
-            "/cluster/error/job-1",
+            "/cluster/result/{job_id}",
+            "/cluster/error/{job_id}",
         ],
     )
     def test_result_endpoints_timeout_returns_500(
-        self, client, monkeypatch, tmp_path, endpoint
+        self, client, monkeypatch, tmp_path, user_factory, job_factory, endpoint
     ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub="auth0|testuser")
         cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
             monkeypatch,
             tmp_path,
@@ -460,10 +479,83 @@ class TestClusterStatusAPI:
             ],
         )
 
-        response = client.get(endpoint)
+        response = client.get(endpoint.format(job_id=job.job_id))
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Timed out fetching result"
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/cluster/result/{job_id}",
+            "/cluster/error/{job_id}",
+        ],
+    )
+    def test_result_endpoints_require_job_read_access(
+        self,
+        client,
+        set_auth_user,
+        monkeypatch,
+        tmp_path,
+        group_factory,
+        user_factory,
+        job_factory,
+        endpoint,
+    ):
+        """
+        Result endpoints should deny private jobs before contacting the cluster.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        member = user_factory(group=group, user_sub="auth0|member")
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=False,
+        )
+        set_auth_user(make_auth0_payload(member.user_sub))
+        cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        subprocess_calls = _mock_subprocess_run(monkeypatch, cluster_routes, stdout=["payload\n"])
+
+        response = client.get(endpoint.format(job_id=job.job_id))
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+        assert subprocess_calls == []
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "/cluster/result/{job_id}",
+            "/cluster/error/{job_id}",
+        ],
+    )
+    def test_result_endpoints_return_404_for_missing_job(
+        self,
+        client,
+        monkeypatch,
+        tmp_path,
+        user_factory,
+        endpoint,
+    ):
+        """
+        Missing backend jobs return 404 before contacting the cluster.
+        """
+        user_factory(user_sub="auth0|testuser")
+        cluster_routes, _backend_dir, _cluster_dir, _cleanup_calls = _configure_cluster(
+            monkeypatch,
+            tmp_path,
+        )
+        subprocess_calls = _mock_subprocess_run(monkeypatch, cluster_routes, stdout=["payload\n"])
+
+        response = client.get(endpoint.format(job_id=uuid.uuid4()))
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+        assert subprocess_calls == []
 
     def test_cancel_returns_success_flag(self, client, monkeypatch, tmp_path):
         cluster_routes, _backend_dir, cluster_dir, _cleanup_calls = _configure_cluster(

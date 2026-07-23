@@ -6,6 +6,7 @@ import pytest
 
 from conftest import make_auth0_payload
 from models import Job, Tags
+from asset_service import serialize_structure
 
 
 def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
@@ -82,6 +83,28 @@ def _mock_advanced_analysis_subprocess(monkeypatch, side_effects=None, stdout="1
     return calls
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/jobs/?limit=101",
+        "/structures/?limit=101",
+        "/group/jobs?limit=101",
+        "/group/structures?limit=101",
+        "/admin/jobs?limit=101",
+        "/admin/users?limit=101",
+        "/admin/groups?limit=101",
+        "/group/users?limit=101",
+        "/request/received?limit=101",
+        "/request/sent?limit=101",
+        "/group/requests?limit=101",
+    ],
+)
+def test_list_endpoints_reject_limits_over_100(client, path):
+    response = client.get(path)
+
+    assert response.status_code == 422
+
+
 class TestJobsAPI:
     def test_list_jobs_returns_current_users_non_deleted_jobs_newest_first(
         self, client, group_factory, user_factory, job_factory
@@ -153,15 +176,7 @@ class TestJobsAPI:
         assert len(result) == 1
         assert result[0]["job_id"] == str(job.job_id)
         assert result[0]["tags"] == ["baseline"]
-        assert result[0]["structures"] == [
-            {
-                "structure_id": str(structure.structure_id),
-                "name": "Water",
-                "location": structure.location,
-                "notes": structure.notes,
-                "uploaded_at": structure.uploaded_at.isoformat(),
-            }
-        ]
+        assert result[0]["structures"] == [serialize_structure(structure, include_tags=False)]
 
     def test_get_job_by_id_returns_owned_job(self, client, group_factory, user_factory, job_factory):
         """
@@ -179,11 +194,94 @@ class TestJobsAPI:
         assert result["job_name"] == "owned job"
         assert result["user_sub"] == user.user_sub
 
+    def test_get_job_by_id_returns_public_group_job_to_member(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal group members can read public jobs with a matching persisted group_id.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        viewer = user_factory(group=group, user_sub="auth0|viewer")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=True)
+        set_auth_user(make_auth0_payload(viewer.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["job_id"] == str(job.job_id)
+        assert result["group_id"] == str(group.group_id)
+        assert "user_sub" not in result
+
+    def test_get_job_by_id_denies_private_group_job_to_normal_member(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Normal group members cannot read private jobs just because group_id matches.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        viewer = user_factory(group=group, user_sub="auth0|viewer")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        set_auth_user(make_auth0_payload(viewer.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+
+    def test_get_job_by_id_returns_private_group_only_job_to_group_admin(
+        self, client, set_auth_user, group_factory, user_factory, job_factory
+    ):
+        """
+        Group admins can read private group-owned jobs with matching persisted group_id.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        job = job_factory(user_sub=None, group_id=group.group_id, is_public=False)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+        assert response.json()["user_sub"] is None
+
+    def test_get_job_by_id_returns_co_owned_job_to_former_member_owner(
+        self, client, group_factory, user_factory, job_factory
+    ):
+        """
+        Former members still access co-owned jobs through their direct user ownership.
+        """
+        group = group_factory()
+        owner = user_factory(user_sub="auth0|testuser", group_id=None)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        assert response.json()["job_id"] == str(job.job_id)
+
     def test_get_job_by_id_returns_404_for_missing_job(self, client):
         """
         GET /jobs/{job_id} should return 404 when no job exists for the ID.
         """
         response = client.get(f"/jobs/{uuid.uuid4()}")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+
+    def test_get_job_by_id_returns_404_for_deleted_job(
+        self, client, user_factory, job_factory
+    ):
+        """
+        Soft-deleted jobs should not be accessible through job detail routes.
+        """
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub="auth0|testuser", is_deleted=True)
+
+        response = client.get(f"/jobs/{job.job_id}")
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
@@ -261,7 +359,7 @@ class TestJobsAPI:
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
     ):
         """
-        Group admins should be able to soft-delete jobs owned by users in their group.
+        Group admins should be able to soft-delete jobs with their persisted group_id.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
@@ -270,7 +368,7 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, is_deleted=False)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_deleted=False)
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -353,7 +451,7 @@ class TestJobsAPI:
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
     ):
         """
-        Group admins should be able to update visibility for jobs in their group.
+        Group admins should be able to update visibility for jobs with their group_id.
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
@@ -362,7 +460,7 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, is_public=False)
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -376,6 +474,23 @@ class TestJobsAPI:
         assert response.status_code == 200
         db.refresh(job)
         assert job.is_public is True
+
+    def test_owner_cannot_update_co_owned_job_visibility(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
+        """
+        Direct owners cannot change visibility once a job is also group-owned.
+        """
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|testuser")
+        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+
+        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Insufficient permissions"
+        db.refresh(job)
+        assert job.is_public is False
 
     def test_visibility_update_denies_unauthorized_user(
         self, client, db, set_auth_user, group_factory, user_factory, job_factory
@@ -423,7 +538,7 @@ class TestJobsAPI:
         response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(job)
         assert job.is_public is False
 
@@ -486,7 +601,7 @@ class TestJobsAPI:
         response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(job)
         assert job.status == "pending"
         assert job.completed_at is None
@@ -755,6 +870,8 @@ class TestJobsAPI:
         assert result["basis_set"] == "6-31g"
         assert result["charge"] == 1
         assert result["multiplicity"] == 2
+        assert result["user_sub"] == user.user_sub
+        assert result["group_id"] == str(group.group_id)
         assert sorted(result["tags"]) == ["existing", "new"]
         assert result["structures"][0]["structure_id"] == str(structure.structure_id)
 
@@ -764,6 +881,7 @@ class TestJobsAPI:
 
         job = db.query(Job).filter_by(job_id=job_id).one()
         assert job.user_sub == user.user_sub
+        assert job.group_id == group.group_id
         assert job.filename == "input.xyz"
         assert job.status == "pending"
         assert job.is_deleted is False
@@ -779,6 +897,79 @@ class TestJobsAPI:
             .all()
         )
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
+
+    def test_create_job_without_group_creates_user_owned_job(
+        self, client, db, monkeypatch, tmp_path, user_factory
+    ):
+        """
+        POST /jobs/ should leave group_id null when the authenticated user has no group.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["user_sub"] == user.user_sub
+        assert response.json()["group_id"] is None
+
+        job = db.query(Job).filter_by(job_id=job_id).one()
+        assert job.user_sub == user.user_sub
+        assert job.group_id is None
+
+    def test_create_job_can_link_public_group_structure(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        group_factory,
+        user_factory,
+        structure_factory,
+    ):
+        """
+        POST /jobs/ can link a public structure from the authenticated user's group.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        structure_owner = user_factory(group=group, user_sub="auth0|structure-owner")
+        public_structure = structure_factory(
+            user_sub=structure_owner.user_sub,
+            group_id=group.group_id,
+            is_public=True,
+        )
+        job_id = uuid.uuid4()
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(
+                job_id=job_id,
+                structure_id=str(public_structure.structure_id),
+            ),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["structures"][0]["structure_id"] == str(
+            public_structure.structure_id
+        )
+
+        job = db.query(Job).filter_by(job_id=job_id).one()
+        assert job.user_sub == user.user_sub
+        assert job.group_id == group.group_id
+        assert [structure.structure_id for structure in job.structures] == [
+            public_structure.structure_id
+        ]
 
     def test_create_job_rejects_non_xyz_upload(self, client, db, monkeypatch, tmp_path):
         """
@@ -819,7 +1010,7 @@ class TestJobsAPI:
         assert db.query(Job).count() == 0
         assert not list(tmp_path.iterdir())
 
-    def test_create_job_rolls_back_when_structure_is_not_owned(
+    def test_create_job_rolls_back_when_structure_is_not_accessible(
         self,
         client,
         db,
@@ -852,13 +1043,13 @@ class TestJobsAPI:
         )
 
         assert response.status_code == 404
-        assert response.json()["detail"] == "Structure not found or not owned by user"
+        assert response.json()["detail"] == "Structure not found or not accessible"
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert db.query(Tags).filter_by(name="should-rollback").first() is None
         assert not (tmp_path / str(job_id)).exists()
 
     def test_create_job_rolls_back_and_removes_files_when_commit_fails(
-        self, client, db, monkeypatch, tmp_path
+        self, client, db, monkeypatch, tmp_path, user_factory
     ):
         """
         Commit failures should not leave partial DB rows or uploaded files behind.
@@ -866,6 +1057,7 @@ class TestJobsAPI:
         import jobs.routes as jobs_routes
 
         monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user_factory(user_sub="auth0|testuser")
         monkeypatch.setattr(db, "commit", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         job_id = uuid.uuid4()
 
@@ -879,6 +1071,44 @@ class TestJobsAPI:
         assert response.json()["detail"] == "Failed to create job"
         assert db.query(Job).filter_by(job_id=job_id).first() is None
         assert not (tmp_path / str(job_id)).exists()
+
+    def test_create_job_keeps_saved_row_and_file_when_refresh_fails(
+        self,
+        client,
+        db,
+        monkeypatch,
+        tmp_path,
+        user_factory,
+    ):
+        """
+        A refresh failure happens after commit and must not undo saved work.
+        """
+        import jobs.routes as jobs_routes
+
+        monkeypatch.setattr(jobs_routes, "JOB_DIR", str(tmp_path))
+        user_factory(user_sub="auth0|testuser")
+        job_id = uuid.uuid4()
+        real_refresh = db.refresh
+
+        def fail_for_created_job(instance, *args, **kwargs):
+            if isinstance(instance, Job) and instance.job_id == job_id:
+                raise RuntimeError("refresh failed")
+            return real_refresh(instance, *args, **kwargs)
+
+        monkeypatch.setattr(db, "refresh", fail_for_created_job)
+
+        response = client.post(
+            "/jobs/",
+            data=_job_form_data(job_id=job_id),
+            files=_upload_file(),
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"] == (
+            "Changes were saved, but the updated data could not be loaded"
+        )
+        assert db.query(Job).filter_by(job_id=job_id).one().job_id == job_id
+        assert (tmp_path / str(job_id) / "input.xyz").exists()
 
     def test_advanced_analysis_saves_upload_transfers_and_submits(
         self, client, monkeypatch, tmp_path

@@ -1,173 +1,181 @@
-from fastapi import (
-    APIRouter,
-    HTTPException,
-    Depends,
-    Form,
-    status,
-)
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
 from sqlalchemy.orm import Session
-import uuid
 
-from models import Request, User, Group
-from dependencies import get_db
 from auth import verify_token
-
-from utils import get_user_sub
+from dependencies import get_db
+from enum_types import RequestStatus, RequestType
+from group_service import get_group_or_404
+from permissions import can_create_invite_request, is_admin_or_group_admin
+from request_service import (
+    DEFAULT_EXPIRES_IN_DAYS,
+    DEFAULT_RECENT_DAYS,
+    approve_request as approve_request_by_id,
+    cancel_request as cancel_request_by_id,
+    create_demember_request,
+    create_invite_request,
+    create_join_request,
+    list_received_requests,
+    list_sent_requests,
+    reject_request as reject_request_by_id,
+)
+from user_service import get_user_by_email_or_404, get_user_or_404
+from utils import DEFAULT_REQUEST_LIST_LIMIT, MAX_REQUEST_LIST_LIMIT, get_user_sub
 
 router = APIRouter(prefix="/request", tags=["request"])
 
-def parse_uuid_or_404(value: str, detail: str):
-    try:
-        return uuid.UUID(str(value))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
-def serialize_request(request: Request, **extra):
-    result = {
-        "request_id": str(request.request_id),
-        "status": request.status,
-        "requested_at": request.requested_at.isoformat(),
-        "sender_sub": request.sender_sub,
-        "receiver_sub": request.receiver_sub,
-        "group_id": str(request.group_id),
-    }
-    result.update(extra)
-    return result
-
-def get_request_for_receiver_or_404(db: Session, request_id: str, receiver_sub: str):
-    parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
-    request = (
-        db.query(Request)
-        .filter_by(request_id=parsed_request_id, receiver_sub=receiver_sub)
-        .first()
-    )
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
-    return request
-
-def get_request_for_sender_or_404(db: Session, request_id: str, sender_sub: str):
-    parsed_request_id = parse_uuid_or_404(request_id, "Request not found")
-    request = (
-        db.query(Request)
-        .filter_by(request_id=parsed_request_id, sender_sub=sender_sub)
-        .first()
-    )
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
-    return request
-
-def get_group_or_404(db: Session, group_id: str):
-    parsed_group_id = parse_uuid_or_404(group_id, "Group not found")
-    group = db.query(Group).filter_by(group_id=parsed_group_id).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return group
-
-@router.get("/{receiver_sub}")
-def get_requests(
-    receiver_sub: str,
+@router.get("/received")
+def get_received_requests(
+    request_status: RequestStatus = Query(RequestStatus.pending, alias="status"),
+    request_type: RequestType | None = None,
+    recent_days: int = DEFAULT_RECENT_DAYS,
+    limit: int = Query(
+        DEFAULT_REQUEST_LIST_LIMIT,
+        ge=1,
+        le=MAX_REQUEST_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Get all requests for a specific user.
+    List requests received by the authenticated user.
+    Pending requests are returned by default. For terminal statuses, recent_days
+    controls how far back resolved requests are returned.
+    :param request_status: Request status filter, passed as query parameter status.
+    :param request_type: Optional request type filter.
+    :param recent_days: Recent terminal-request window in days.
+    :param limit: Maximum number of requests to return, up to 100.
+    :param offset: Number of sorted requests to skip.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Request details.
     """
-    user_sub = get_user_sub(current_user)
-    if user_sub != receiver_sub:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_received_requests(
+        db,
+        user,
+        request_status,
+        request_type,
+        recent_days,
+        limit=limit,
+        offset=offset,
+    )
 
-    requests = db.query(Request).filter_by(receiver_sub=receiver_sub, status='pending').all()
-    result = []
-    for request in requests:
-        sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
-        group = db.query(Group).filter_by(group_id=request.group_id).first()
-        result.append(
-            serialize_request(
-                request,
-                sender_name=sender.email if sender else None,
-                group_name=group.name if group else None,
-            )
-        )
-    return result
 
-@router.get("/sent/{sender_sub}")
+@router.get("/sent")
 def get_sent_requests(
-        sender_sub: str,
-        db: Session = Depends(get_db),
-        current_user = Depends(verify_token),
-):
-    """
-    :param sender_sub:
-    :param db:
-    :param current_user:
-    :return:
-    """
-    user_sub = get_user_sub(current_user)
-    if user_sub != sender_sub:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    requests = db.query(Request).filter_by(sender_sub=sender_sub).all()
-
-    result = []
-    for request in requests:
-        receiver = db.query(User).filter_by(user_sub=request.receiver_sub).first()
-        result.append(
-            serialize_request(
-                request,
-                receiver_name=receiver.email if receiver else None,
-            )
-        )
-    return result
-
-@router.post("/{receiver_sub}")
-def send_request(
-    receiver_sub: str,
-    group_id: str = Form(...),
+    request_status: RequestStatus = Query(RequestStatus.pending, alias="status"),
+    request_type: RequestType | None = None,
+    recent_days: int = DEFAULT_RECENT_DAYS,
+    limit: int = Query(
+        DEFAULT_REQUEST_LIST_LIMIT,
+        ge=1,
+        le=MAX_REQUEST_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Send a request to another user.
+    List requests sent or created by the authenticated user.
+    Pending requests are returned by default. For terminal statuses, recent_days
+    controls how far back resolved requests are returned.
+    :param request_status: Request status filter, passed as query parameter status.
+    :param request_type: Optional request type filter.
+    :param recent_days: Recent terminal-request window in days.
+    :param limit: Maximum number of requests to return, up to 100.
+    :param offset: Number of sorted requests to skip.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Request details.
     """
-    sender_sub = get_user_sub(current_user)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_sent_requests(
+        db,
+        user,
+        request_status,
+        request_type,
+        recent_days,
+        limit=limit,
+        offset=offset,
+    )
 
-    if sender_sub == receiver_sub:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot send request to yourself")
 
-    sender = db.query(User).filter_by(user_sub=sender_sub).first()
-    if not sender:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    receiver = db.query(User).filter_by(user_sub=receiver_sub).first()
-    if not receiver:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receiver not found")
+@router.post("/join")
+def send_join_request(
+    group_id: str = Form(...),
+    expires_in_days: int = Form(DEFAULT_EXPIRES_IN_DAYS),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Request to join a group.
+    The authenticated user is the sender, and the request has no receiver user.
+    :param group_id: Target group ID.
+    :param expires_in_days: Number of days before the request expires.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Created join request details.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    if user.group_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User already in a group",
+        )
 
     group = get_group_or_404(db, group_id)
+    return create_join_request(db, user, group, expires_in_days)
 
-    existing_request = (
-        db.query(Request)
-        .filter_by(sender_sub=sender_sub, receiver_sub=receiver_sub, status='pending')
-        .first()
-    )
-    if existing_request:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already exists")
 
-    new_request = Request(
-        sender_sub=sender_sub,
-        receiver_sub=receiver_sub,
-        group_id=group.group_id,
-        status='pending'
-    )
+@router.post("/invite")
+def send_invite_request(
+    email: str = Form(...),
+    expires_in_days: int = Form(DEFAULT_EXPIRES_IN_DAYS),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Invite a user to the authenticated admin or group admin's current group.
+    The frontend supplies only the target email; the backend resolves the user
+    and infers group_id from the requester.
+    :param email: Email address of the user to invite.
+    :param expires_in_days: Number of days before the request expires.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Created invite request details.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    if not is_admin_or_group_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    if not can_create_invite_request(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not part of a group",
+        )
 
-    try:
-        db.add(new_request)
-        db.commit()
-        db.refresh(new_request)
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    receiver = get_user_by_email_or_404(db, email)
+    return create_invite_request(db, user, receiver, expires_in_days)
 
-    return serialize_request(new_request)
+
+@router.post("/demember")
+def send_demember_request(
+    expires_in_days: int = Form(DEFAULT_EXPIRES_IN_DAYS),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Request to be removed from the authenticated user's current group.
+    The backend infers group_id from the requester's database user record.
+    :param expires_in_days: Number of days before the request expires.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Created de-member request details.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return create_demember_request(db, user, expires_in_days)
+
 
 @router.put("/{request_id}/approve")
 def approve_request(
@@ -176,41 +184,17 @@ def approve_request(
     current_user=Depends(verify_token),
 ):
     """
-    Approve a request.
+    Approve a pending request using type-specific rules.
+    Invites are approved by the invited user. Join and de-member requests are
+    approved by group admins for the request group or overall admins.
+    :param request_id: Request ID to approve.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
     """
-    user_sub = get_user_sub(current_user)
-    request = get_request_for_receiver_or_404(db, request_id, user_sub)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return approve_request_by_id(db, request_id, user)
 
-    if request.status != 'pending':
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
-
-    receiver = db.query(User).filter_by(user_sub=request.receiver_sub).first()
-    if not receiver:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if not receiver.group_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Receiver is not part of a group")
-    if request.group_id != receiver.group_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request group does not match receiver group")
-
-    group = db.query(Group).filter_by(group_id=receiver.group_id).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-    sender = db.query(User).filter_by(user_sub=request.sender_sub).first()
-    if not sender:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sender not found")
-    if sender.group_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already in a group")
-    sender.group_id = receiver.group_id
-
-    request.status = 'approved'
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-    return {"message": "Request approved successfully"}
 
 @router.put("/{request_id}/reject")
 def reject_request(
@@ -219,22 +203,34 @@ def reject_request(
     current_user=Depends(verify_token),
 ):
     """
-    Reject a request.
+    Reject a pending request using type-specific rules.
+    Invites are rejected by the invited user. Join and de-member requests are
+    rejected by group admins for the request group or overall admins.
+    :param request_id: Request ID to reject.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
     """
-    user_sub = get_user_sub(current_user)
-    request = get_request_for_receiver_or_404(db, request_id, user_sub)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return reject_request_by_id(db, request_id, user)
 
-    if request.status != 'pending':
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request already processed")
 
-    request.status = 'rejected'
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+@router.put("/{request_id}/cancel")
+def cancel_request(
+    request_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Cancel a pending request sent, created, or managed by the authenticated user.
+    :param request_id: Request ID to cancel.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return cancel_request_by_id(db, request_id, user)
 
-    return {"message": "Request rejected successfully"}
 
 @router.delete("/{request_id}")
 def delete_request(
@@ -243,16 +239,12 @@ def delete_request(
     current_user=Depends(verify_token),
 ):
     """
-    Delete a request.
+    Cancel a pending request. This endpoint preserves the old DELETE shape but
+    no longer deletes the request row; it marks the request cancelled.
+    :param request_id: Request ID to cancel.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
     """
-    user_sub = get_user_sub(current_user)
-    request = get_request_for_sender_or_404(db, request_id, user_sub)
-
-    db.delete(request)
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-    return {"message": "Request deleted successfully"}
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return cancel_request_by_id(db, request_id, user)

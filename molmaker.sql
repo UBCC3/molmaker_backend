@@ -2,8 +2,10 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 14.18 (Postgres.app)
--- Dumped by pg_dump version 14.18 (Homebrew)
+\restrict ojMrlcOKUZ0h9KYBhl6baWuncOlGHAGNVcP8pqnd7UbD9IapfCugPkqydSwWeC8
+
+-- Dumped from database version 14.23 (Homebrew)
+-- Dumped by pg_dump version 14.23 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -21,7 +23,7 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- Name: groups; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: groups; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.groups (
@@ -30,10 +32,8 @@ CREATE TABLE public.groups (
 );
 
 
-ALTER TABLE public.groups OWNER TO sparshtrivedy;
-
 --
--- Name: jobs; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.jobs (
@@ -54,14 +54,14 @@ CREATE TABLE public.jobs (
     runtime interval,
     is_deleted boolean DEFAULT false NOT NULL,
     is_public boolean DEFAULT false NOT NULL,
-    is_uploaded boolean DEFAULT false NOT NULL
+    is_uploaded boolean DEFAULT false NOT NULL,
+    group_id uuid,
+    CONSTRAINT ck_jobs_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)))
 );
 
 
-ALTER TABLE public.jobs OWNER TO sparshtrivedy;
-
 --
--- Name: jobs_structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.jobs_structures (
@@ -70,10 +70,8 @@ CREATE TABLE public.jobs_structures (
 );
 
 
-ALTER TABLE public.jobs_structures OWNER TO sparshtrivedy;
-
 --
--- Name: jobs_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.jobs_tags (
@@ -82,44 +80,51 @@ CREATE TABLE public.jobs_tags (
 );
 
 
-ALTER TABLE public.jobs_tags OWNER TO sparshtrivedy;
-
 --
--- Name: requests; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: requests; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.requests (
     request_id uuid NOT NULL,
     status character varying NOT NULL,
-    requested_at timestamp with time zone,
-    sender_sub character varying NOT NULL,
-    receiver_sub character varying NOT NULL,
-    group_id uuid NOT NULL
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    sender_sub character varying,
+    receiver_sub character varying,
+    group_id uuid,
+    request_type character varying DEFAULT 'invite'::character varying NOT NULL,
+    created_by_sub character varying,
+    resolved_by_sub character varying,
+    expires_at timestamp with time zone DEFAULT (now() + '7 days'::interval) NOT NULL,
+    resolved_at timestamp with time zone,
+    sender_email_snapshot character varying,
+    receiver_email_snapshot character varying,
+    created_by_email_snapshot character varying,
+    resolved_by_email_snapshot character varying,
+    group_name_snapshot character varying
 );
 
 
-ALTER TABLE public.requests OWNER TO sparshtrivedy;
-
 --
--- Name: structures; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: structures; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.structures (
     structure_id uuid NOT NULL,
-    user_sub text NOT NULL,
+    user_sub text,
     name text NOT NULL,
     location text NOT NULL,
     notes text,
     uploaded_at timestamp without time zone NOT NULL,
     is_deleted boolean DEFAULT false NOT NULL,
-    formula text NOT NULL
+    formula text NOT NULL,
+    group_id uuid,
+    is_public boolean DEFAULT false NOT NULL,
+    CONSTRAINT ck_structures_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)))
 );
 
 
-ALTER TABLE public.structures OWNER TO sparshtrivedy;
-
 --
--- Name: structures_tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.structures_tags (
@@ -128,10 +133,8 @@ CREATE TABLE public.structures_tags (
 );
 
 
-ALTER TABLE public.structures_tags OWNER TO sparshtrivedy;
-
 --
--- Name: tags; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: tags; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.tags (
@@ -141,10 +144,8 @@ CREATE TABLE public.tags (
 );
 
 
-ALTER TABLE public.tags OWNER TO sparshtrivedy;
-
 --
--- Name: users; Type: TABLE; Schema: public; Owner: sparshtrivedy
+-- Name: users; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.users (
@@ -152,14 +153,12 @@ CREATE TABLE public.users (
     email text NOT NULL,
     role text DEFAULT 'member'::text NOT NULL,
     group_id uuid,
-    member_since timestamp with time zone
+    role_or_group_updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
-ALTER TABLE public.users OWNER TO sparshtrivedy;
-
 --
--- Data for Name: groups; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: groups; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.groups (group_id, name) FROM stdin;
@@ -170,28 +169,28 @@ e09abdef-b0cf-4b8d-ac14-bcb591724b6c	group4
 
 
 --
--- Data for Name: jobs; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.jobs (job_id, filename, status, calculation_type, method, basis_set, submitted_at, completed_at, user_sub, job_name, slurm_id, charge, multiplicity, job_notes, runtime, is_deleted, is_public) FROM stdin;
-c3383ec3-8f50-4162-90c8-7c6bf6ddda18	5b8c773c-d2a3-47b7-b543-2a21a5e19698.xyz	completed	energy	scf	sto-3g	2025-06-18 13:59:49.742871-07	2025-06-18 14:03:51.625857-07	auth0|681d382c228898b5ba13b7be	new-Job	56545639	0	1	notes for job	00:01:08	f	f
-32e590ed-f5c3-42f2-aa79-3656a86a4411	molecule.xyz	completed	orbitals	scf	6-31G\\(d\\)	2025-06-30 11:52:46.770272-07	2025-06-30 11:53:08.680474-07	auth0|681d382c228898b5ba13b7be	mol_orb_job	56958446	0	1	noteson the job	00:00:06	f	f
-78497fab-a344-46fa-b7dd-819d5efb66ce	b4bf5356-df5a-4430-9582-9d8d3843bc64.xyz	failed	orbitals	scf	sto-3g	2025-06-30 12:37:14.755048-07	2025-06-30 12:41:17.128239-07	auth0|681d382c228898b5ba13b7be	new_job	56961971	0	1	\N	00:00:15	f	f
-dc493d13-862e-4478-80e3-21eaeec77fb9	molecule.xyz	failed	orbitals	scf	6-31G\\(d\\)	2025-06-30 13:44:50.409067-07	2025-06-30 13:45:07.079206-07	auth0|681d382c228898b5ba13b7be	name_job	56965221	0	1	\N	00:00:16	f	f
-4476af47-9849-4011-b324-c20953e27c31	molecule.xyz	completed	orbitals	scf	6-31G\\(d\\)	2025-06-30 13:53:53.179195-07	2025-06-30 13:59:08.656636-07	auth0|681d382c228898b5ba13b7be	job_new	56965835	0	1	\N	00:00:29	f	f
-802242c9-813e-45ac-9ec3-4c88fac18418	7a3562a1-67a9-44c1-9d2e-06d08abfb20f.xyz	completed	energy	scf	sto-3g	2025-06-16 11:09:52.676169-07	2025-06-16 11:13:10.318966-07	auth0|681d382c228898b5ba13b7be	job_c	56483685	0	1	\N	00:01:33	f	f
-9fd9c8c3-b48c-4321-a95e-5b34eb0eafeb	7a3562a1-67a9-44c1-9d2e-06d08abfb20f.xyz	cancelled	energy	scf	sto-3g	2025-06-16 10:55:07.989799-07	2025-06-16 11:21:06.536421-07	auth0|681d382c228898b5ba13b7be	name	56483201	0	1	note	00:00:00	f	f
-7127926a-2d9c-4134-bbf1-af558c10e8be	1010f356-ac6d-4ed4-a83d-19c0cd2d4c15.xyz	completed	energy	scf	sto-3g	2025-06-12 13:04:03.987939-07	2025-06-12 13:05:45.832136-07	auth0|681d382c228898b5ba13b7be	job	56445844	0	1	note	00:01:08	f	f
-fc4834ad-3180-4462-9121-0b33af302823	molecule (2).xyz	completed	energy	scf	sto-3g	2025-07-24 00:39:35.457181-07	2025-07-24 00:40:10.088334-07	auth0|686ffc7aa0025875955dae19	member_job	57638800	0	1	\N	00:00:32	f	f
-a39b4f4d-2a81-48a3-ac85-dd87e75b07cd	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 11:21:15.431832-07	2025-08-06 22:39:22.135125-07	auth0|681d382c228898b5ba13b7be	testing_member	57733776	0	1	\N	00:00:00	f	t
-eb2c127f-33aa-4525-8a9e-e6f3dcd17d0b	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 10:12:15.55166-07	2025-08-06 22:39:22.155026-07	auth0|681d382c228898b5ba13b7be	new_job	57733685	0	1	notes	00:00:00	f	f
-da65463b-c301-45e4-83f1-0871227b2042	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 11:16:05.769882-07	2025-08-06 22:39:22.15807-07	auth0|681d382c228898b5ba13b7be	member_job	57733767	0	1	\N	00:00:00	f	t
-6b74f54c-a915-4daf-a331-fb85924b35c6	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 10:46:42.097774-07	2025-08-06 22:39:22.295614-07	auth0|681d382c228898b5ba13b7be	job_after	57733725	0	1	\N	00:00:00	f	t
+COPY public.jobs (job_id, filename, status, calculation_type, method, basis_set, submitted_at, completed_at, user_sub, job_name, slurm_id, charge, multiplicity, job_notes, runtime, is_deleted, is_public, is_uploaded, group_id) FROM stdin;
+c3383ec3-8f50-4162-90c8-7c6bf6ddda18	5b8c773c-d2a3-47b7-b543-2a21a5e19698.xyz	completed	energy	scf	sto-3g	2025-06-18 13:59:49.742871-07	2025-06-18 14:03:51.625857-07	auth0|681d382c228898b5ba13b7be	new-Job	56545639	0	1	notes for job	00:01:08	f	f	f	\N
+32e590ed-f5c3-42f2-aa79-3656a86a4411	molecule.xyz	completed	orbitals	scf	6-31G\\(d\\)	2025-06-30 11:52:46.770272-07	2025-06-30 11:53:08.680474-07	auth0|681d382c228898b5ba13b7be	mol_orb_job	56958446	0	1	noteson the job	00:00:06	f	f	f	\N
+78497fab-a344-46fa-b7dd-819d5efb66ce	b4bf5356-df5a-4430-9582-9d8d3843bc64.xyz	failed	orbitals	scf	sto-3g	2025-06-30 12:37:14.755048-07	2025-06-30 12:41:17.128239-07	auth0|681d382c228898b5ba13b7be	new_job	56961971	0	1	\N	00:00:15	f	f	f	\N
+dc493d13-862e-4478-80e3-21eaeec77fb9	molecule.xyz	failed	orbitals	scf	6-31G\\(d\\)	2025-06-30 13:44:50.409067-07	2025-06-30 13:45:07.079206-07	auth0|681d382c228898b5ba13b7be	name_job	56965221	0	1	\N	00:00:16	f	f	f	\N
+4476af47-9849-4011-b324-c20953e27c31	molecule.xyz	completed	orbitals	scf	6-31G\\(d\\)	2025-06-30 13:53:53.179195-07	2025-06-30 13:59:08.656636-07	auth0|681d382c228898b5ba13b7be	job_new	56965835	0	1	\N	00:00:29	f	f	f	\N
+802242c9-813e-45ac-9ec3-4c88fac18418	7a3562a1-67a9-44c1-9d2e-06d08abfb20f.xyz	completed	energy	scf	sto-3g	2025-06-16 11:09:52.676169-07	2025-06-16 11:13:10.318966-07	auth0|681d382c228898b5ba13b7be	job_c	56483685	0	1	\N	00:01:33	f	f	f	\N
+9fd9c8c3-b48c-4321-a95e-5b34eb0eafeb	7a3562a1-67a9-44c1-9d2e-06d08abfb20f.xyz	cancelled	energy	scf	sto-3g	2025-06-16 10:55:07.989799-07	2025-06-16 11:21:06.536421-07	auth0|681d382c228898b5ba13b7be	name	56483201	0	1	note	00:00:00	f	f	f	\N
+7127926a-2d9c-4134-bbf1-af558c10e8be	1010f356-ac6d-4ed4-a83d-19c0cd2d4c15.xyz	completed	energy	scf	sto-3g	2025-06-12 13:04:03.987939-07	2025-06-12 13:05:45.832136-07	auth0|681d382c228898b5ba13b7be	job	56445844	0	1	note	00:01:08	f	f	f	\N
+fc4834ad-3180-4462-9121-0b33af302823	molecule (2).xyz	completed	energy	scf	sto-3g	2025-07-24 00:39:35.457181-07	2025-07-24 00:40:10.088334-07	auth0|686ffc7aa0025875955dae19	member_job	57638800	0	1	\N	00:00:32	f	f	f	\N
+6b74f54c-a915-4daf-a331-fb85924b35c6	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 10:46:42.097774-07	2025-08-06 22:39:22.295614-07	auth0|681d382c228898b5ba13b7be	job_after	57733725	0	1	\N	00:00:00	f	t	f	2ba29864-e9c7-47b3-a718-3e854857ce57
+da65463b-c301-45e4-83f1-0871227b2042	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 11:16:05.769882-07	2025-08-06 22:39:22.15807-07	auth0|681d382c228898b5ba13b7be	member_job	57733767	0	1	\N	00:00:00	f	t	f	2ba29864-e9c7-47b3-a718-3e854857ce57
+eb2c127f-33aa-4525-8a9e-e6f3dcd17d0b	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 10:12:15.55166-07	2025-08-06 22:39:22.155026-07	auth0|681d382c228898b5ba13b7be	new_job	57733685	0	1	notes	00:00:00	f	f	f	2ba29864-e9c7-47b3-a718-3e854857ce57
+a39b4f4d-2a81-48a3-ac85-dd87e75b07cd	water-4-vib.xyz	cancelled	energy	scf	sto-3g	2025-07-31 11:21:15.431832-07	2025-08-06 22:39:22.135125-07	auth0|681d382c228898b5ba13b7be	testing_member	57733776	0	1	\N	00:00:00	f	t	f	2ba29864-e9c7-47b3-a718-3e854857ce57
 \.
 
 
 --
--- Data for Name: jobs_structures; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs_structures; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.jobs_structures (job_id, structure_id) FROM stdin;
@@ -201,7 +200,7 @@ c3383ec3-8f50-4162-90c8-7c6bf6ddda18	5b8c773c-d2a3-47b7-b543-2a21a5e19698
 
 
 --
--- Data for Name: jobs_tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: jobs_tags; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.jobs_tags (job_id, tag_id) FROM stdin;
@@ -211,35 +210,35 @@ c3383ec3-8f50-4162-90c8-7c6bf6ddda18	92d1dc3c-f6bc-429c-be29-4ae99c64c73d
 
 
 --
--- Data for Name: requests; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: requests; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.requests (request_id, status, requested_at, sender_sub, receiver_sub, group_id) FROM stdin;
-a8cc679c-2354-4a77-8e9d-378de58f8ff9	approved	2025-07-24 12:59:08.642048-07	auth0|686ffc7aa0025875955dae19	auth0|686f5a35f24ed5b3e3b966ea	2ba29864-e9c7-47b3-a718-3e854857ce57
-98bec210-e1e6-4e1d-bade-a3f8d32fe0f8	pending	2025-07-29 16:19:00.833823-07	auth0|686ffc7aa0025875955dae19	auth0|6876a9bc512247093911921c	2ba29864-e9c7-47b3-a718-3e854857ce57
-4ab24dff-0e53-465a-9864-133b6c7853f7	approved	2025-07-31 10:03:05.833293-07	auth0|686ffc7aa0025875955dae19	auth0|686ffc1ea0025875955dadfe	2ba29864-e9c7-47b3-a718-3e854857ce57
+COPY public.requests (request_id, status, requested_at, sender_sub, receiver_sub, group_id, request_type, created_by_sub, resolved_by_sub, expires_at, resolved_at, sender_email_snapshot, receiver_email_snapshot, created_by_email_snapshot, resolved_by_email_snapshot, group_name_snapshot) FROM stdin;
+98bec210-e1e6-4e1d-bade-a3f8d32fe0f8	pending	2025-07-29 16:19:00.833823-07	auth0|686ffc7aa0025875955dae19	auth0|6876a9bc512247093911921c	2ba29864-e9c7-47b3-a718-3e854857ce57	invite	auth0|686ffc7aa0025875955dae19	\N	2025-08-05 16:19:00.833823-07	\N	member2@test.com	sparsh01@students.ubc.ca	member2@test.com	\N	group2
+4ab24dff-0e53-465a-9864-133b6c7853f7	approved	2025-07-31 10:03:05.833293-07	auth0|686ffc7aa0025875955dae19	auth0|686ffc1ea0025875955dadfe	2ba29864-e9c7-47b3-a718-3e854857ce57	invite	auth0|686ffc7aa0025875955dae19	\N	2025-08-07 10:03:05.833293-07	2025-07-31 10:03:05.833293-07	member2@test.com	member@test.com	member2@test.com	\N	group2
+a8cc679c-2354-4a77-8e9d-378de58f8ff9	approved	2025-07-24 12:59:08.642048-07	auth0|686ffc7aa0025875955dae19	auth0|686f5a35f24ed5b3e3b966ea	2ba29864-e9c7-47b3-a718-3e854857ce57	invite	auth0|686ffc7aa0025875955dae19	\N	2025-07-31 12:59:08.642048-07	2025-07-24 12:59:08.642048-07	member2@test.com	testing@testing.com	member2@test.com	\N	group2
 \.
 
 
 --
--- Data for Name: structures; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: structures; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.structures (structure_id, user_sub, name, location, notes, uploaded_at, is_deleted, formula) FROM stdin;
-5b8c773c-d2a3-47b7-b543-2a21a5e19698	auth0|681d382c228898b5ba13b7be	name	s3://molmaker/structures/5b8c773c-d2a3-47b7-b543-2a21a5e19698.xyz		2025-06-16 13:03:07.444752	f	C8H12Cr2O7(-2)
-b4bf5356-df5a-4430-9582-9d8d3843bc64	auth0|681d382c228898b5ba13b7be	long	s3://molmaker/structures/b4bf5356-df5a-4430-9582-9d8d3843bc64.xyz		2025-06-18 19:39:59.605488	f	Nb2O2
-e3962179-9245-494e-93bd-964de08882e5	auth0|681d382c228898b5ba13b7be	new_tes	s3://molmaker/structures/e3962179-9245-494e-93bd-964de08882e5.xyz	tesng	2025-07-08 12:09:46.52906	f	Unknown formula
-5453611c-ae5e-46df-aa8d-bf49d770cbc9	auth0|681d382c228898b5ba13b7be	xyz_orb	s3://molmaker/structures/5453611c-ae5e-46df-aa8d-bf49d770cbc9.xyz	notes	2025-07-08 12:12:34.665828	f	Unknown formula
-03ee2406-af44-430d-9347-8b632a4ca67d	auth0|681d382c228898b5ba13b7be	new_te	s3://molmaker/structures/03ee2406-af44-430d-9347-8b632a4ca67d.xyz	tesng	2025-07-08 12:08:47.988854	t	Unknown formula
-2f56c8d3-2cca-45d8-9d93-6dc2e3d90f37	auth0|681d382c228898b5ba13b7be	orb_res	s3://molmaker/structures/2f56c8d3-2cca-45d8-9d93-6dc2e3d90f37.xyz	notes ont his	2025-07-08 11:54:51.513691	t	Unknown formula
-22f14e5d-02d7-4ff3-a7e4-e31edd05c98a	auth0|681d382c228898b5ba13b7be	name_res	s3://molmaker/structures/22f14e5d-02d7-4ff3-a7e4-e31edd05c98a.xyz	note	2025-07-08 11:52:04.298742	t	Unknown formula
-c44bee2d-b59e-4b70-b98f-af64d25b2811	auth0|681d382c228898b5ba13b7be	some_struct	s3://molmaker/structures/c44bee2d-b59e-4b70-b98f-af64d25b2811.xyz	structure notes here	2025-07-08 14:59:27.002324	f	Unknown formula
-6a08e1d0-15ea-4f87-a0f8-13ecf231c4e6	auth0|681d382c228898b5ba13b7be	water	s3://molmaker/structures/6a08e1d0-15ea-4f87-a0f8-13ecf231c4e6.xyz		2025-08-07 22:53:53.302251	f	H2O
+COPY public.structures (structure_id, user_sub, name, location, notes, uploaded_at, is_deleted, formula, group_id, is_public) FROM stdin;
+5b8c773c-d2a3-47b7-b543-2a21a5e19698	auth0|681d382c228898b5ba13b7be	name	s3://molmaker/structures/5b8c773c-d2a3-47b7-b543-2a21a5e19698.xyz		2025-06-16 13:03:07.444752	f	C8H12Cr2O7(-2)	\N	f
+b4bf5356-df5a-4430-9582-9d8d3843bc64	auth0|681d382c228898b5ba13b7be	long	s3://molmaker/structures/b4bf5356-df5a-4430-9582-9d8d3843bc64.xyz		2025-06-18 19:39:59.605488	f	Nb2O2	\N	f
+e3962179-9245-494e-93bd-964de08882e5	auth0|681d382c228898b5ba13b7be	new_tes	s3://molmaker/structures/e3962179-9245-494e-93bd-964de08882e5.xyz	tesng	2025-07-08 12:09:46.52906	f	Unknown formula	\N	f
+5453611c-ae5e-46df-aa8d-bf49d770cbc9	auth0|681d382c228898b5ba13b7be	xyz_orb	s3://molmaker/structures/5453611c-ae5e-46df-aa8d-bf49d770cbc9.xyz	notes	2025-07-08 12:12:34.665828	f	Unknown formula	\N	f
+03ee2406-af44-430d-9347-8b632a4ca67d	auth0|681d382c228898b5ba13b7be	new_te	s3://molmaker/structures/03ee2406-af44-430d-9347-8b632a4ca67d.xyz	tesng	2025-07-08 12:08:47.988854	t	Unknown formula	\N	f
+2f56c8d3-2cca-45d8-9d93-6dc2e3d90f37	auth0|681d382c228898b5ba13b7be	orb_res	s3://molmaker/structures/2f56c8d3-2cca-45d8-9d93-6dc2e3d90f37.xyz	notes ont his	2025-07-08 11:54:51.513691	t	Unknown formula	\N	f
+22f14e5d-02d7-4ff3-a7e4-e31edd05c98a	auth0|681d382c228898b5ba13b7be	name_res	s3://molmaker/structures/22f14e5d-02d7-4ff3-a7e4-e31edd05c98a.xyz	note	2025-07-08 11:52:04.298742	t	Unknown formula	\N	f
+c44bee2d-b59e-4b70-b98f-af64d25b2811	auth0|681d382c228898b5ba13b7be	some_struct	s3://molmaker/structures/c44bee2d-b59e-4b70-b98f-af64d25b2811.xyz	structure notes here	2025-07-08 14:59:27.002324	f	Unknown formula	\N	f
+6a08e1d0-15ea-4f87-a0f8-13ecf231c4e6	auth0|681d382c228898b5ba13b7be	water	s3://molmaker/structures/6a08e1d0-15ea-4f87-a0f8-13ecf231c4e6.xyz		2025-08-07 22:53:53.302251	f	H2O	2ba29864-e9c7-47b3-a718-3e854857ce57	f
 \.
 
 
 --
--- Data for Name: structures_tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: structures_tags; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.structures_tags (structure_id, tag_id) FROM stdin;
@@ -253,7 +252,7 @@ c44bee2d-b59e-4b70-b98f-af64d25b2811	8b35cb5b-66ae-45cb-ba74-1fb5eca33e9d
 
 
 --
--- Data for Name: tags; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: tags; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 COPY public.tags (tag_id, user_sub, name) FROM stdin;
@@ -272,10 +271,10 @@ a3eb6c5d-82d2-45db-89e3-0753fc11d0bf	auth0|681d382c228898b5ba13b7be	new_tag
 
 
 --
--- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: sparshtrivedy
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.users (user_sub, email, role, group_id, member_since) FROM stdin;
+COPY public.users (user_sub, email, role, group_id, role_or_group_updated_at) FROM stdin;
 auth0|686ffc7aa0025875955dae19	member2@test.com	group_admin	2ba29864-e9c7-47b3-a718-3e854857ce57	2025-08-07 23:04:34.955036-07
 auth0|687aa1d798113782403234fc	sparsh01@student.ubc.ca	member	\N	2025-08-09 12:20:27.209338-07
 auth0|6876a9bc512247093911921c	sparsh01@students.ubc.ca	group_admin	0e141968-a172-4a44-a730-09461d5b84b1	2025-07-24 00:11:09.279346-07
@@ -286,7 +285,7 @@ auth0|686ffc1ea0025875955dadfe	member@test.com	member	\N	2025-07-31 11:00:04.354
 
 
 --
--- Name: groups groups_name_key; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: groups groups_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.groups
@@ -294,7 +293,7 @@ ALTER TABLE ONLY public.groups
 
 
 --
--- Name: groups groups_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: groups groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.groups
@@ -302,7 +301,7 @@ ALTER TABLE ONLY public.groups
 
 
 --
--- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs
@@ -310,7 +309,7 @@ ALTER TABLE ONLY public.jobs
 
 
 --
--- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -318,7 +317,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -326,7 +325,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.requests
@@ -334,7 +333,7 @@ ALTER TABLE ONLY public.requests
 
 
 --
--- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures structures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structures
@@ -342,7 +341,7 @@ ALTER TABLE ONLY public.structures
 
 
 --
--- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags structures_tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -350,7 +349,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tags
@@ -358,7 +357,15 @@ ALTER TABLE ONLY public.tags
 
 
 --
--- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: tags uq_tags_user_sub_name; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tags
+    ADD CONSTRAINT uq_tags_user_sub_name UNIQUE (user_sub, name);
+
+
+--
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.users
@@ -366,7 +373,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.users
@@ -374,7 +381,106 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: jobs fk_jobs_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: idx_jobs_group_active_submitted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_group_active_submitted ON public.jobs USING btree (group_id, is_deleted, submitted_at DESC);
+
+
+--
+-- Name: idx_jobs_user_active_submitted; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_user_active_submitted ON public.jobs USING btree (user_sub, is_deleted, submitted_at DESC);
+
+
+--
+-- Name: idx_requests_created_by_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_created_by_status ON public.requests USING btree (created_by_sub, status);
+
+
+--
+-- Name: idx_requests_group_status_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_group_status_type ON public.requests USING btree (group_id, status, request_type);
+
+
+--
+-- Name: idx_requests_receiver_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_receiver_status ON public.requests USING btree (receiver_sub, status);
+
+
+--
+-- Name: idx_requests_sender_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_sender_status ON public.requests USING btree (sender_sub, status);
+
+
+--
+-- Name: idx_requests_status_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_status_expires_at ON public.requests USING btree (status, expires_at);
+
+
+--
+-- Name: idx_structures_group_active_uploaded; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_structures_group_active_uploaded ON public.structures USING btree (group_id, is_deleted, uploaded_at DESC);
+
+
+--
+-- Name: idx_structures_user_active_uploaded; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_structures_user_active_uploaded ON public.structures USING btree (user_sub, is_deleted, uploaded_at DESC);
+
+
+--
+-- Name: idx_users_group_role; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_group_role ON public.users USING btree (group_id, role);
+
+
+--
+-- Name: uq_requests_pending_demember; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_requests_pending_demember ON public.requests USING btree (group_id, sender_sub) WHERE (((status)::text = 'pending'::text) AND ((request_type)::text = 'demember_request'::text));
+
+
+--
+-- Name: uq_requests_pending_invite; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_requests_pending_invite ON public.requests USING btree (group_id, receiver_sub) WHERE (((status)::text = 'pending'::text) AND ((request_type)::text = 'invite'::text));
+
+
+--
+-- Name: uq_requests_pending_join; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_requests_pending_join ON public.requests USING btree (group_id, sender_sub) WHERE (((status)::text = 'pending'::text) AND ((request_type)::text = 'join_request'::text));
+
+
+--
+-- Name: jobs fk_jobs_group_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT fk_jobs_group_id FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+
+
+--
+-- Name: jobs fk_jobs_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs
@@ -382,7 +488,15 @@ ALTER TABLE ONLY public.jobs
 
 
 --
--- Name: structures fk_structures_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures fk_structures_group_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.structures
+    ADD CONSTRAINT fk_structures_group_id FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+
+
+--
+-- Name: structures fk_structures_user_sub; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structures
@@ -390,7 +504,7 @@ ALTER TABLE ONLY public.structures
 
 
 --
--- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -398,7 +512,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_structures jobs_structures_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_structures
@@ -406,7 +520,7 @@ ALTER TABLE ONLY public.jobs_structures
 
 
 --
--- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -414,7 +528,7 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: jobs_tags jobs_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.jobs_tags
@@ -422,31 +536,47 @@ ALTER TABLE ONLY public.jobs_tags
 
 
 --
--- Name: requests requests_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_created_by_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(group_id);
+    ADD CONSTRAINT requests_created_by_sub_fkey FOREIGN KEY (created_by_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
 
 
 --
--- Name: requests requests_receiver_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
---
-
-ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_receiver_sub_fkey FOREIGN KEY (receiver_sub) REFERENCES public.users(user_sub);
-
-
---
--- Name: requests requests_sender_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_sender_sub_fkey FOREIGN KEY (sender_sub) REFERENCES public.users(user_sub);
+    ADD CONSTRAINT requests_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(group_id) ON DELETE SET NULL;
 
 
 --
--- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: requests requests_receiver_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_receiver_sub_fkey FOREIGN KEY (receiver_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
+
+
+--
+-- Name: requests requests_resolved_by_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_resolved_by_sub_fkey FOREIGN KEY (resolved_by_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
+
+
+--
+-- Name: requests requests_sender_sub_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_sender_sub_fkey FOREIGN KEY (sender_sub) REFERENCES public.users(user_sub) ON DELETE SET NULL;
+
+
+--
+-- Name: structures_tags structures_tags_structure_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -454,7 +584,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: structures_tags structures_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.structures_tags
@@ -462,7 +592,7 @@ ALTER TABLE ONLY public.structures_tags
 
 
 --
--- Name: users users_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: sparshtrivedy
+-- Name: users users_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.users
@@ -473,3 +603,4 @@ ALTER TABLE ONLY public.users
 -- PostgreSQL database dump complete
 --
 
+\unrestrict ojMrlcOKUZ0h9KYBhl6baWuncOlGHAGNVcP8pqnd7UbD9IapfCugPkqydSwWeC8

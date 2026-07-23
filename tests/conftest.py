@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -93,6 +93,21 @@ def db():
 
 
 @pytest.fixture
+def sql_statements():
+    """Collect SQL statements so list tests can catch per-row queries."""
+    statements = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+
+@pytest.fixture
 def auth_user():
     """
     Default authenticated user payload for API tests.
@@ -154,7 +169,7 @@ def user_factory(db):
             "email": f"{user_sub.replace('|', '_')}@test.com",
             "role": "member",
             "group_id": group.group_id if group is not None else None,
-            "member_since": datetime.now(timezone.utc),
+            "role_or_group_updated_at": datetime.now(timezone.utc),
         }
         values.update(overrides)
         return _save(db, User(**values))
@@ -243,13 +258,25 @@ def request_factory(db):
     Factory for persisted Request rows between two users and a group.
     """
     def create_request(sender, receiver, group, **overrides):
+        sender_sub = sender.user_sub if hasattr(sender, "user_sub") else sender
+        receiver_sub = receiver.user_sub if hasattr(receiver, "user_sub") else receiver
         values = {
             "request_id": uuid.uuid4(),
             "status": "pending",
+            "request_type": "invite",
             "requested_at": datetime.now(timezone.utc),
-            "sender_sub": sender.user_sub if hasattr(sender, "user_sub") else sender,
-            "receiver_sub": receiver.user_sub if hasattr(receiver, "user_sub") else receiver,
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+            "resolved_at": None,
+            "sender_sub": sender_sub,
+            "receiver_sub": receiver_sub,
+            "created_by_sub": sender_sub or receiver_sub,
+            "resolved_by_sub": None,
             "group_id": group.group_id if hasattr(group, "group_id") else group,
+            "sender_email_snapshot": None,
+            "receiver_email_snapshot": None,
+            "created_by_email_snapshot": None,
+            "resolved_by_email_snapshot": None,
+            "group_name_snapshot": None,
         }
         values.update(overrides)
         return _save(db, Request(**values))

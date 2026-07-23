@@ -1,11 +1,16 @@
-import os
-import requests
 from fastapi import APIRouter, HTTPException, Depends, status, Form
 from sqlalchemy.orm import Session
 
-from models import User, Job, Structure, Tags
 from dependencies import get_db
 from auth import verify_token
+from permissions import can_delete_user
+from user_service import (
+    delete_user_account,
+    get_user_or_404,
+    lookup_user_by_email_for_user,
+    read_or_create_current_user,
+    serialize_user_profile,
+)
 from utils import get_user_sub
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -19,21 +24,7 @@ def read_or_create_me(
     """
     Get the current user's profile, creating it on first login.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-
-    if not user:
-        user = User(
-            user_sub=user_sub,
-            email=email,
-            role="member",
-            group_id=None,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    return user
+    return serialize_user_profile(read_or_create_current_user(db, current_user, email))
 
 @router.get("/{email}")
 def get_user_by_email(
@@ -42,32 +33,17 @@ def get_user_by_email(
     current_user=Depends(verify_token),
 ):
     """
-    Get a user by their email address.
+    Get a user by email when the authenticated user is allowed to view them.
+    Overall admins may view any user. Group admins may view users in their
+    current group. Users may view themselves. Other lookups return 404 to avoid
+    revealing whether an email exists.
+    :param email: Email address to look up.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: User profile details.
     """
-    user = db.query(User).filter_by(email=email).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    return user
-
-
-def get_auth0_management_token():
-    try:
-        data = {
-            'client_id': os.getenv('AUTH0_CLIENT_ID'),
-            'client_secret': os.getenv('AUTH0_CLIENT_SECRET'),
-            'audience': f'https://{os.getenv("AUTH0_DOMAIN")}/api/v2/',
-            'grant_type': 'client_credentials'
-        }
-        resp = requests.post(
-            f'https://{os.getenv("AUTH0_DOMAIN")}/oauth/token',
-            json=data
-        )
-        resp.raise_for_status()
-        return resp.json()['access_token']
-    except requests.RequestException as e:
-        print(f"Error obtaining Auth0 management token: {e}")
-        return None
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return lookup_user_by_email_for_user(db, user, email)
 
 
 @router.delete("/{user_sub}")
@@ -77,60 +53,8 @@ def delete_user(
     current_user=Depends(verify_token),
 ):
     # 1. Check permissions (must be admin)
-    admin_sub = get_user_sub(current_user)
-    admin_user = db.query(User).filter_by(user_sub=admin_sub).first()
-    if not admin_user or admin_user.role != "admin":
+    admin_user = get_user_or_404(db, get_user_sub(current_user))
+    if not can_delete_user(admin_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
-    # 2. Find user
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    token = get_auth0_management_token()
-    if not token:
-        raise HTTPException(status_code=500, detail="Failed to obtain Auth0 management token")
-
-    # 3. Delete jobs
-    jobs = db.query(Job).filter_by(user_sub=user_sub).all()
-    for job in jobs:
-        db.delete(job)
-
-    # 4. Delete structures
-    structures = db.query(Structure).filter_by(user_sub=user_sub).all()
-    for structure in structures:
-        db.delete(structure)
-
-    # 5. Delete tags
-    tags = db.query(Tags).filter_by(user_sub=user_sub).all()
-    for tag in tags:
-        db.delete(tag)
-
-    # 6. Delete user
-    db.delete(user)
-
-    # 7. Delete user from Auth0
-    try:
-        print(f"Deleting user {user_sub} from Auth0")
-        auth0_domain = os.getenv('AUTH0_DOMAIN')
-        url = f"https://{auth0_domain}/api/v2/users/{user_sub}"
-        headers = {"Authorization": f"Bearer {token}"}
-        resp = requests.delete(url, headers=headers)
-        if resp.status_code not in (200, 204):
-            raise HTTPException(
-                status_code=500, detail=f"Failed to delete user from Auth0: {resp.text}"
-            )
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Auth0 deletion error: {str(e)}")
-
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete local user data: {e}")
-
-    return {"detail": "User and all associated data deleted successfully"}
+    return delete_user_account(db, user_sub)

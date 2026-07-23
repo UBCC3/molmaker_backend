@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from conftest import make_auth0_payload
-from models import Group, User
+from models import Group
 
 
 def _users_by_sub(response_json):
@@ -30,12 +30,14 @@ class TestAdminAPI:
             "email": admin.email,
             "role": "admin",
             "group_id": str(group.group_id),
+            "role_or_group_updated_at": admin.role_or_group_updated_at.isoformat(),
         }
         assert users[member.user_sub] == {
             "user_sub": member.user_sub,
             "email": member.email,
             "role": "member",
             "group_id": str(group.group_id),
+            "role_or_group_updated_at": member.role_or_group_updated_at.isoformat(),
         }
 
     def test_admin_users_list_requires_admin_user(self, client, user_factory):
@@ -58,6 +60,25 @@ class TestAdminAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "User not found"
 
+    def test_admin_users_use_stable_pagination(self, client, user_factory):
+        user_factory(
+            user_sub="auth0|testuser",
+            email="z-admin@example.com",
+            role="admin",
+        )
+        user_factory(user_sub="auth0|first", email="a-first@example.com")
+        expected_user = user_factory(
+            user_sub="auth0|second",
+            email="b-second@example.com",
+        )
+
+        response = client.get("/admin/users?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [user["user_sub"] for user in response.json()] == [
+            expected_user.user_sub
+        ]
+
     def test_admin_can_list_groups_with_users(self, client, group_factory, user_factory):
         """
         GET /admin/groups should return groups and their users for admins.
@@ -77,6 +98,8 @@ class TestAdminAPI:
                 "user_sub": admin.user_sub,
                 "email": admin.email,
                 "role": "admin",
+                "group_id": str(admin_group.group_id),
+                "role_or_group_updated_at": admin.role_or_group_updated_at.isoformat(),
             }
         ]
         assert groups["Chemistry"]["group_id"] == str(chemistry_group.group_id)
@@ -85,6 +108,8 @@ class TestAdminAPI:
                 "user_sub": member.user_sub,
                 "email": member.email,
                 "role": "member",
+                "group_id": str(chemistry_group.group_id),
+                "role_or_group_updated_at": member.role_or_group_updated_at.isoformat(),
             }
         ]
 
@@ -99,6 +124,44 @@ class TestAdminAPI:
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
 
+    def test_admin_groups_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+    ):
+        group_factory(name="Alpha")
+        expected_group = group_factory(name="Beta")
+        admin_group = group_factory(name="Zulu")
+        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+
+        response = client.get("/admin/groups?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [group["group_id"] for group in response.json()] == [
+            str(expected_group.group_id)
+        ]
+
+    def test_admin_group_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        sql_statements,
+        group_factory,
+        user_factory,
+    ):
+        admin_group = group_factory(name="Admin group")
+        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+        for group_number in range(5):
+            group = group_factory(name=f"Group {group_number}")
+            user_factory(group=group)
+        sql_statements.clear()
+
+        response = client.get("/admin/groups")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 6
+        assert len(sql_statements) == 3
+
     def test_admin_can_list_all_non_deleted_jobs_with_user_metadata(
         self, client, group_factory, user_factory, job_factory
     ):
@@ -107,23 +170,33 @@ class TestAdminAPI:
         """
         admin_group = group_factory(name="Admins")
         research_group = group_factory(name="Research")
+        owner_current_group = group_factory(name="Owner Current Group")
         admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        owner = user_factory(group=research_group, user_sub="auth0|owner", role="member")
+        owner = user_factory(group=owner_current_group, user_sub="auth0|owner", role="member")
         older_job = job_factory(
             user_sub=admin.user_sub,
+            group_id=admin_group.group_id,
             job_name="admin job",
             submitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
         newer_job = job_factory(
             user_sub=owner.user_sub,
+            group_id=research_group.group_id,
             job_name="owner job",
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
         )
+        group_only_job = job_factory(
+            user_sub=None,
+            group_id=research_group.group_id,
+            job_name="group-only job",
+            submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        )
         job_factory(
             user_sub=owner.user_sub,
+            group_id=research_group.group_id,
             job_name="deleted job",
             is_deleted=True,
-            submitted_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+            submitted_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
         )
 
         response = client.get("/admin/jobs")
@@ -131,17 +204,74 @@ class TestAdminAPI:
         assert response.status_code == 200
         result = response.json()
         assert [job["job_id"] for job in result] == [
+            str(group_only_job.job_id),
             str(newer_job.job_id),
             str(older_job.job_id),
         ]
-        assert result[0]["job_name"] == "owner job"
-        assert result[0]["user_email"] == owner.email
+        assert result[0]["job_name"] == "group-only job"
+        assert result[0]["user_sub"] is None
+        assert result[0]["user_email"] is None
         assert result[0]["group_id"] == str(research_group.group_id)
         assert result[0]["group_name"] == "Research"
-        assert result[1]["job_name"] == "admin job"
-        assert result[1]["user_email"] == admin.email
-        assert result[1]["group_id"] == str(admin_group.group_id)
-        assert result[1]["group_name"] == "Admins"
+        assert result[1]["job_name"] == "owner job"
+        assert result[1]["user_email"] == owner.email
+        assert result[1]["group_id"] == str(research_group.group_id)
+        assert result[1]["group_name"] == "Research"
+        assert result[2]["job_name"] == "admin job"
+        assert result[2]["user_email"] == admin.email
+        assert result[2]["group_id"] == str(admin_group.group_id)
+        assert result[2]["group_name"] == "Admins"
+
+    def test_admin_jobs_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Admin job pages should use the job ID when submission times tie."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        submitted_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        jobs = [
+            job_factory(
+                user_sub=owner.user_sub,
+                group_id=group.group_id,
+                submitted_at=submitted_at,
+            )
+            for _ in range(3)
+        ]
+        expected_job = sorted(jobs, key=lambda job: job.job_id)[1]
+
+        response = client.get("/admin/jobs?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [job["job_id"] for job in response.json()] == [
+            str(expected_job.job_id)
+        ]
+
+    def test_admin_job_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        sql_statements,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Owner, group, tag, and structure loading must not query per job."""
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        for _ in range(5):
+            job_factory(user_sub=owner.user_sub, group_id=group.group_id)
+        sql_statements.clear()
+
+        response = client.get("/admin/jobs")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 5
+        assert len(sql_statements) == 4
 
     def test_admin_jobs_list_requires_admin_user(self, client, user_factory):
         """
@@ -207,19 +337,39 @@ class TestAdminAPI:
         response = client.post("/admin/groups", data={"name": "New Group"})
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         assert db.query(Group).filter_by(name="New Group").first() is None
 
     def test_admin_can_update_user_role_and_group(
-        self, client, db, group_factory, user_factory
+        self, client, db, group_factory, user_factory, request_factory
     ):
         """
         PUT /admin/users/{user_sub} should let admins update role and group.
         """
         admin_group = group_factory(name="Admins")
         target_group = group_factory(name="Target Group")
-        user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        target = user_factory(user_sub="auth0|target", role="member")
+        other_group = group_factory(name="Other Group")
+        admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        target = user_factory(
+            user_sub="auth0|target",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
+        invite = request_factory(
+            sender=None,
+            receiver=target,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=admin.user_sub,
+        )
+        join_request = request_factory(
+            sender=target,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
 
         response = client.put(
             f"/admin/users/{target.user_sub}",
@@ -232,19 +382,36 @@ class TestAdminAPI:
         assert result["email"] == target.email
         assert result["role"] == "group_admin"
         assert result["group_id"] == str(target_group.group_id)
-        assert result["member_since"] is not None
+        assert result["role_or_group_updated_at"] is not None
 
         db.refresh(target)
         assert target.role == "group_admin"
         assert target.group_id == target_group.group_id
+        assert target.role_or_group_updated_at != previous_timestamp
+        db.refresh(invite)
+        db.refresh(join_request)
+        assert invite.status == "cancelled"
+        assert invite.resolved_by_sub == admin.user_sub
+        assert invite.resolved_by_email_snapshot == admin.email
+        assert join_request.status == "cancelled"
+        assert join_request.resolved_by_sub == admin.user_sub
+        assert join_request.resolved_by_email_snapshot == admin.email
 
-    def test_admin_can_clear_user_group(self, client, db, group_factory, user_factory):
+    def test_admin_can_clear_user_group(
+        self, client, db, group_factory, user_factory, request_factory
+    ):
         """
         Omitting group_id should clear the selected user's group.
         """
         group = group_factory()
-        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
         target = user_factory(group=group, user_sub="auth0|target", role="member")
+        demember_request = request_factory(
+            sender=target,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
 
         response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
 
@@ -253,12 +420,87 @@ class TestAdminAPI:
         db.refresh(target)
         assert target.group_id is None
         assert target.role == "member"
+        db.refresh(demember_request)
+        assert demember_request.status == "cancelled"
+        assert demember_request.resolved_by_sub == admin.user_sub
 
-    def test_group_admin_can_update_same_group_user(
+    def test_admin_same_role_and_group_keep_timestamp(
+        self, client, db, group_factory, user_factory
+    ):
+        group = group_factory()
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "member", "group_id": str(group.group_id)},
+        )
+
+        assert response.status_code == 200
+        db.refresh(target)
+        assert target.role_or_group_updated_at == previous_timestamp
+
+    def test_admin_role_change_updates_timestamp(
+        self, client, db, group_factory, user_factory
+    ):
+        group = group_factory()
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(
+            group=group,
+            user_sub="auth0|target",
+            role="group_admin",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = target.role_or_group_updated_at
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "member", "group_id": str(group.group_id)},
+        )
+
+        assert response.status_code == 200
+        db.refresh(target)
+        assert target.role == "member"
+        assert target.group_id == group.group_id
+        assert target.role_or_group_updated_at != previous_timestamp
+        assert response.json()["role_or_group_updated_at"] == (
+            target.role_or_group_updated_at.isoformat()
+        )
+
+    def test_group_admin_role_requires_group_id(
+        self, client, db, group_factory, user_factory
+    ):
+        """
+        PUT /admin/users/{user_sub} should reject group_admin without a group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="admin")
+        target = user_factory(group=group, user_sub="auth0|target", role="group_admin")
+
+        response = client.put(
+            f"/admin/users/{target.user_sub}",
+            data={"role": "group_admin"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group_admin role requires group_id"
+        db.refresh(target)
+        assert target.group_id == group.group_id
+        assert target.role == "group_admin"
+
+    def test_group_admin_cannot_update_user_through_admin_route(
         self, client, db, set_auth_user, group_factory, user_factory
     ):
         """
-        Group admins should be able to update users in their own group.
+        PUT /admin/users/{user_sub} should be overall-admin-only.
         """
         group = group_factory()
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
@@ -267,10 +509,11 @@ class TestAdminAPI:
 
         response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
 
-        assert response.status_code == 200
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
         db.refresh(target)
         assert target.role == "member"
-        assert target.group_id is None
+        assert target.group_id == group.group_id
 
     def test_group_admin_cannot_update_user_in_another_group(
         self, client, set_auth_user, group_factory, user_factory
@@ -355,7 +598,7 @@ class TestAdminAPI:
         )
 
         assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.json()["detail"] == "Could not save changes"
         db.refresh(target)
         assert target.role == "member"
         assert target.group_id is None

@@ -14,19 +14,29 @@ import os
 import uuid
 import shutil
 import subprocess
+from typing import Optional
+
 from fastapi import (
     # FastAPI,
+    APIRouter,
+    Depends,
+    File,
+    Form,
     HTTPException,
     UploadFile,
-    File,
-    Form, APIRouter
 )
 from pydantic import BaseModel
 # from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from sqlalchemy.orm import Session
 
+from asset_service import get_asset_or_404, require_asset_permission
+from auth import verify_token
+from dependencies import get_db
+from models import Job
+from permissions import can_read_asset
 from storage import construct_upload_script
-from utils import clean_up_upload_cache
+from user_service import get_user_or_404
+from utils import clean_up_upload_cache, get_user_sub
 
 BACKEND_WORK_DIR = os.getenv("BACKEND_WORK_DIR")
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
@@ -252,11 +262,21 @@ class ResultResponse(BaseModel):
     job_id: str
     output: str
 
-@router.get("/error/{job_id}", response_model=ResultResponse)
-def error_result(job_id):
+
+def _require_job_read_access(
+    job_id: str,
+    db: Session,
+    current_user,
+) -> None:
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+
+
+def _fetch_cluster_result(job_id: str, command_name: str) -> ResultResponse:
     cmd = [
         "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/dispatch.py error {job_id}"
+        f"python3 {CLUSTER_WORK_DIR}/dispatch.py {command_name} {job_id}"
     ]
     try:
         proc = subprocess.run(
@@ -272,25 +292,42 @@ def error_result(job_id):
     except subprocess.TimeoutExpired:
         raise HTTPException(500, detail="Timed out fetching result")
 
+
+@router.get("/error/{job_id}", response_model=ResultResponse)
+def error_result(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Fetch cluster stderr output when the authenticated user can read the job.
+    Allows admins, direct owners, group admins for the job's group_id, and
+    current group members when the job is public.
+    :param job_id: ID of the job whose error output should be fetched.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Cluster error output for the job.
+    """
+    _require_job_read_access(job_id, db, current_user)
+    return _fetch_cluster_result(job_id, "error")
+
 @router.get("/result/{job_id}", response_model=ResultResponse)
-def result(job_id: str):
-    cmd = [
-        "ssh", "cluster",
-        f"python3 {CLUSTER_WORK_DIR}/dispatch.py result {job_id}"
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        return ResultResponse(job_id=job_id, output=proc.stdout)
-    except subprocess.CalledProcessError:
-        raise HTTPException(404, detail="Result not found yet")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(500, detail="Timed out fetching result")
+def result(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Fetch cluster result output when the authenticated user can read the job.
+    Allows admins, direct owners, group admins for the job's group_id, and
+    current group members when the job is public.
+    :param job_id: ID of the job whose result output should be fetched.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Cluster result output for the job.
+    """
+    _require_job_read_access(job_id, db, current_user)
+    return _fetch_cluster_result(job_id, "result")
 
 @router.post("/cancel/{slurm_id}", response_model=CancelResponse)
 def cancel(slurm_id: str):

@@ -66,6 +66,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

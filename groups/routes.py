@@ -1,110 +1,284 @@
-from datetime import datetime
 from typing import Optional
-import uuid
+
 from fastapi import (
     APIRouter,
     Form,
-    HTTPException,
     Depends,
+    Query,
 )
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from fastapi import status
 
-from models import Job, User, Group
+from enum_types import AssetOwnership, RequestStatus, RequestType
 from dependencies import get_db
 from auth import verify_token
+from request_service import (
+    DEFAULT_RECENT_DAYS,
+    list_group_requests,
+)
+from group_service import (
+    delete_group as delete_group_by_id,
+    demember_group_user,
+    get_group_or_404,
+    list_group_assets_for_user,
+    list_group_users,
+    serialize_group,
+    update_group_name,
+)
+from asset_service import (
+    get_asset_or_404,
+    serialize_job,
+    serialize_structure,
+    transfer_asset_ownership,
+)
+from models import Job, Structure
+from user_service import get_user_or_404, serialize_user_profile
+from utils import (
+    DEFAULT_JOB_LIST_LIMIT,
+    DEFAULT_REQUEST_LIST_LIMIT,
+    DEFAULT_STRUCTURE_LIST_LIMIT,
+    DEFAULT_USER_LIST_LIMIT,
+    MAX_JOB_LIST_LIMIT,
+    MAX_REQUEST_LIST_LIMIT,
+    MAX_STRUCTURE_LIST_LIMIT,
+    MAX_USER_LIST_LIMIT,
+    get_user_sub,
+)
 
-from utils import serialize_job, get_user_sub
-
-router = APIRouter(prefix="/group", tags=["jobs"])
-JOB_DIR = "./results"
-
-def get_group_or_404(db: Session, group_id: str):
-    try:
-        parsed_group_id = uuid.UUID(str(group_id))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-    group = db.query(Group).filter_by(group_id=parsed_group_id).first()
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    return group
-
-def can_update_group(user: User, group: Group):
-    if user.role == "admin":
-        return True
-    return user.role == "group_admin" and user.group_id == group.group_id
+router = APIRouter(prefix="/group", tags=["group"])
 
 @router.get("/jobs")
 def get_all_jobs(
+    limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all submitted jobs for the currently authenticated user
-    and for all users in the same group.
+    List non-deleted jobs owned by the authenticated user's current group.
+    Group admins and admins see all group jobs with user ownership metadata.
+    Normal members see only public group jobs; other members' user_sub values
+    are hidden, while group_id remains visible. Normal members do not receive
+    private group jobs from this endpoint even when they are the direct user
+    owner; use GET /jobs/ for the authenticated user's own jobs.
+    :param limit: Maximum number of jobs to return, up to 100.
+    :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if not user.group_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_assets_for_user(
+        db,
+        user,
+        Job,
+        serialize_job,
+        limit=limit,
+        offset=offset,
+    )
 
-    group_users = db.query(User).filter_by(group_id=user.group_id).all()
-
-    group_jobs = []
-    for member in group_users:
-        member_jobs = (
-            db.query(Job)
-            .filter(
-                Job.user_sub == member.user_sub,
-                Job.submitted_at >= member.member_since,
-                Job.is_deleted == False
-            )
-            .all()
-        )
-        group_jobs.extend(member_jobs)
-
-    if not group_jobs:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No jobs found for the group")
-
-    try:
-        serialized_jobs = [serialize_job(job) for job in group_jobs]
-        # If the user is not a group admin, filter out non-public jobs
-        if user.role != "group_admin":
-            serialized_jobs = [job for job in serialized_jobs if job["is_public"]]
-        return serialized_jobs
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-@router.get("/users")
-def get_all_users(
+@router.patch("/jobs/{job_id}")
+def update_job_ownership(
+    job_id: str,
+    ownership: AssetOwnership = Form(...),
+    user_sub: Optional[str] = Form(None),
+    group_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all users in the group of the currently authenticated user.
+    Transfer ownership of a non-deleted job.
+    Overall admins may transfer any job. Group admins may transfer only jobs
+    currently owned by their group and must provide that same group_id for
+    group or co-owned transfers. Use ownership=user with user_sub only to let
+    the group relinquish a co-owned job to its existing user co-owner. Use
+    ownership=group with group_id only to remove the direct user owner. Use
+    ownership=co_owned with user_sub and group_id to add a same-group user to a
+    group-only job. Group admins cannot transfer group-only jobs directly to
+    user-only ownership.
+    :param job_id: ID of the job to update.
+    :param ownership: Target ownership mode: user, group, or co_owned.
+    :param user_sub: Target user owner; required for user and co_owned modes,
+        and rejected for group mode.
+    :param group_id: Destination group; required for group and co_owned modes,
+        and rejected for user mode.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Serialized job details with updated ownership.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    job = get_asset_or_404(db, Job, job_id)
+    transfer_asset_ownership(db, user, job, ownership, user_sub, group_id)
+
+    return serialize_job(job)
+
+@router.get("/structures")
+def get_all_structures(
+    limit: int = Query(
+        DEFAULT_STRUCTURE_LIST_LIMIT,
+        ge=1,
+        le=MAX_STRUCTURE_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    List non-deleted structures owned by the authenticated user's current group.
+    Group admins and admins see all group structures with user ownership metadata.
+    Normal members see only public group structures; other members' user_sub
+    values are hidden, while group_id remains visible. Normal members do not
+    receive private group structures from this endpoint even when they are the
+    direct user owner; use GET /structures/ for the authenticated user's own
+    structures.
+    :param limit: Maximum number of structures to return, up to 100.
+    :param offset: Number of sorted structures to skip.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: List of serialized structure details.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_assets_for_user(
+        db,
+        user,
+        Structure,
+        serialize_structure,
+        limit=limit,
+        offset=offset,
+    )
+
+@router.patch("/structures/{structure_id}")
+def update_structure_ownership(
+    structure_id: str,
+    ownership: AssetOwnership = Form(...),
+    user_sub: Optional[str] = Form(None),
+    group_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Transfer ownership of a non-deleted structure.
+    Overall admins may transfer any structure. Group admins may transfer only
+    structures currently owned by their group and must provide that same
+    group_id for group or co-owned transfers. Use ownership=user with user_sub
+    only to let the group relinquish a co-owned structure to its existing user
+    co-owner. Use ownership=group with group_id only to remove the direct user
+    owner. Use ownership=co_owned with user_sub and group_id to add a
+    same-group user to a group-only structure. Group admins cannot transfer
+    group-only structures directly to user-only ownership.
+    :param structure_id: ID of the structure to update.
+    :param ownership: Target ownership mode: user, group, or co_owned.
+    :param user_sub: Target user owner; required for user and co_owned modes,
+        and rejected for group mode.
+    :param group_id: Destination group; required for group and co_owned modes,
+        and rejected for user mode.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Serialized structure details with updated ownership.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    structure = get_asset_or_404(db, Structure, structure_id)
+    transfer_asset_ownership(
+        db,
+        user,
+        structure,
+        ownership,
+        user_sub,
+        group_id,
+    )
+
+    return serialize_structure(structure, include_user_sub=True)
+
+@router.get("/users")
+def get_all_users(
+    limit: int = Query(DEFAULT_USER_LIST_LIMIT, ge=1, le=MAX_USER_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    List users in the authenticated user's current group.
+    Only overall admins and group admins can use this endpoint. Normal group
+    members cannot enumerate other group members.
+    Results are ordered by email.
+    :param limit: Maximum number of users to return, up to 100.
+    :param offset: Number of sorted users to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of user details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if not user.group_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not part of a group")
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return [
+        serialize_user_profile(group_user)
+        for group_user in list_group_users(
+            db,
+            user,
+            limit=limit,
+            offset=offset,
+        )
+    ]
 
-    try:
-        users_in_group = db.query(User).filter_by(group_id=user.group_id).all()
-        return users_in_group
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+@router.delete("/users/{selected_user_sub}")
+def remove_group_user(
+    selected_user_sub: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Remove a user from a group without changing job or structure ownership.
+    Group admins may remove normal members from their own group and may remove
+    themselves. They cannot remove another group admin. Overall admins may
+    remove any user from any group.
+    :param selected_user_sub: User's unique identifier (sub from Auth0).
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Confirmation message.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    selected_user = get_user_or_404(
+        db,
+        selected_user_sub,
+        detail="Selected user not found",
+    )
+    return demember_group_user(db, user, selected_user)
+
+
+@router.get("/requests")
+def get_group_requests(
+    request_status: RequestStatus = Query(RequestStatus.pending, alias="status"),
+    request_type: RequestType | None = None,
+    recent_days: int = DEFAULT_RECENT_DAYS,
+    limit: int = Query(
+        DEFAULT_REQUEST_LIST_LIMIT,
+        ge=1,
+        le=MAX_REQUEST_LIST_LIMIT,
+    ),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    List requests associated with the authenticated group admin's current group.
+    This includes group invites, join requests, and de-member requests. Pending
+    requests are returned by default; terminal statuses use recent_days.
+    :param request_status: Request status filter, passed as query parameter status.
+    :param request_type: Optional request type filter.
+    :param recent_days: Recent terminal-request window in days.
+    :param limit: Maximum number of requests to return, up to 100.
+    :param offset: Number of sorted requests to skip.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Request details for the current group.
+    """
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return list_group_requests(
+        db,
+        user,
+        request_status,
+        request_type,
+        recent_days,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.patch("/{group_id}")
 def update_group(
@@ -121,30 +295,8 @@ def update_group(
     :param current_user: Current user dependency, verified via token.
     :return: Updated group details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if user.role not in {"admin", "group_admin"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    group = get_group_or_404(db, group_id)
-    if not can_update_group(user, group):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    if not group_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
-
-    try:
-        group.name = group_name
-        db.commit()
-        return {"group_id": str(group.group_id), "name": group.name}
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name already exists")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return update_group_name(db, user, group_id, group_name)
 
 @router.get("/{group_id}")
 def get_group(
@@ -159,14 +311,9 @@ def get_group(
     :param current_user: Current user dependency, verified via token.
     :return: Group details.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    get_user_or_404(db, get_user_sub(current_user))
 
-    group = get_group_or_404(db, group_id)
-
-    return {"group_id": str(group.group_id), "name": group.name}
+    return serialize_group(get_group_or_404(db, group_id))
 
 @router.delete("/{group_id}")
 def delete_group(
@@ -181,25 +328,5 @@ def delete_group(
     :param current_user: Current user dependency, verified via token.
     :return: Confirmation message.
     """
-    user_sub = get_user_sub(current_user)
-    user = db.query(User).filter_by(user_sub=user_sub).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    if user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
-
-    group = get_group_or_404(db, group_id)
-
-    # un-assign all users from the group
-    users_in_group = db.query(User).filter_by(group_id=group.group_id).all()
-    for user in users_in_group:
-        user.group_id = None
-        user.role = "member"
-
-    try:
-        db.delete(group)
-        db.commit()
-        return {"detail": "Group deleted successfully"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    user = get_user_or_404(db, get_user_sub(current_user))
+    return delete_group_by_id(db, user, group_id)

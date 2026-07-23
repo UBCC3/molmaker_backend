@@ -1,313 +1,902 @@
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from conftest import make_auth0_payload
-from models import Request, User
+from models import Request
 
 
 def _requests_by_id(response_json):
     return {request["request_id"]: request for request in response_json}
 
 
-class TestRequestsAPI:
-    def test_received_requests_returns_pending_requests_for_current_user(
-        self, client, group_factory, user_factory, request_factory
-    ):
-        """
-        GET /request/{receiver_sub} should return pending received requests with sender/group names.
-        """
-        group = group_factory(name="Chemistry")
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender", email="sender@test.com")
-        other_receiver = user_factory(user_sub="auth0|other")
-        pending_request = request_factory(sender=sender, receiver=receiver, group=group)
-        request_factory(sender=sender, receiver=receiver, group=group, status="approved")
-        request_factory(sender=sender, receiver=other_receiver, group=group)
+def _request(db, request_id):
+    return db.query(Request).filter_by(request_id=uuid.UUID(request_id)).one()
 
-        response = client.get(f"/request/{receiver.user_sub}")
 
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result) == 1
-        assert result[0]["request_id"] == str(pending_request.request_id)
-        assert result[0]["sender_sub"] == sender.user_sub
-        assert result[0]["receiver_sub"] == receiver.user_sub
-        assert result[0]["group_id"] == str(group.group_id)
-        assert result[0]["status"] == "pending"
-        assert result[0]["sender_name"] == "sender@test.com"
-        assert result[0]["group_name"] == "Chemistry"
-
-    def test_received_requests_require_matching_authenticated_user(self, client):
-        """
-        Users should not be able to list another user's received requests.
-        """
-        response = client.get("/request/auth0|other")
-
-        assert response.status_code == 403
-        assert response.json()["detail"] == "Permission denied"
-
-    def test_sent_requests_returns_requests_for_current_user(
-        self, client, group_factory, user_factory, request_factory
-    ):
-        """
-        GET /request/sent/{sender_sub} should return sent requests with receiver names.
-        """
-        group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(user_sub="auth0|receiver", email="receiver@test.com")
-        other_sender = user_factory(user_sub="auth0|other")
-        sent_request = request_factory(sender=sender, receiver=receiver, group=group)
-        request_factory(sender=other_sender, receiver=receiver, group=group)
-
-        response = client.get(f"/request/sent/{sender.user_sub}")
-
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result) == 1
-        assert result[0]["request_id"] == str(sent_request.request_id)
-        assert result[0]["sender_sub"] == sender.user_sub
-        assert result[0]["receiver_sub"] == receiver.user_sub
-        assert result[0]["receiver_name"] == "receiver@test.com"
-
-    def test_sent_requests_require_matching_authenticated_user(self, client):
-        """
-        Users should not be able to list another user's sent requests.
-        """
-        response = client.get("/request/sent/auth0|other")
-
-        assert response.status_code == 403
-        assert response.json()["detail"] == "Permission denied"
-
-    def test_send_request_creates_pending_request(
+class TestRequestCreationAPI:
+    def test_user_can_create_join_request(
         self, client, db, group_factory, user_factory
     ):
         """
-        POST /request/{receiver_sub} should create a pending request.
+        POST /request/join should create a group-targeted join request.
         """
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
         group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
 
         response = client.post(
-            f"/request/{receiver.user_sub}",
+            "/request/join",
             data={"group_id": str(group.group_id)},
         )
 
         assert response.status_code == 200
         result = response.json()
-        assert result["sender_sub"] == sender.user_sub
-        assert result["receiver_sub"] == receiver.user_sub
-        assert result["group_id"] == str(group.group_id)
+        assert result["request_type"] == "join_request"
         assert result["status"] == "pending"
+        assert result["sender_sub"] == user.user_sub
+        assert "receiver_sub" not in result
+        assert "created_by_sub" not in result
+        assert result["group_id"] == str(group.group_id)
+        assert result["expires_at"] is not None
 
-        created = db.query(Request).filter_by(request_id=uuid.UUID(result["request_id"])).one()
-        assert created.sender_sub == sender.user_sub
-        assert created.receiver_sub == receiver.user_sub
-        assert created.group_id == group.group_id
-        assert created.status == "pending"
+        created = _request(db, result["request_id"])
+        assert created.sender_sub == user.user_sub
+        assert created.receiver_sub is None
+        assert created.created_by_sub == user.user_sub
+        assert created.request_type == "join_request"
 
-    def test_send_request_rejects_self_request(self, client, group_factory, user_factory):
-        """
-        Users should not be able to send requests to themselves.
-        """
-        group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-
-        response = client.post(
-            f"/request/{sender.user_sub}",
-            data={"group_id": str(group.group_id)},
-        )
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Cannot send request to yourself"
-
-    def test_send_request_rejects_duplicate_pending_request(
-        self, client, group_factory, user_factory, request_factory
+    def test_join_request_rejects_user_already_in_group(
+        self, client, group_factory, user_factory
     ):
         """
-        Users should not be able to send a duplicate pending request.
+        Users already in a group cannot request to join another group.
         """
-        group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
-        request_factory(sender=sender, receiver=receiver, group=group, status="pending")
+        current_group = group_factory()
+        target_group = group_factory()
+        user_factory(group=current_group, user_sub="auth0|testuser")
 
         response = client.post(
-            f"/request/{receiver.user_sub}",
-            data={"group_id": str(group.group_id)},
+            "/request/join",
+            data={"group_id": str(target_group.group_id)},
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "Request already exists"
+        assert response.json()["detail"] == "User already in a group"
 
-    def test_send_request_returns_404_for_missing_receiver(self, client, group_factory, user_factory):
-        """
-        POST /request/{receiver_sub} should reject requests to missing users.
-        """
-        group = group_factory()
-        user_factory(user_sub="auth0|testuser")
-
-        response = client.post(
-            "/request/auth0|missing",
-            data={"group_id": str(group.group_id)},
-        )
-
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Receiver not found"
-
-    def test_send_request_returns_404_for_missing_group(self, client, user_factory):
-        """
-        POST /request/{receiver_sub} should reject missing or invalid groups.
-        """
-        user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(user_sub="auth0|receiver")
+    def test_join_request_checks_membership_before_group_lookup(
+        self, client, group_factory, user_factory
+    ):
+        current_group = group_factory()
+        user_factory(group=current_group, user_sub="auth0|testuser")
 
         response = client.post(
-            f"/request/{receiver.user_sub}",
+            "/request/join",
             data={"group_id": str(uuid.uuid4())},
         )
 
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Group not found"
+        assert response.status_code == 400
+        assert response.json()["detail"] == "User already in a group"
 
-    def test_send_request_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, group_factory, user_factory
+    def test_join_request_rejects_duplicate_pending_request(
+        self, client, group_factory, user_factory, request_factory
     ):
         """
-        POST /request/{receiver_sub} should not persist a request if commit fails.
+        Duplicate pending join requests for the same user/group are rejected.
         """
         group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
-
-        def fail_commit():
-            raise RuntimeError("commit failed")
-
-        monkeypatch.setattr(db, "commit", fail_commit)
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
 
         response = client.post(
-            f"/request/{receiver.user_sub}",
+            "/request/join",
             data={"group_id": str(group.group_id)},
         )
 
-        assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
-        assert db.query(Request).filter_by(sender_sub=sender.user_sub).first() is None
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Request already exists"
 
-    def test_approve_request_assigns_sender_to_receivers_group(
-        self, client, db, group_factory, user_factory, request_factory
+    def test_group_admin_can_create_invite_request(
+        self, client, set_auth_user, db, group_factory, user_factory
     ):
         """
-        PUT /request/{request_id}/approve should approve and add sender to receiver's group.
+        POST /request/invite should require only target email and infer group_id.
         """
         group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender", group_id=None)
-        request = request_factory(sender=sender, receiver=receiver, group=group)
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(user_sub="auth0|target", email="target@test.com", group_id=None)
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.post(
+            "/request/invite",
+            data={"email": "target@test.com"},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["request_type"] == "invite"
+        assert result["sender_sub"] is None
+        assert result["receiver_sub"] == target.user_sub
+        assert result["created_by_sub"] == group_admin.user_sub
+        assert result["group_id"] == str(group.group_id)
+
+        created = _request(db, result["request_id"])
+        assert created.sender_sub is None
+        assert created.receiver_sub == target.user_sub
+        assert created.group_id == group.group_id
+
+    def test_invite_rejects_duplicate_pending_request(
+        self, client, set_auth_user, group_factory, user_factory, request_factory
+    ):
+        group = group_factory()
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        target = user_factory(
+            user_sub="auth0|target",
+            email="target@test.com",
+            group_id=None,
+        )
+        request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=group_admin.user_sub,
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.post(
+            "/request/invite",
+            data={"email": target.email},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Request already exists"
+
+    def test_invite_rejects_non_admin_creator(
+        self, client, group_factory, user_factory
+    ):
+        """
+        Normal members cannot invite users to a group.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+        user_factory(user_sub="auth0|target", email="target@test.com", group_id=None)
+
+        response = client.post(
+            "/request/invite",
+            data={"email": "target@test.com"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    def test_invite_does_not_reveal_unknown_user_to_non_admin(
+        self, client, group_factory, user_factory
+    ):
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+
+        response = client.post(
+            "/request/invite",
+            data={"email": "unknown@test.com"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    def test_invite_rejects_target_already_in_group(
+        self, client, set_auth_user, group_factory, user_factory
+    ):
+        """
+        Invites are rejected at creation time if the target already has a group.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        user_factory(group=other_group, user_sub="auth0|target", email="target@test.com")
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.post(
+            "/request/invite",
+            data={"email": "target@test.com"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "User already in a group"
+
+    def test_member_can_create_demember_request(
+        self, client, db, group_factory, user_factory
+    ):
+        """
+        POST /request/demember should infer group_id from the current user.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+
+        response = client.post("/request/demember")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["request_type"] == "demember_request"
+        assert result["sender_sub"] == user.user_sub
+        assert "receiver_sub" not in result
+        assert result["group_id"] == str(group.group_id)
+
+        created = _request(db, result["request_id"])
+        assert created.group_id == group.group_id
+
+    def test_demember_rejects_duplicate_pending_request(
+        self, client, group_factory, user_factory, request_factory
+    ):
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+
+        response = client.post("/request/demember")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Request already exists"
+
+    def test_demember_request_rejects_user_without_group(self, client, user_factory):
+        """
+        Users outside a group cannot request de-membering.
+        """
+        user_factory(user_sub="auth0|testuser", group_id=None)
+
+        response = client.post("/request/demember")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "User is not part of a group"
+
+    def test_create_request_rejects_invalid_expiry(
+        self, client, group_factory, user_factory
+    ):
+        """
+        Request expiry is configurable but bounded.
+        """
+        group = group_factory()
+        user_factory(user_sub="auth0|testuser", group_id=None)
+
+        response = client.post(
+            "/request/join",
+            data={"group_id": str(group.group_id), "expires_in_days": "31"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "expires_in_days must be between 1 and 30"
+
+
+class TestRequestListingAPI:
+    def test_received_requests_default_to_pending(
+        self, client, group_factory, user_factory, request_factory
+    ):
+        """
+        GET /request/received should list pending requests received by current user.
+        """
+        group = group_factory(name="Chemistry")
+        receiver = user_factory(group_id=None, user_sub="auth0|testuser")
+        creator = user_factory(group=group, user_sub="auth0|group-admin", email="admin@test.com")
+        pending = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            status="approved",
+            resolved_at=datetime.now(timezone.utc),
+            created_by_sub=creator.user_sub,
+        )
+
+        response = client.get("/request/received")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert len(result) == 1
+        assert result[0]["request_id"] == str(pending.request_id)
+        assert result[0]["group_name"] == "Chemistry"
+        assert result[0]["receiver_sub"] == receiver.user_sub
+        assert "created_by_name" not in result[0]
+        assert "created_by_sub" not in result[0]
+
+    def test_sent_requests_include_sender_and_created_by_requests(
+        self, client, group_factory, user_factory, request_factory
+    ):
+        """
+        GET /request/sent should include user-sent requests and invites the user created.
+        """
+        group = group_factory()
+        user = user_factory(group=group, user_sub="auth0|testuser")
+        target = user_factory(user_sub="auth0|target", group_id=None)
+        join_request = request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        invite = request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=user.user_sub,
+        )
+
+        response = client.get("/request/sent")
+
+        assert response.status_code == 200
+        requests = _requests_by_id(response.json())
+        assert set(requests) == {str(join_request.request_id), str(invite.request_id)}
+
+    def test_request_lists_use_stable_pagination(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Requests with the same time should keep a stable order across pages."""
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        requested_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        request_ids = [
+            uuid.UUID(f"aaaaaaaa-0000-0000-0000-{value:012x}")
+            for value in (3, 1, 2)
+        ]
+        for request_id in request_ids:
+            request_factory(
+                sender=user,
+                receiver=None,
+                group=group_factory(),
+                request_id=request_id,
+                request_type="join_request",
+                requested_at=requested_at,
+            )
+
+        response = client.get("/request/sent?limit=1&offset=1")
+
+        assert response.status_code == 200
+        assert [item["request_id"] for item in response.json()] == [
+            str(uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002"))
+        ]
+
+    def test_request_lists_default_to_25_results(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Request lists should use their smaller default page size."""
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        requested_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        requests = [
+            request_factory(
+                sender=user,
+                receiver=None,
+                group=group_factory(),
+                request_type="join_request",
+                requested_at=requested_at + timedelta(minutes=index),
+            )
+            for index in range(26)
+        ]
+
+        response = client.get("/request/sent")
+
+        assert response.status_code == 200
+        result_ids = {item["request_id"] for item in response.json()}
+        assert len(result_ids) == 25
+        assert str(requests[0].request_id) not in result_ids
+
+    def test_group_request_list_uses_fixed_number_of_queries(
+        self,
+        client,
+        set_auth_user,
+        sql_statements,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """Adding request rows must not add more SQL queries to the list call."""
+        group = group_factory()
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        for index in range(5):
+            invitee = user_factory(
+                user_sub=f"auth0|invitee-{index}",
+                group_id=None,
+            )
+            request_factory(
+                sender=None,
+                receiver=invitee,
+                group=group,
+                request_type="invite",
+                created_by_sub=group_admin.user_sub,
+            )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+        sql_statements.clear()
+
+        response = client.get("/group/requests")
+
+        assert response.status_code == 200
+        assert len(response.json()) == 5
+        assert [
+            statement.lstrip().split(None, 1)[0].upper()
+            for statement in sql_statements
+        ] == ["SELECT", "UPDATE", "SELECT"]
+
+    def test_request_lists_filter_by_status_type_and_recent_days(
+        self, client, group_factory, user_factory, request_factory
+    ):
+        """
+        List endpoints support status, request_type, and recent terminal filters.
+        """
+        group = group_factory()
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        resolver = user_factory(user_sub="auth0|resolver", group_id=None)
+        recent = request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+            status="approved",
+            resolved_at=datetime.now(timezone.utc) - timedelta(days=5),
+            resolved_by_sub=resolver.user_sub,
+        )
+        request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+            status="approved",
+            resolved_at=datetime.now(timezone.utc) - timedelta(days=40),
+        )
+
+        response = client.get(
+            "/request/sent?status=approved&request_type=join_request&recent_days=30"
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert len(result) == 1
+        assert result[0]["request_id"] == str(recent.request_id)
+
+    def test_group_admin_can_list_group_requests(
+        self, client, set_auth_user, group_factory, user_factory, request_factory
+    ):
+        """
+        GET /group/requests returns invites, join requests, and de-member requests for the group.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        invitee = user_factory(user_sub="auth0|invitee", group_id=None)
+        joiner = user_factory(user_sub="auth0|joiner", group_id=None)
+        member = user_factory(group=group, user_sub="auth0|member")
+        invite = request_factory(
+            sender=None,
+            receiver=invitee,
+            group=group,
+            request_type="invite",
+            created_by_sub=group_admin.user_sub,
+        )
+        join_request = request_factory(
+            sender=joiner,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        demember_request = request_factory(
+            sender=member,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.get("/group/requests")
+
+        assert response.status_code == 200
+        requests = _requests_by_id(response.json())
+        assert set(requests) == {
+            str(invite.request_id),
+            str(join_request.request_id),
+            str(demember_request.request_id),
+        }
+        assert requests[str(invite.request_id)]["receiver_sub"] == invitee.user_sub
+        assert requests[str(invite.request_id)]["created_by_sub"] == group_admin.user_sub
+        assert requests[str(join_request.request_id)]["sender_sub"] == joiner.user_sub
+        assert requests[str(demember_request.request_id)]["sender_sub"] == member.user_sub
+
+    def test_group_requests_require_group_admin(self, client, group_factory, user_factory):
+        """
+        Normal members cannot list the group request inbox.
+        """
+        group = group_factory()
+        user_factory(group=group, user_sub="auth0|testuser", role="member")
+
+        response = client.get("/group/requests")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+
+    def test_listing_lazily_expires_pending_requests(
+        self,
+        client,
+        db,
+        sql_statements,
+        group_factory,
+        user_factory,
+        request_factory,
+    ):
+        """
+        Listing requests should expire all matching rows with one UPDATE.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        user = user_factory(user_sub="auth0|testuser", group_id=None)
+        expired_request = request_factory(
+            sender=user,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        other_expired_request = request_factory(
+            sender=user,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+        sql_statements.clear()
+
+        pending_response = client.get("/request/sent")
+
+        assert pending_response.status_code == 200
+        assert pending_response.json() == []
+        assert len(
+            [
+                statement
+                for statement in sql_statements
+                if statement.lstrip().upper().startswith("UPDATE REQUESTS")
+            ]
+        ) == 1
+        db.refresh(expired_request)
+        db.refresh(other_expired_request)
+        assert expired_request.status == "expired"
+        assert expired_request.resolved_at is not None
+        assert expired_request.sender_email_snapshot == user.email
+        assert expired_request.group_name_snapshot == group.name
+        assert other_expired_request.status == "expired"
+
+        expired_response = client.get("/request/sent?status=expired")
+
+        assert expired_response.status_code == 200
+        assert {item["request_id"] for item in expired_response.json()} == {
+            str(expired_request.request_id),
+            str(other_expired_request.request_id),
+        }
+
+
+class TestRequestResolutionAPI:
+    def test_invited_user_can_approve_invite(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Invited users approve invites and join the request group.
+        """
+        group = group_factory()
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        receiver = user_factory(
+            user_sub="auth0|invitee",
+            group_id=None,
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = receiver.role_or_group_updated_at
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        request = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(receiver.user_sub))
 
         response = client.put(f"/request/{request.request_id}/approve")
 
         assert response.status_code == 200
         assert response.json()["message"] == "Request approved successfully"
-        db.refresh(request)
-        db.refresh(sender)
         db.refresh(receiver)
-        assert request.status == "approved"
-        assert sender.group_id == group.group_id
-        assert receiver.group_id == group.group_id
-
-    def test_approve_request_returns_404_for_missing_request(self, client):
-        """
-        PUT /request/{request_id}/approve should return 404 for missing requests.
-        """
-        response = client.put(f"/request/{uuid.uuid4()}/approve")
-
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Request not found"
-
-    def test_approve_request_rejects_processed_request(
-        self, client, group_factory, user_factory, request_factory
-    ):
-        """
-        Processed requests should not be approved again.
-        """
-        group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender")
-        request = request_factory(sender=sender, receiver=receiver, group=group, status="rejected")
-
-        response = client.put(f"/request/{request.request_id}/approve")
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Request already processed"
-
-    def test_approve_request_rejects_receiver_without_group(
-        self, client, group_factory, user_factory, request_factory
-    ):
-        """
-        A receiver without a group should not be able to approve group membership.
-        """
-        group = group_factory()
-        receiver = user_factory(user_sub="auth0|testuser", group_id=None)
-        sender = user_factory(user_sub="auth0|sender", group_id=None)
-        request = request_factory(sender=sender, receiver=receiver, group=group)
-
-        response = client.put(f"/request/{request.request_id}/approve")
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Receiver is not part of a group"
-
-    def test_approve_request_rejects_sender_already_in_group(
-        self, client, group_factory, user_factory, request_factory
-    ):
-        """
-        Users already in a group should not be assigned through a request.
-        """
-        receiver_group = group_factory()
-        sender_group = group_factory()
-        receiver = user_factory(group=receiver_group, user_sub="auth0|testuser")
-        sender = user_factory(group=sender_group, user_sub="auth0|sender")
-        request = request_factory(sender=sender, receiver=receiver, group=receiver_group)
-
-        response = client.put(f"/request/{request.request_id}/approve")
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "User already in a group"
-
-    def test_approve_request_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, group_factory, user_factory, request_factory
-    ):
-        """
-        PUT /request/{request_id}/approve should roll back request/user changes on commit failure.
-        """
-        group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender", group_id=None)
-        request = request_factory(sender=sender, receiver=receiver, group=group)
-
-        def fail_commit():
-            raise RuntimeError("commit failed")
-
-        monkeypatch.setattr(db, "commit", fail_commit)
-
-        response = client.put(f"/request/{request.request_id}/approve")
-
-        assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
         db.refresh(request)
-        db.refresh(sender)
-        assert request.status == "pending"
-        assert sender.group_id is None
+        assert receiver.group_id == group.group_id
+        assert receiver.role_or_group_updated_at != previous_timestamp
+        assert request.status == "approved"
+        assert request.resolved_by_sub == receiver.user_sub
+        assert request.resolved_at is not None
 
-    def test_reject_request_marks_pending_request_rejected(
+    def test_invite_approval_cancels_other_pending_membership_requests(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Accepting an invite cancels the user's other pending invites and join requests.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        receiver = user_factory(user_sub="auth0|invitee", group_id=None)
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        other_creator = user_factory(
+            group=other_group,
+            user_sub="auth0|other-group-admin",
+            role="group_admin",
+        )
+        approved_invite = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        other_invite = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=other_creator.user_sub,
+        )
+        other_join_request = request_factory(
+            sender=receiver,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
+        set_auth_user(make_auth0_payload(receiver.user_sub))
+
+        response = client.put(f"/request/{approved_invite.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(approved_invite)
+        db.refresh(other_invite)
+        db.refresh(other_join_request)
+        assert approved_invite.status == "approved"
+        assert other_invite.status == "cancelled"
+        assert other_invite.resolved_by_sub == receiver.user_sub
+        assert other_invite.resolved_at is not None
+        assert other_join_request.status == "cancelled"
+        assert other_join_request.resolved_by_sub == receiver.user_sub
+        assert other_join_request.resolved_at is not None
+
+    def test_group_admin_can_approve_join_request(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Group admins approve join requests for their own group.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        sender = user_factory(
+            user_sub="auth0|joiner",
+            group_id=None,
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = sender.role_or_group_updated_at
+        request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(sender)
+        db.refresh(request)
+        assert sender.group_id == group.group_id
+        assert sender.role_or_group_updated_at != previous_timestamp
+        assert request.status == "approved"
+        assert request.resolved_by_sub == group_admin.user_sub
+
+    def test_join_approval_cancels_other_pending_membership_requests(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Approving a join request cancels the user's other pending join requests and invites.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        other_creator = user_factory(
+            group=other_group,
+            user_sub="auth0|other-group-admin",
+            role="group_admin",
+        )
+        sender = user_factory(user_sub="auth0|joiner", group_id=None)
+        approved_join_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        other_join_request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=other_group,
+            request_type="join_request",
+        )
+        other_invite = request_factory(
+            sender=None,
+            receiver=sender,
+            group=other_group,
+            request_type="invite",
+            created_by_sub=other_creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{approved_join_request.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(approved_join_request)
+        db.refresh(other_join_request)
+        db.refresh(other_invite)
+        assert approved_join_request.status == "approved"
+        assert other_join_request.status == "cancelled"
+        assert other_join_request.resolved_by_sub == group_admin.user_sub
+        assert other_join_request.resolved_at is not None
+        assert other_invite.status == "cancelled"
+        assert other_invite.resolved_by_sub == group_admin.user_sub
+        assert other_invite.resolved_at is not None
+
+    def test_group_admin_can_approve_demember_request(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Group admins approve de-member requests without changing asset ownership.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        sender = user_factory(
+            group=group,
+            user_sub="auth0|member",
+            role="member",
+            role_or_group_updated_at=old_timestamp,
+        )
+        previous_timestamp = sender.role_or_group_updated_at
+        request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 200
+        db.refresh(sender)
+        db.refresh(request)
+        assert sender.group_id is None
+        assert sender.role == "member"
+        assert sender.role_or_group_updated_at != previous_timestamp
+        assert request.status == "approved"
+
+    def test_group_admin_cannot_approve_another_group_admin_demember_request(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Group admins cannot approve de-member requests for other group admins.
+        """
+        group = group_factory()
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        sender = user_factory(group=group, user_sub="auth0|other-admin", role="group_admin")
+        request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="demember_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Permission denied"
+        db.refresh(sender)
+        db.refresh(request)
+        assert sender.group_id == group.group_id
+        assert sender.role == "group_admin"
+        assert request.status == "pending"
+
+    def test_approval_revalidates_stale_invite(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        If an invited user joins another group before approval, the invite is cancelled.
+        """
+        group = group_factory()
+        other_group = group_factory()
+        receiver = user_factory(user_sub="auth0|invitee", group_id=None)
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        request = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        receiver.group_id = other_group.group_id
+        db.commit()
+        set_auth_user(make_auth0_payload(receiver.user_sub))
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Request is no longer valid"
+        db.refresh(request)
+        assert request.status == "cancelled"
+
+    def test_expired_request_cannot_be_approved(
         self, client, db, group_factory, user_factory, request_factory
     ):
         """
-        PUT /request/{request_id}/reject should mark a pending request as rejected.
+        Approval expires pending requests before applying membership changes.
         """
         group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender")
-        request = request_factory(sender=sender, receiver=receiver, group=group)
+        sender = user_factory(user_sub="auth0|testuser", group_id=None)
+        request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+
+        response = client.put(f"/request/{request.request_id}/approve")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Request expired"
+        db.refresh(request)
+        assert request.status == "expired"
+
+    def test_invited_user_can_reject_invite(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
+    ):
+        """
+        Invited users can reject pending invites.
+        """
+        group = group_factory()
+        receiver = user_factory(user_sub="auth0|invitee", group_id=None)
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        request = request_factory(
+            sender=None,
+            receiver=receiver,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(receiver.user_sub))
 
         response = client.put(f"/request/{request.request_id}/reject")
 
@@ -315,115 +904,75 @@ class TestRequestsAPI:
         assert response.json()["message"] == "Request rejected successfully"
         db.refresh(request)
         assert request.status == "rejected"
+        assert request.resolved_by_sub == receiver.user_sub
 
-    def test_reject_request_returns_404_for_missing_request(self, client):
-        """
-        PUT /request/{request_id}/reject should return 404 for missing requests.
-        """
-        response = client.put(f"/request/{uuid.uuid4()}/reject")
-
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Request not found"
-
-    def test_reject_request_rejects_processed_request(
-        self, client, group_factory, user_factory, request_factory
+    def test_group_admin_can_reject_join_request(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
     ):
         """
-        Processed requests should not be rejected again.
+        Group admins can reject join requests for their group.
         """
         group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender")
-        request = request_factory(sender=sender, receiver=receiver, group=group, status="approved")
+        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        sender = user_factory(user_sub="auth0|joiner", group_id=None)
+        request = request_factory(
+            sender=sender,
+            receiver=None,
+            group=group,
+            request_type="join_request",
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.put(f"/request/{request.request_id}/reject")
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Request already processed"
-
-    def test_reject_request_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, group_factory, user_factory, request_factory
-    ):
-        """
-        PUT /request/{request_id}/reject should roll back status changes on commit failure.
-        """
-        group = group_factory()
-        receiver = user_factory(group=group, user_sub="auth0|testuser")
-        sender = user_factory(user_sub="auth0|sender")
-        request = request_factory(sender=sender, receiver=receiver, group=group)
-
-        def fail_commit():
-            raise RuntimeError("commit failed")
-
-        monkeypatch.setattr(db, "commit", fail_commit)
-
-        response = client.put(f"/request/{request.request_id}/reject")
-
-        assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
+        assert response.status_code == 200
         db.refresh(request)
-        assert request.status == "pending"
+        assert request.status == "rejected"
 
-    def test_delete_request_removes_sender_request(
-        self, client, db, group_factory, user_factory, request_factory
+    def test_request_creator_can_cancel_request(
+        self, client, set_auth_user, db, group_factory, user_factory, request_factory
     ):
         """
-        DELETE /request/{request_id} should let the sender delete their request.
+        DELETE /request/{request_id} cancels a pending request without deleting it.
         """
         group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
-        request = request_factory(sender=sender, receiver=receiver, group=group)
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(user_sub="auth0|target", group_id=None)
+        request = request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(creator.user_sub))
 
         response = client.delete(f"/request/{request.request_id}")
 
         assert response.status_code == 200
-        assert response.json()["message"] == "Request deleted successfully"
-        assert db.query(Request).filter_by(request_id=request.request_id).first() is None
+        assert response.json()["message"] == "Request cancelled successfully"
+        db.refresh(request)
+        assert request.status == "cancelled"
+        assert request.resolved_by_sub == creator.user_sub
 
-    def test_delete_request_returns_404_for_missing_request(self, client):
-        """
-        DELETE /request/{request_id} should return 404 for missing requests.
-        """
-        response = client.delete(f"/request/{uuid.uuid4()}")
-
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Request not found"
-
-    def test_delete_request_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, group_factory, user_factory, request_factory
-    ):
-        """
-        DELETE /request/{request_id} should keep the request if commit fails.
-        """
-        group = group_factory()
-        sender = user_factory(user_sub="auth0|testuser")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
-        request = request_factory(sender=sender, receiver=receiver, group=group)
-
-        def fail_commit():
-            raise RuntimeError("commit failed")
-
-        monkeypatch.setattr(db, "commit", fail_commit)
-
-        response = client.delete(f"/request/{request.request_id}")
-
-        assert response.status_code == 500
-        assert "commit failed" in response.json()["detail"]
-        assert db.query(Request).filter_by(request_id=request.request_id).one()
-
-    def test_delete_request_returns_404_for_non_sender(
+    def test_unauthorized_user_cannot_cancel_request(
         self, client, set_auth_user, group_factory, user_factory, request_factory
     ):
         """
-        Users should not be able to delete requests sent by someone else.
+        Users unrelated to a request cannot cancel it.
         """
         group = group_factory()
-        sender = user_factory(user_sub="auth0|sender")
-        receiver = user_factory(group=group, user_sub="auth0|receiver")
-        other_user = user_factory(user_sub="auth0|other")
-        request = request_factory(sender=sender, receiver=receiver, group=group)
-        set_auth_user(make_auth0_payload(other_user.user_sub))
+        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        target = user_factory(user_sub="auth0|target", group_id=None)
+        other = user_factory(user_sub="auth0|other", group_id=None)
+        request = request_factory(
+            sender=None,
+            receiver=target,
+            group=group,
+            request_type="invite",
+            created_by_sub=creator.user_sub,
+        )
+        set_auth_user(make_auth0_payload(other.user_sub))
 
         response = client.delete(f"/request/{request.request_id}")
 

@@ -12,61 +12,62 @@ from fastapi import (
     Form,
     HTTPException,
     Depends,
+    Query,
     status,
     Response,
 )
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from models import Job, Structure, Tags, User
+from asset_service import (
+    get_asset_or_404,
+    list_user_assets,
+    require_asset_permission,
+    serialize_job,
+    set_asset_tags,
+    soft_delete_asset,
+    update_asset_visibility,
+)
+from permissions import (
+    can_read_asset,
+    can_view_asset_user_owner,
+    can_write_asset,
+)
+from models import Job, Structure
 from dependencies import get_db
 from auth import verify_token
-from utils import serialize_job, get_user_sub
+from user_service import get_user_or_404
+from utils import (
+    DEFAULT_JOB_LIST_LIMIT,
+    MAX_JOB_LIST_LIMIT,
+    commit_or_rollback,
+    get_user_sub,
+)
 from enum_types import CalculationType
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
 CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
-def has_admin_permission(user):
-    return user.get("role") == "admin"
-
-def has_group_admin_permission(db: Session, user, target_user_sub: str):
-    if user.get("role") == "group_admin" and user.get("group_id"):
-        target_user = db.query(User).filter_by(user_sub=target_user_sub).first()
-        return target_user and target_user.group_id == user.get("group_id")
-    return False
-
-def get_job_or_404(db: Session, job_id: str):
-    try:
-        parsed_job_id = uuid.UUID(str(job_id))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-
-    job = db.query(Job).filter_by(job_id=parsed_job_id).first()
-    if not job:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return job
-
 @router.get("/")
 def get_all_jobs(
+    limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Returns all submitted jobs for the currently authenticated user,
-    ordered by submission time (most recent first).
+    List non-deleted jobs directly owned by the authenticated user.
+    This includes co-owned jobs even if the user later leaves the group, but
+    does not include public jobs owned only by the user's current group.
+    Results are ordered by submission time, most recent first.
+    :param limit: Maximum number of jobs to return, up to 100.
+    :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: List of serialized job details.
     """
     user_sub = get_user_sub(current_user)
-    jobs = (
-        db.query(Job)
-        .filter_by(user_sub=user_sub, is_deleted=False)
-        .order_by(Job.submitted_at.desc())
-        .all()
-    )
+    jobs = list_user_assets(db, Job, user_sub, limit=limit, offset=offset)
     return [serialize_job(job) for job in jobs]
 
 
@@ -77,19 +78,20 @@ def get_job_by_id(
     current_user=Depends(verify_token),
 ):
     """
-    Retrieve a job by its ID for the current authenticated user.
+    Retrieve one job when the authenticated user has read access.
+    Allows admins, direct owners, group admins for the job's group_id, and
+    current group members when the job is public. Public group viewers do not
+    receive another user's user_sub.
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: Serialized job details.
     """
-    user_sub = get_user_sub(current_user)
-    job = get_job_or_404(db, job_id)
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
 
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    return serialize_job(job)
+    return serialize_job(job, include_user_sub=can_view_asset_user_owner(user, job))
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -99,26 +101,16 @@ def delete_job(
     current_user=Depends(verify_token),
 ):
     """
-    Soft-delete a job by its ID for the current authenticated user.
+    Soft-delete one job when the authenticated user has delete access.
+    Allows admins, direct owners, and group admins for the job's group_id.
     :param job_id: ID of the job to delete.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
     :return: No content response (204).
     """
-    user_sub = get_user_sub(current_user)
-    job = get_job_or_404(db, job_id)
-
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    job.is_deleted = True
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    soft_delete_asset(db, user, job)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -141,7 +133,9 @@ def create_job(
     db: Session = Depends(get_db),
 ):
     """
-    Create a new job by uploading a file and providing job details.
+    Create a new job by uploading a .xyz file and job metadata.
+    Ownership is derived from the authenticated user's database record. Users in a
+    group always create co-owned jobs with user_sub and group_id set.
     :param tags: List of tags to associate with the job.
     :param file: Upload file containing the job structure (must be .xyz format).
     :param job_id: Unique ID for the job (UUID format).
@@ -158,8 +152,6 @@ def create_job(
     :param db: Database session dependency.
     :return: JSONResponse with job details and status code 201 Created.
     """
-    user_sub = get_user_sub(current_user)
-
     try:
         parsed_job_id = uuid.UUID(str(job_id))
     except ValueError:
@@ -175,6 +167,9 @@ def create_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file format. Only .xyz allowed.",
         )
+
+    user = get_user_or_404(db, get_user_sub(current_user))
+    user_sub = user.user_sub
 
     job_path = os.path.join(JOB_DIR, job_id_str)
     os.makedirs(job_path, exist_ok=True)
@@ -198,42 +193,30 @@ def create_job(
             slurm_id=slurm_id,
             submitted_at=datetime.now(timezone.utc),
             user_sub=user_sub,
+            group_id=user.group_id,
             status="pending",
             is_deleted=False,
             is_uploaded=False,
         )
         db.add(new_job)
 
-        for tag_name in tags or []:
-            tag = db.query(Tags).filter_by(user_sub=user_sub, name=tag_name).one_or_none()
-            if not tag:
-                tag = Tags(user_sub=user_sub, name=tag_name)
-                db.add(tag)
-            new_job.tags.append(tag)
+        set_asset_tags(db, new_job, user_sub, tags or [])
 
-        # link to an existing structure owned by the user
+        # Link to an existing structure the requester can read. Public group
+        # structures are allowed; deleted or inaccessible structures are not.
         if structure_id:
-            try:
-                parsed_structure_id = uuid.UUID(str(structure_id))
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not owned by user",
-                )
-            structure = (
-                db.query(Structure)
-                .filter_by(structure_id=parsed_structure_id, user_sub=user_sub)
-                .first()
+            structure = get_asset_or_404(
+                db,
+                Structure,
+                structure_id,
+                "Structure not found or not accessible",
             )
-            if not structure:
+            if not can_read_asset(user, structure):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not owned by user",
+                    detail="Structure not found or not accessible",
                 )
             new_job.structures.append(structure)
-
-        db.commit()
-        db.refresh(new_job)
 
     except HTTPException:
         db.rollback()
@@ -246,6 +229,13 @@ def create_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create job",
         )
+
+    commit_or_rollback(
+        db,
+        refresh=new_job,
+        error_detail="Failed to create job",
+        on_error=lambda: shutil.rmtree(job_path, ignore_errors=True),
+    )
 
     headers = {"Location": f"/jobs/{job_id_str}"}
     return JSONResponse(
@@ -261,36 +251,22 @@ def update_job_visibility(
     db: Session = Depends(get_db),
 ):
     """
-    Update the visibility of a job by its ID for the current authenticated user.
+    Update public/private visibility for one job.
+    User-only jobs can be changed by the direct owner or an admin. Group-owned
+    or co-owned jobs require an admin or group admin for the job's group_id.
+    Direct user co-owners cannot change group visibility themselves.
     :param job_id: ID of the job to update.
     :param is_public: Boolean indicating whether the job should be public or private.
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = get_job_or_404(db, job_id)
-
-    user_sub = get_user_sub(current_user)
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == user_sub):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-
-    job.is_public = is_public
-    try:
-        db.commit()
-        db.refresh(job)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    job = update_asset_visibility(db, user, job, is_public)
 
     return {
-        "job_id": job.job_id,
+        "job_id": job.id,
         "is_public": job.is_public,
         "message": "Job visibility updated successfully.",
     }
@@ -306,7 +282,8 @@ def update_job(
     db: Session = Depends(get_db),
 ):
     """
-    Update the status of a job by its ID for the current authenticated user.
+    Update a job's execution status or runtime.
+    Allows admins, direct owners, and group admins for the job's group_id.
     :param state: Optional new status for the job (e.g., "pending", "running", "completed", "failed", "cancelled").
     :param runtime: Optional runtime to set for the job (format: "HH:MM:SS").
     :param user_sub: Optional user subscription ID to update the job for a specific user (not typically used).
@@ -315,10 +292,9 @@ def update_job(
     :param db: Database session dependency.
     :return: JSONResponse with updated job details and status code 200 OK.
     """
-    job = get_job_or_404(db, job_id)
-
-    if not (has_admin_permission(current_user) or has_group_admin_permission(db, current_user, job.user_sub) or job.user_sub == get_user_sub(current_user)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_write_asset)
 
     if runtime:
         try:
@@ -372,19 +348,11 @@ def update_job(
                     except subprocess.TimeoutExpired:
                         job.is_uploaded = False
 
-    try:
-        db.commit()
-        db.refresh(job)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Database integrity error"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
-        )
+    commit_or_rollback(
+        db,
+        refresh=job,
+        integrity_error_detail="Database integrity error",
+    )
 
     return {
         "job_id": job_id,
