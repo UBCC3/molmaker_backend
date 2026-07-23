@@ -7,6 +7,7 @@ calculation results.
 ## Documentation
 
 - [Membership request design](docs/membership-requests.md) explains invites, join requests, de-member requests, request expiry, and request history.
+- [Ownership and permissions](docs/ownership-and-permissions.md) explains asset ownership, role permissions, ownership transfers, and deletion behaviour.
 - Swagger UI documents the available API endpoints and their request and response fields. After starting the backend, open
   [http://localhost:8000/docs](http://localhost:8000/docs).
 
