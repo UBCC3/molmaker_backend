@@ -1,4 +1,4 @@
-# Requests Design
+# Membership Requests
 
 This document describes the final backend design for group membership requests.
 
