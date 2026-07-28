@@ -47,7 +47,7 @@ CREATE TABLE public.jobs (
     completed_at timestamp with time zone,
     user_sub text,
     job_name text,
-    slurm_id integer,
+    slurm_id character varying,
     charge integer,
     multiplicity integer,
     job_notes text,
@@ -56,6 +56,12 @@ CREATE TABLE public.jobs (
     is_public boolean DEFAULT false NOT NULL,
     is_uploaded boolean DEFAULT false NOT NULL,
     group_id uuid,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    terminal_status character varying,
+    cancel_requested boolean DEFAULT false NOT NULL,
+    failure_reason character varying,
+    failure_message text,
+    optimization_type character varying,
     CONSTRAINT ck_jobs_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)))
 );
 
@@ -385,6 +391,13 @@ ALTER TABLE ONLY public.users
 --
 
 CREATE INDEX idx_jobs_group_active_submitted ON public.jobs USING btree (group_id, is_deleted, submitted_at DESC);
+
+
+--
+-- Name: idx_jobs_orchestration_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_orchestration_active ON public.jobs USING btree (status, submitted_at, job_id) WHERE (status = ANY (ARRAY['submitting'::text, 'submitted'::text, 'running'::text, 'finalising'::text]));
 
 
 --

@@ -46,3 +46,46 @@ class TestAssetModel:
         index_names = {index.name for index in Request.__table__.indexes}
 
         assert "idx_requests_status_expires_at" in index_names
+
+    def test_job_has_safe_orchestration_defaults(
+        self,
+        user_factory,
+        job_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory()
+
+        assert job.status == "submitting"
+        assert job.attempt_count == 0
+        assert job.cancel_requested is False
+        assert job.terminal_status is None
+        assert job.failure_reason is None
+        assert job.failure_message is None
+        assert job.optimization_type is None
+
+    def test_job_has_partial_active_orchestration_index(self):
+        index = next(
+            index
+            for index in Job.__table__.indexes
+            if index.name == "idx_jobs_orchestration_active"
+        )
+
+        assert tuple(column.name for column in index.columns) == (
+            "status",
+            "submitted_at",
+            "job_id",
+        )
+        predicate = str(index.dialect_options["postgresql"]["where"])
+        for status in ("submitting", "submitted", "running", "finalising"):
+            assert f"'{status}'" in predicate
+        assert "is_deleted" not in predicate
+
+    def test_job_omits_unneeded_orchestration_fields(self):
+        assert {
+            "retry_count",
+            "slurm_state",
+            "slurm_exit_code",
+            "submission_attempted_at",
+            "cancel_requested_at",
+            "artifact_manifest",
+        }.isdisjoint(Job.__table__.columns.keys())

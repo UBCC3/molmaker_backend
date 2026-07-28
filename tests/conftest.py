@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from auth import verify_token
 from database import Base
 from dependencies import get_db
+from enum_types import JobStatus
 from main import create_app
 from models import Group, Job, Request, Structure, Tags, User
 
@@ -229,7 +230,7 @@ def job_factory(db):
             "job_id": uuid.uuid4(),
             "job_name": f"Job {uuid.uuid4().hex[:8]}",
             "filename": "input.xyz",
-            "status": "pending",
+            "status": JobStatus.submitting.value,
             "calculation_type": "energy",
             "method": "hf",
             "basis_set": "sto-3g",
@@ -240,6 +241,8 @@ def job_factory(db):
             "is_deleted": False,
             "is_public": False,
             "is_uploaded": False,
+            "attempt_count": 0,
+            "cancel_requested": False,
         }
         values.update(overrides)
         job = Job(**values)

@@ -139,6 +139,18 @@ class Job(Asset):
         ),
         Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
         Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
+        Index(
+            "idx_jobs_orchestration_active",
+            "status",
+            "submitted_at",
+            "job_id",
+            postgresql_where=text(
+                "status IN ('submitting', 'submitted', 'running', 'finalising')"
+            ),
+            sqlite_where=text(
+                "status IN ('submitting', 'submitted', 'running', 'finalising')"
+            ),
+        ),
     )
 
     job_id = synonym("id")
@@ -156,6 +168,22 @@ class Job(Asset):
     slurm_id = Column(String, nullable=True)
     runtime = Column(Interval, nullable=True)
     is_uploaded = Column(Boolean, nullable=False)
+    attempt_count = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    terminal_status = Column(String, nullable=True)
+    cancel_requested = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    failure_reason = Column(String, nullable=True)
+    failure_message = Column(Text, nullable=True)
+    optimization_type = Column(String, nullable=True)
 
     structures = relationship(
         'Structure',

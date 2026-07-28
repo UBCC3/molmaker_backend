@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class CalculationType(str, Enum):
     energy = "energy"
     geometry = "optimization"
@@ -8,6 +9,27 @@ class CalculationType(str, Enum):
     standard = "standard"
     transition = "transition"
     irc = "irc"
+
+
+class JobStatus(str, Enum):
+    submitting = "submitting"
+    submitted = "submitted"
+    running = "running"
+    finalising = "finalising"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class JobFailureReason(str, Enum):
+    out_of_memory = "out_of_memory"
+    timeout = "timeout"
+    node_failure = "node_failure"
+    submission_failed = "submission_failed"
+    status_check_failed = "status_check_failed"
+    result_upload_failed = "result_upload_failed"
+    cluster_failed = "cluster_failed"
+    unknown = "unknown"
 
 
 class AssetOwnership(str, Enum):

@@ -15,12 +15,19 @@ from conftest import TestingSessionLocal, engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = PROJECT_ROOT / "migrations" / "001_pr14_database_changes.sql"
+ORCHESTRATION_MIGRATION_PATH = (
+    PROJECT_ROOT / "migrations" / "002_jobs_orchestration_redesign.sql"
+)
 LEGACY_SCHEMA_PATH = PROJECT_ROOT / "tests" / "fixtures" / "pre_pr14_schema.sql"
 DUMP_PATH = PROJECT_ROOT / "molmaker.sql"
 
 GROUP_ID = "00000000-0000-0000-0000-000000000001"
 OLD_JOB_ID = "10000000-0000-0000-0000-000000000001"
 NEW_JOB_ID = "10000000-0000-0000-0000-000000000002"
+PENDING_JOB_ID = "10000000-0000-0000-0000-000000000003"
+ACCEPTED_PENDING_JOB_ID = "10000000-0000-0000-0000-000000000004"
+OUT_OF_MEMORY_JOB_ID = "10000000-0000-0000-0000-000000000005"
+TIMEOUT_JOB_ID = "10000000-0000-0000-0000-000000000006"
 OLD_STRUCTURE_ID = "20000000-0000-0000-0000-000000000001"
 NEW_STRUCTURE_ID = "20000000-0000-0000-0000-000000000002"
 OLDEST_REQUEST_ID = "30000000-0000-0000-0000-000000000001"
@@ -360,6 +367,170 @@ def test_combined_migration_can_run_twice(db):
     assert _database_state() == state_after_first_run
 
 
+def test_jobs_orchestration_migration_upgrades_current_schema(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+
+    session = TestingSessionLocal()
+    try:
+        session.execute(
+            text(
+                """
+                INSERT INTO public.jobs (
+                    job_id, filename, status, calculation_type, method,
+                    basis_set, submitted_at, user_sub, slurm_id, is_deleted,
+                    is_public, is_uploaded
+                ) VALUES
+                    (
+                        :pending_id, 'pending.xyz', 'pending', 'energy', 'hf',
+                        'sto-3g', NOW(), 'auth0|owner', NULL, false, false,
+                        false
+                    ),
+                    (
+                        :accepted_id, 'accepted.xyz', 'pending', 'energy',
+                        'hf', 'sto-3g', NOW(), 'auth0|owner', 12345, false,
+                        false, false
+                    ),
+                    (
+                        :oom_id, 'oom.xyz', 'out_of_memory', 'energy', 'hf',
+                        'sto-3g', NOW(), 'auth0|owner', 12346, false, false,
+                        false
+                    ),
+                    (
+                        :timeout_id, 'timeout.xyz', 'timeout', 'energy', 'hf',
+                        'sto-3g', NOW(), 'auth0|owner', 12347, false, false,
+                        false
+                    )
+                """
+            ),
+            {
+                "pending_id": PENDING_JOB_ID,
+                "accepted_id": ACCEPTED_PENDING_JOB_ID,
+                "oom_id": OUT_OF_MEMORY_JOB_ID,
+                "timeout_id": TIMEOUT_JOB_ID,
+            },
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+
+    session = TestingSessionLocal()
+    try:
+        job_columns = _column_names(session, "jobs")
+        assert {
+            "attempt_count",
+            "terminal_status",
+            "cancel_requested",
+            "failure_reason",
+            "failure_message",
+            "optimization_type",
+        } <= job_columns
+        assert {
+            "retry_count",
+            "slurm_state",
+            "slurm_exit_code",
+            "submission_attempted_at",
+            "cancel_requested_at",
+            "artifact_manifest",
+        }.isdisjoint(job_columns)
+
+        slurm_id_type = session.execute(
+            text(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'jobs'
+                  AND column_name = 'slurm_id'
+                """
+            )
+        ).scalar_one()
+        assert slurm_id_type == "character varying"
+
+        migrated_jobs = {
+            row.job_id: row
+            for row in session.execute(
+                text(
+                    """
+                    SELECT
+                        job_id::text AS job_id,
+                        status,
+                        slurm_id,
+                        attempt_count,
+                        cancel_requested,
+                        failure_reason,
+                        completed_at
+                    FROM public.jobs
+                    WHERE job_id IN (
+                        :pending_id,
+                        :accepted_id,
+                        :oom_id,
+                        :timeout_id
+                    )
+                    """
+                ),
+                {
+                    "pending_id": PENDING_JOB_ID,
+                    "accepted_id": ACCEPTED_PENDING_JOB_ID,
+                    "oom_id": OUT_OF_MEMORY_JOB_ID,
+                    "timeout_id": TIMEOUT_JOB_ID,
+                },
+            )
+        }
+        assert migrated_jobs[PENDING_JOB_ID].status == "submitting"
+        assert migrated_jobs[ACCEPTED_PENDING_JOB_ID].status == "submitted"
+        assert migrated_jobs[ACCEPTED_PENDING_JOB_ID].slurm_id == "12345"
+        assert migrated_jobs[OUT_OF_MEMORY_JOB_ID].status == "failed"
+        assert (
+            migrated_jobs[OUT_OF_MEMORY_JOB_ID].failure_reason
+            == "out_of_memory"
+        )
+        assert migrated_jobs[OUT_OF_MEMORY_JOB_ID].completed_at is not None
+        assert migrated_jobs[TIMEOUT_JOB_ID].status == "failed"
+        assert migrated_jobs[TIMEOUT_JOB_ID].failure_reason == "timeout"
+        assert migrated_jobs[TIMEOUT_JOB_ID].completed_at is not None
+        assert all(
+            row.attempt_count == 0
+            and row.cancel_requested is False
+            for row in migrated_jobs.values()
+        )
+
+        index_definition = session.execute(
+            text(
+                """
+                SELECT indexdef
+                FROM pg_indexes
+                WHERE schemaname = 'public'
+                  AND indexname = 'idx_jobs_orchestration_active'
+                """
+            )
+        ).scalar_one()
+        assert "(status, submitted_at, job_id)" in index_definition
+        assert "WHERE" in index_definition
+        assert "submitting" in index_definition
+        assert "submitted" in index_definition
+        assert "running" in index_definition
+        assert "finalising" in index_definition
+        assert "is_deleted" not in index_definition
+    finally:
+        session.close()
+
+
+def test_jobs_orchestration_migration_can_run_twice(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+    state_after_first_run = _database_state()
+
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+
+    assert _database_state() == state_after_first_run
+
+
 def test_migration_does_not_restore_removed_group_ownership(db):
     _reset_public_schema(db)
     _run_sql_file(LEGACY_SCHEMA_PATH)
@@ -458,7 +629,24 @@ def test_molmaker_dump_restores_schema_and_data(db):
             "tags": 11,
         }
 
-        assert "group_id" in _column_names(session, "jobs")
+        job_columns = _column_names(session, "jobs")
+        assert {
+            "group_id",
+            "attempt_count",
+            "terminal_status",
+            "cancel_requested",
+            "failure_reason",
+            "failure_message",
+            "optimization_type",
+        } <= job_columns
+        assert {
+            "retry_count",
+            "slurm_state",
+            "slurm_exit_code",
+            "submission_attempted_at",
+            "cancel_requested_at",
+            "artifact_manifest",
+        }.isdisjoint(job_columns)
         assert {"group_id", "is_public"} <= _column_names(session, "structures")
         assert "role_or_group_updated_at" in _column_names(session, "users")
         assert "member_since" not in _column_names(session, "users")
@@ -474,20 +662,32 @@ def test_molmaker_dump_restores_schema_and_data(db):
         assert session.execute(
             text("SELECT count(*) FROM public.requests WHERE resolved_by_sub IS NULL")
         ).scalar_one() == 3
+        assert session.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM public.jobs
+                WHERE attempt_count = 0
+                  AND cancel_requested = false
+                """
+            )
+        ).scalar_one() == 13
         assert {
             "uq_requests_pending_invite",
             "uq_requests_pending_join",
             "uq_requests_pending_demember",
+            "idx_jobs_orchestration_active",
         } <= _index_names(session)
     finally:
         session.close()
 
 
-def test_migration_is_safe_after_restoring_molmaker_dump(db):
+def test_migrations_are_safe_after_restoring_molmaker_dump(db):
     _restore_dump(db)
     state_before_migration = _database_state()
 
     _run_sql_file(MIGRATION_PATH)
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
 
     assert _database_state() == state_before_migration
 
