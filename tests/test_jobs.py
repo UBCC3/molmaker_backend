@@ -6,26 +6,6 @@ import pytest
 
 from conftest import make_auth0_payload
 from models import Job, Tags
-from asset_service import serialize_structure
-
-
-def _mock_result_upload(monkeypatch, side_effect=None, returncode=0):
-    """
-    Configure the jobs route to use a fake cluster work dir and subprocess runner.
-    """
-    import jobs.routes as jobs_routes
-
-    calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        if side_effect:
-            raise side_effect
-        return SimpleNamespace(returncode=returncode)
-
-    monkeypatch.setattr(jobs_routes, "CLUSTER_WORK_DIR", "/cluster/work")
-    monkeypatch.setattr(jobs_routes.subprocess, "run", fake_run)
-    return calls
 
 
 def _job_form_data(job_id=None, **overrides):
@@ -105,6 +85,67 @@ def test_list_endpoints_reject_limits_over_100(client, path):
     assert response.status_code == 422
 
 
+def test_openapi_documents_job_response_and_metadata_patch(client):
+    """Swagger should expose only job response fields and editable metadata."""
+    schema = client.get("/openapi.json").json()
+    components = schema["components"]["schemas"]
+
+    response_properties = components["JobResponse"]["properties"]
+    assert {
+        "runtime_seconds",
+        "cancel_requested",
+        "failure_reason",
+        "failure_message",
+        "structures",
+    }.issubset(response_properties)
+    assert {
+        "slurm_id",
+        "attempt_count",
+        "terminal_status",
+        "is_uploaded",
+        "is_deleted",
+        "runtime",
+    }.isdisjoint(response_properties)
+
+    response_statuses = components["JobResponseStatus"]["enum"]
+    assert response_statuses == [
+        "submitting",
+        "submitted",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+    ]
+    assert "finalising" not in response_statuses
+
+    structure_properties = components["StructureResponse"]["properties"]
+    assert "location" in structure_properties
+
+    paths = schema["paths"]
+    assert paths["/jobs/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["items"]["$ref"].endswith("/JobResponse")
+    assert paths["/jobs/{job_id}"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"].endswith("/JobResponse")
+    assert paths["/group/jobs"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["items"]["$ref"].endswith("/JobResponse")
+    assert paths["/admin/jobs"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["items"]["$ref"].endswith("/AdminJobResponse")
+    update_body = paths["/jobs/{job_id}"]["patch"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    update_schema_name = update_body["$ref"].rsplit("/", 1)[-1]
+    assert set(components[update_schema_name]["properties"]) == {
+        "job_name",
+        "job_notes",
+        "tags",
+        "replace_tags",
+    }
+
+
 class TestJobsAPI:
     def test_list_jobs_returns_current_users_non_deleted_jobs_newest_first(
         self, client, group_factory, user_factory, job_factory
@@ -147,11 +188,11 @@ class TestJobsAPI:
         ]
         assert [job["job_name"] for job in result] == ["newer", "older"]
 
-    def test_list_jobs_includes_serialized_tags_and_structures(
+    def test_list_and_detail_include_safe_structures(
         self, client, group_factory, user_factory, tag_factory, structure_factory, job_factory
     ):
         """
-        GET /jobs/ should serialize related tags and structures in each job.
+        Lists and detail should include the serialized linked structures.
         """
         group = group_factory()
         user = user_factory(group=group, user_sub="auth0|testuser")
@@ -169,14 +210,24 @@ class TestJobsAPI:
             tags=[tag],
         )
 
-        response = client.get("/jobs/")
+        list_response = client.get("/jobs/")
+        detail_response = client.get(f"/jobs/{job.job_id}")
 
-        assert response.status_code == 200
-        result = response.json()
-        assert len(result) == 1
-        assert result[0]["job_id"] == str(job.job_id)
-        assert result[0]["tags"] == ["baseline"]
-        assert result[0]["structures"] == [serialize_structure(structure, include_tags=False)]
+        assert list_response.status_code == 200
+        listed_jobs = list_response.json()
+        assert len(listed_jobs) == 1
+        assert listed_jobs[0]["job_id"] == str(job.job_id)
+        assert listed_jobs[0]["tags"] == ["baseline"]
+        listed_structure = listed_jobs[0]["structures"][0]
+        assert listed_structure["structure_id"] == str(structure.structure_id)
+        assert listed_structure["location"] == structure.location
+
+        assert detail_response.status_code == 200
+        linked_structure = detail_response.json()["structures"][0]
+        assert linked_structure["structure_id"] == str(structure.structure_id)
+        assert linked_structure["name"] == "Water"
+        assert linked_structure["formula"] == "H2O"
+        assert linked_structure["location"] == structure.location
 
     def test_get_job_by_id_returns_owned_job(self, client, group_factory, user_factory, job_factory):
         """
@@ -193,6 +244,103 @@ class TestJobsAPI:
         assert result["job_id"] == str(job.job_id)
         assert result["job_name"] == "owned job"
         assert result["user_sub"] == user.user_sub
+
+    def test_all_job_reads_use_the_safe_public_contract(
+        self,
+        client,
+        group_factory,
+        user_factory,
+        structure_factory,
+        job_factory,
+    ):
+        """
+        Personal, detail, group, and admin reads must not leak internal job data.
+        """
+        group = group_factory(name="Research")
+        user = user_factory(
+            group=group,
+            user_sub="auth0|testuser",
+            role="admin",
+        )
+        structure = structure_factory(
+            user_sub=user.user_sub,
+            group_id=group.group_id,
+            location="s3://private-bucket/structures/input.xyz",
+        )
+        job = job_factory(
+            user_sub=user.user_sub,
+            group_id=group.group_id,
+            status="finalising",
+            runtime=timedelta(seconds=90),
+            slurm_id="12345",
+            attempt_count=2,
+            terminal_status="completed",
+            cancel_requested=True,
+            is_uploaded=True,
+            structures=[structure],
+        )
+
+        responses = {
+            "personal": client.get("/jobs/"),
+            "detail": client.get(f"/jobs/{job.job_id}"),
+            "group": client.get("/group/jobs"),
+            "admin": client.get("/admin/jobs"),
+        }
+
+        for response in responses.values():
+            assert response.status_code == 200
+
+        payloads = {
+            "personal": responses["personal"].json()[0],
+            "detail": responses["detail"].json(),
+            "group": responses["group"].json()[0],
+            "admin": responses["admin"].json()[0],
+        }
+        internal_fields = {
+            "slurm_id",
+            "attempt_count",
+            "terminal_status",
+            "is_uploaded",
+            "is_deleted",
+            "runtime",
+        }
+        for payload in payloads.values():
+            assert payload["status"] == "running"
+            assert payload["runtime_seconds"] == 90
+            assert payload["cancel_requested"] is True
+            assert internal_fields.isdisjoint(payload)
+            assert payload["failure_reason"] is None
+            assert payload["failure_message"] is None
+            assert payload["structures"][0]["structure_id"] == str(
+                structure.structure_id
+            )
+            assert payload["structures"][0]["location"] == structure.location
+
+    def test_failed_job_returns_user_safe_failure_details(
+        self,
+        client,
+        user_factory,
+        job_factory,
+    ):
+        """Failure reason and message are returned for failed jobs."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            status="failed",
+            failure_reason="timeout",
+            failure_message="The calculation exceeded its time limit.",
+        )
+
+        response = client.get(f"/jobs/{job.job_id}")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["status"] == "failed"
+        assert result["failure_reason"] == "timeout"
+        assert (
+            result["failure_message"]
+            == "The calculation exceeded its time limit."
+        )
 
     def test_get_job_by_id_returns_public_group_job_to_member(
         self, client, set_auth_user, group_factory, user_factory, job_factory
@@ -212,7 +360,7 @@ class TestJobsAPI:
         result = response.json()
         assert result["job_id"] == str(job.job_id)
         assert result["group_id"] == str(group.group_id)
-        assert "user_sub" not in result
+        assert result["user_sub"] is None
 
     def test_get_job_by_id_denies_private_group_job_to_normal_member(
         self, client, set_auth_user, group_factory, user_factory, job_factory
@@ -287,21 +435,35 @@ class TestJobsAPI:
         assert response.json()["detail"] == "Job not found"
 
     @pytest.mark.parametrize(
-        "method, path, data",
+        "method, path, request_kwargs",
         [
-            ("get", "/jobs/not-a-uuid", None),
-            ("delete", "/jobs/not-a-uuid", None),
-            ("patch", "/jobs/not-a-uuid/visibility", {"is_public": "true"}),
-            ("patch", "/jobs/not-a-uuid", {"state": "running"}),
+            ("get", "/jobs/not-a-uuid", {}),
+            ("delete", "/jobs/not-a-uuid", {}),
+            (
+                "patch",
+                "/jobs/not-a-uuid/visibility",
+                {"data": {"is_public": "true"}},
+            ),
+            (
+                "patch",
+                "/jobs/not-a-uuid",
+                {"json": {"job_name": "Updated"}},
+            ),
         ],
     )
-    def test_job_routes_return_404_for_invalid_job_id(self, client, method, path, data):
+    def test_job_routes_return_404_for_invalid_job_id(
+        self,
+        client,
+        method,
+        path,
+        request_kwargs,
+    ):
         """
         Job routes should treat invalid UUIDs as missing jobs instead of crashing.
         """
         request = getattr(client, method)
 
-        response = request(path, data=data) if data is not None else request(path)
+        response = request(path, **request_kwargs)
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
@@ -542,278 +704,373 @@ class TestJobsAPI:
         db.refresh(job)
         assert job.is_public is False
 
-    @pytest.mark.parametrize("state", ["pending", "running", "completed", "failed", "cancelled"])
-    def test_owner_can_update_job_status(
-        self, client, db, group_factory, user_factory, job_factory, state
+    def test_owner_can_update_job_metadata_and_add_tags_by_default(
+        self,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        tag_factory,
+        job_factory,
     ):
         """
-        PATCH /jobs/{job_id} should accept supported status values.
+        PATCH /jobs/{job_id} should update metadata and add normalized tags.
         """
         group = group_factory()
         user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", completed_at=None)
+        old_tag = tag_factory(user_sub=user.user_sub, name="old")
+        reusable_tag = tag_factory(user_sub=user.user_sub, name="reusable")
+        job = job_factory(
+            user_sub=user.user_sub,
+            group_id=group.group_id,
+            job_name="Before",
+            job_notes="Old notes",
+            status="running",
+            runtime=timedelta(seconds=42),
+            slurm_id="12345",
+            tags=[old_tag],
+        )
 
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": state})
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={
+                "job_name": "  After  ",
+                "job_notes": "  New notes  ",
+                "tags": ["Reusable", "NEW", "new", " "],
+            },
+        )
 
         assert response.status_code == 200
-        assert response.json()["job_id"] == str(job.job_id)
-        assert response.json()["status"] == state
+        result = response.json()
+        assert result["job_name"] == "After"
+        assert result["job_notes"] == "New notes"
+        assert sorted(result["tags"]) == ["new", "old", "reusable"]
+        assert result["status"] == "running"
+        assert result["runtime_seconds"] == 42
+        assert "slurm_id" not in result
+
         db.refresh(job)
-        assert job.status == state
+        assert job.job_name == "After"
+        assert job.job_notes == "New notes"
+        assert sorted(tag.name for tag in job.tags) == ["new", "old", "reusable"]
+        assert reusable_tag in job.tags
+        assert job.status == "running"
+        assert job.runtime == timedelta(seconds=42)
+        assert job.slurm_id == "12345"
 
-        if state in {"completed", "failed", "cancelled"}:
-            assert job.completed_at is not None
-        else:
-            assert job.completed_at is None
-
-    def test_update_job_rejects_invalid_status(
-        self, client, db, group_factory, user_factory, job_factory
+    def test_owner_can_replace_all_job_tags(
+        self,
+        client,
+        db,
+        user_factory,
+        tag_factory,
+        job_factory,
     ):
-        """
-        PATCH /jobs/{job_id} should reject unsupported status values.
-        """
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending")
+        """replace_tags removes existing links before attaching the supplied tags."""
+        user = user_factory(user_sub="auth0|testuser")
+        old_tag = tag_factory(user_sub=user.user_sub, name="old")
+        job = job_factory(user_sub=user.user_sub, tags=[old_tag])
 
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "not-a-status"})
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={
+                "tags": ["Replacement"],
+                "replace_tags": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["tags"] == ["replacement"]
+        db.refresh(job)
+        assert [tag.name for tag in job.tags] == ["replacement"]
+
+    def test_owner_can_clear_job_notes_and_tags(
+        self,
+        client,
+        db,
+        user_factory,
+        tag_factory,
+        job_factory,
+    ):
+        """An empty notes string and empty tag list should clear those fields."""
+        user = user_factory(user_sub="auth0|testuser")
+        tag = tag_factory(user_sub=user.user_sub, name="old")
+        job = job_factory(
+            user_sub=user.user_sub,
+            job_notes="Remove me",
+            tags=[tag],
+        )
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={
+                "job_notes": "",
+                "tags": [],
+                "replace_tags": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["job_notes"] is None
+        assert response.json()["tags"] == []
+        db.refresh(job)
+        assert job.job_notes is None
+        assert job.tags == []
+
+    def test_update_job_requires_tags_when_replacement_is_requested(
+        self,
+        client,
+        user_factory,
+        job_factory,
+    ):
+        """replace_tags has no meaning unless a tags list is supplied."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub)
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={"replace_tags": True},
+        )
 
         assert response.status_code == 400
-        assert "Invalid status" in response.json()["detail"]
-        db.refresh(job)
-        assert job.status == "pending"
+        assert response.json()["detail"] == "replace_tags requires tags"
 
-    def test_update_job_rolls_back_when_commit_fails(
-        self, client, db, monkeypatch, group_factory, user_factory, job_factory
+    def test_update_job_rejects_empty_metadata_payload(
+        self,
+        client,
+        user_factory,
+        job_factory,
     ):
-        """
-        PATCH /jobs/{job_id} should roll back status changes if commit fails.
-        """
+        """At least one editable metadata field must be supplied."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub)
+
+        response = client.patch(f"/jobs/{job.job_id}", json={})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "No metadata fields to update"
+
+    @pytest.mark.parametrize(
+        "forbidden_update",
+        [
+            {"status": "completed"},
+            {"runtime_seconds": 1},
+            {"user_sub": "auth0|other"},
+            {"is_public": True},
+            {"is_uploaded": True},
+            {"slurm_id": "999"},
+            {"attempt_count": 0},
+            {"cancel_requested": True},
+        ],
+    )
+    def test_update_job_ignores_non_metadata_fields(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+        forbidden_update,
+    ):
+        """Unknown fields are ignored and cannot mutate internal job state."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            job_name="Unchanged",
+            status="running",
+            runtime=timedelta(seconds=10),
+            slurm_id="123",
+            attempt_count=2,
+        )
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json=forbidden_update,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "No metadata fields to update"
+        db.refresh(job)
+        assert job.job_name == "Unchanged"
+        assert job.status == "running"
+        assert job.runtime == timedelta(seconds=10)
+        assert job.slurm_id == "123"
+        assert job.attempt_count == 2
+
+    def test_update_job_applies_known_fields_and_ignores_unknown_fields(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        """Known metadata is updated while extra orchestration fields are ignored."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            job_name="Before",
+            status="running",
+            slurm_id="123",
+        )
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={
+                "job_name": "After",
+                "status": "completed",
+                "slurm_id": "999",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["job_name"] == "After"
+        assert response.json()["status"] == "running"
+        db.refresh(job)
+        assert job.job_name == "After"
+        assert job.status == "running"
+        assert job.slurm_id == "123"
+
+    def test_update_job_rejects_blank_name(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        """A job name cannot be cleared or replaced with whitespace."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, job_name="Unchanged")
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={"job_name": "   "},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "job_name must not be blank"
+        db.refresh(job)
+        assert job.job_name == "Unchanged"
+
+    def test_group_admin_can_update_same_group_job_metadata(
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        tag_factory,
+        job_factory,
+    ):
+        """A group admin adds their tags without duplicating the owner's names."""
         group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", completed_at=None)
+        group_admin = user_factory(
+            group=group,
+            user_sub="auth0|group-admin",
+            role="group_admin",
+        )
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        owner_tag = tag_factory(user_sub=owner.user_sub, name="important")
+        admin_same_name_tag = tag_factory(
+            user_sub=group_admin.user_sub,
+            name="important",
+        )
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            job_name="Before",
+            tags=[owner_tag],
+        )
+        set_auth_user(make_auth0_payload(group_admin.user_sub))
+
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={
+                "job_name": "After",
+                "tags": ["IMPORTANT", "Review"],
+            },
+        )
+
+        assert response.status_code == 200
+        assert sorted(response.json()["tags"]) == ["important", "review"]
+        db.refresh(job)
+        assert job.job_name == "After"
+        assert {tag.tag_id for tag in job.tags} == {
+            owner_tag.tag_id,
+            db.query(Tags)
+            .filter_by(user_sub=group_admin.user_sub, name="review")
+            .one()
+            .tag_id,
+        }
+        assert admin_same_name_tag not in job.tags
+
+    def test_update_job_rolls_back_metadata_when_commit_fails(
+        self,
+        client,
+        db,
+        monkeypatch,
+        user_factory,
+        tag_factory,
+        job_factory,
+    ):
+        """Metadata and additive tag changes should roll back together on failure."""
+        user = user_factory(user_sub="auth0|testuser")
+        old_tag = tag_factory(user_sub=user.user_sub, name="old")
+        job = job_factory(
+            user_sub=user.user_sub,
+            job_name="Before",
+            tags=[old_tag],
+        )
 
         def fail_commit():
             raise RuntimeError("commit failed")
 
         monkeypatch.setattr(db, "commit", fail_commit)
 
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={"job_name": "After", "tags": ["new"]},
+        )
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Could not save changes"
         db.refresh(job)
-        assert job.status == "pending"
-        assert job.completed_at is None
+        assert job.job_name == "Before"
+        assert [tag.name for tag in job.tags] == ["old"]
 
-    def test_update_job_parses_valid_runtime(
-        self, client, db, group_factory, user_factory, job_factory
-    ):
-        """
-        PATCH /jobs/{job_id} should parse HH:MM:SS runtime values.
-        """
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, runtime=None)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"runtime": "01:02:03"})
-
-        assert response.status_code == 200
-        assert response.json()["runtime"] == "1:02:03"
-        db.refresh(job)
-        assert job.runtime == timedelta(hours=1, minutes=2, seconds=3)
-
-    def test_update_job_rejects_invalid_runtime(
-        self, client, db, group_factory, user_factory, job_factory
-    ):
-        """
-        PATCH /jobs/{job_id} should reject runtime values that are not HH:MM:SS.
-        """
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, runtime=None)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"runtime": "not-a-runtime"})
-
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Invalid runtime format. Use HH:MM:SS."
-        db.refresh(job)
-        assert job.runtime is None
-
-    def test_completed_update_without_cluster_work_dir_does_not_crash(
-        self, client, db, monkeypatch, group_factory, user_factory, job_factory
-    ):
-        """
-        Completed/failed updates should not crash when result upload is not configured.
-        """
-        import jobs.routes as jobs_routes
-
-        monkeypatch.setattr(jobs_routes, "CLUSTER_WORK_DIR", None)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
-
-        assert response.status_code == 200
-        db.refresh(job)
-        assert job.status == "completed"
-        assert job.completed_at is not None
-        assert job.is_uploaded is False
-
-    @pytest.mark.parametrize(
-        "state, expected_success_flag",
-        [
-            ("completed", "true"),
-            ("failed", "false"),
-        ],
-    )
-    def test_completed_or_failed_update_uploads_results_on_success(
+    def test_update_job_denies_unauthorized_user(
         self,
         client,
         db,
-        monkeypatch,
+        set_auth_user,
         group_factory,
         user_factory,
         job_factory,
-        state,
-        expected_success_flag,
     ):
-        """
-        Completed and failed jobs should try result upload and mark success.
-        """
-        calls = _mock_result_upload(monkeypatch, returncode=0)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(
-            user_sub=user.user_sub,
-            status="pending",
-            calculation_type="energy",
-            is_uploaded=False,
-        )
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": state})
-
-        assert response.status_code == 200
-        db.refresh(job)
-        assert job.status == state
-        assert job.completed_at is not None
-        assert job.is_uploaded is True
-        assert len(calls) == 1
-        args, kwargs = calls[0]
-        assert args[0] == [
-            "ssh",
-            "cluster",
-            "python3",
-            "/cluster/work/Cluster-API-QC/src/upload_result.py",
-            str(job.job_id),
-            "energy",
-            expected_success_flag,
-        ]
-        assert kwargs == {
-            "check": True,
-            "capture_output": True,
-            "text": True,
-            "timeout": 120,
-        }
-
-    def test_cancelled_update_does_not_upload_results(
-        self, client, db, monkeypatch, group_factory, user_factory, job_factory
-    ):
-        """
-        Cancelled jobs should set completed_at without attempting result upload.
-        """
-        calls = _mock_result_upload(monkeypatch)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "cancelled"})
-
-        assert response.status_code == 200
-        db.refresh(job)
-        assert job.status == "cancelled"
-        assert job.completed_at is not None
-        assert job.is_uploaded is False
-        assert calls == []
-
-    def test_result_upload_failure_marks_job_not_uploaded(
-        self, client, db, monkeypatch, group_factory, user_factory, job_factory
-    ):
-        """
-        CalledProcessError during result upload should not fail the request.
-        """
-        import jobs.routes as jobs_routes
-
-        side_effect = jobs_routes.subprocess.CalledProcessError(
-            returncode=1,
-            cmd=["ssh", "cluster"],
-        )
-        calls = _mock_result_upload(monkeypatch, side_effect=side_effect)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
-
-        assert response.status_code == 200
-        db.refresh(job)
-        assert job.status == "completed"
-        assert job.completed_at is not None
-        assert job.is_uploaded is False
-        assert len(calls) == 1
-
-    def test_result_upload_timeout_marks_job_not_uploaded(
-        self, client, db, monkeypatch, group_factory, user_factory, job_factory
-    ):
-        """
-        TimeoutExpired during result upload should not fail the request.
-        """
-        import jobs.routes as jobs_routes
-
-        side_effect = jobs_routes.subprocess.TimeoutExpired(
-            cmd=["ssh", "cluster"],
-            timeout=120,
-        )
-        calls = _mock_result_upload(monkeypatch, side_effect=side_effect)
-        group = group_factory()
-        user = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=user.user_sub, status="pending", is_uploaded=False)
-
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
-
-        assert response.status_code == 200
-        db.refresh(job)
-        assert job.status == "completed"
-        assert job.completed_at is not None
-        assert job.is_uploaded is False
-        assert len(calls) == 1
-
-    def test_update_job_denies_unauthorized_user(
-        self, client, db, set_auth_user, group_factory, user_factory, job_factory
-    ):
-        """
-        Normal users should not be able to update another user's job.
-        """
+        """Normal users cannot edit another user's job metadata."""
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
-        job = job_factory(user_sub=owner.user_sub, status="pending")
-        set_auth_user(make_auth0_payload(viewer.user_sub, role=viewer.role, group_id=viewer.group_id))
+        job = job_factory(
+            user_sub=owner.user_sub,
+            job_name="Unchanged",
+        )
+        set_auth_user(make_auth0_payload(viewer.user_sub))
 
-        response = client.patch(f"/jobs/{job.job_id}", data={"state": "completed"})
+        response = client.patch(
+            f"/jobs/{job.job_id}",
+            json={"job_name": "Forbidden"},
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Insufficient permissions"
         db.refresh(job)
-        assert job.status == "pending"
-        assert job.completed_at is None
+        assert job.job_name == "Unchanged"
 
     def test_update_job_returns_404_for_missing_job(self, client):
-        """
-        PATCH /jobs/{job_id} should return 404 when no job exists for the ID.
-        """
-        response = client.patch(f"/jobs/{uuid.uuid4()}", data={"state": "completed"})
+        """PATCH /jobs/{job_id} should return 404 when the job does not exist."""
+        response = client.patch(
+            f"/jobs/{uuid.uuid4()}",
+            json={"job_name": "Missing"},
+        )
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
@@ -864,7 +1121,7 @@ class TestJobsAPI:
         assert result["job_name"] == "Water energy"
         assert result["job_notes"] == "safe upload"
         assert result["filename"] == "input.xyz"
-        assert result["status"] == "pending"
+        assert result["status"] == "submitting"
         assert result["calculation_type"] == "energy"
         assert result["method"] == "b3lyp"
         assert result["basis_set"] == "6-31g"
@@ -874,6 +1131,14 @@ class TestJobsAPI:
         assert result["group_id"] == str(group.group_id)
         assert sorted(result["tags"]) == ["existing", "new"]
         assert result["structures"][0]["structure_id"] == str(structure.structure_id)
+        assert result["structures"][0]["location"] == structure.location
+        assert {
+            "slurm_id",
+            "attempt_count",
+            "terminal_status",
+            "is_uploaded",
+            "is_deleted",
+        }.isdisjoint(result)
 
         saved_file = tmp_path / str(job_id) / "input.xyz"
         assert saved_file.read_bytes() == b"water xyz content"

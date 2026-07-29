@@ -42,6 +42,11 @@ class TestAssetModel:
 
         assert "uq_tags_user_sub_name" in constraint_names
 
+    def test_tag_names_are_normalized_for_case_insensitive_matching(self):
+        tag = Tags(user_sub="auth0|owner", name="  Important  ")
+
+        assert tag.name == "important"
+
     def test_requests_have_expiry_index(self):
         index_names = {index.name for index in Request.__table__.indexes}
 

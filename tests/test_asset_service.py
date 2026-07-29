@@ -68,7 +68,7 @@ class TestSerializeStructure:
         self, user_factory, tag_factory, structure_factory
     ):
         """
-        serialize_structure can omit tags for nested job structure summaries.
+        serialize_structure can omit tags when embedding a structure in a job.
         """
         user = user_factory(user_sub="auth0|testuser")
         tag = tag_factory(user_sub=user.user_sub, name="baseline")
@@ -91,7 +91,7 @@ class TestSerializeStructure:
 
 
 class TestSerializeJob:
-    def test_serializes_job_with_relationships_and_runtime(
+    def test_serializes_job_without_internal_fields(
         self,
         group_factory,
         user_factory,
@@ -100,7 +100,7 @@ class TestSerializeJob:
         tag_factory,
     ):
         """
-        serialize_job should include related structures, tag names, timestamps, and flags.
+        Job responses should expose metadata without orchestration fields.
         """
         job_id = uuid.uuid4()
         submitted_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -133,7 +133,12 @@ class TestSerializeJob:
             group_id=group.group_id,
             slurm_id="12345",
             runtime=timedelta(hours=1, minutes=2, seconds=3),
+            attempt_count=2,
+            terminal_status="completed",
+            cancel_requested=True,
+            optimization_type="ground",
             is_deleted=False,
+            is_uploaded=True,
             is_public=True,
             structures=[structure],
             tags=[first_tag, second_tag],
@@ -155,14 +160,52 @@ class TestSerializeJob:
         assert result["completed_at"] == job.completed_at.isoformat()
         assert result["user_sub"] == "auth0|testuser"
         assert result["group_id"] == str(group.group_id)
-        assert result["slurm_id"] == "12345"
-        assert result["runtime"] == "1:02:03"
-        assert result["is_deleted"] is False
+        assert result["runtime_seconds"] == 3723
+        assert result["cancel_requested"] is True
+        assert result["optimization_type"] == "ground"
         assert result["is_public"] is True
-        assert result["structures"] == [serialize_structure(structure, include_tags=False)]
         assert sorted(result["tags"]) == ["demo", "organic"]
+        assert result["structures"] == [
+            serialize_structure(structure, include_tags=False)
+        ]
+        assert result["structures"][0]["location"] == structure.location
+        assert {
+            "slurm_id",
+            "attempt_count",
+            "terminal_status",
+            "is_uploaded",
+            "is_deleted",
+            "runtime",
+        }.isdisjoint(result)
 
-    def test_serializes_none_optional_job_fields(self, user_factory, job_factory):
+    def test_serializes_linked_structure_location(
+        self,
+        user_factory,
+        job_factory,
+        structure_factory,
+    ):
+        """
+        Job responses should retain the structure location used by the frontend.
+        """
+        user = user_factory(user_sub="auth0|testuser")
+        structure = structure_factory(
+            user_sub=user.user_sub,
+            location="s3://private-bucket/structures/input.xyz",
+        )
+        job = job_factory(user_sub=user.user_sub, structures=[structure])
+
+        result = serialize_job(job)
+
+        assert result["structures"] == [
+            serialize_structure(structure, include_tags=False)
+        ]
+        assert result["structures"][0]["location"] == structure.location
+
+    def test_serializes_none_optional_job_response_fields(
+        self,
+        user_factory,
+        job_factory,
+    ):
         """
         Optional job fields should serialize as None when absent.
         """
@@ -177,13 +220,48 @@ class TestSerializeJob:
         result = serialize_job(job)
 
         assert result["completed_at"] is None
-        assert result["runtime"] is None
-        assert result["slurm_id"] is None
+        assert result["runtime_seconds"] is None
         assert result["group_id"] is None
+        assert result["failure_reason"] is None
+        assert result["failure_message"] is None
+        assert "slurm_id" not in result
+
+    def test_maps_internal_status_and_returns_stored_failure_details(
+        self,
+        user_factory,
+        job_factory,
+    ):
+        """
+        finalising is returned as running, and stored failure details are returned.
+        """
+        user = user_factory(user_sub="auth0|testuser")
+        finalising_job = job_factory(
+            user_sub=user.user_sub,
+            status="finalising",
+        )
+        failed_job = job_factory(
+            user_sub=user.user_sub,
+            status="failed",
+            failure_reason="timeout",
+            failure_message="The calculation exceeded its time limit.",
+        )
+
+        finalising_result = serialize_job(finalising_job)
+        failed_result = serialize_job(failed_job)
+
+        assert finalising_result["status"] == "running"
+        assert finalising_result["failure_reason"] is None
+        assert finalising_result["failure_message"] is None
+        assert failed_result["status"] == "failed"
+        assert failed_result["failure_reason"] == "timeout"
+        assert (
+            failed_result["failure_message"]
+            == "The calculation exceeded its time limit."
+        )
 
     def test_can_omit_job_user_sub(self, user_factory, job_factory):
         """
-        serialize_job can hide direct user ownership when returning public group jobs.
+        Job serializers can hide direct ownership from other group viewers.
         """
         owner = user_factory(user_sub="auth0|owner")
         job = job_factory(user_sub=owner.user_sub)
@@ -421,7 +499,7 @@ def test_set_asset_tags_deduplicates_input_and_existing_links(
         db,
         asset,
         owner.user_sub,
-        [" existing ", "existing", "new", "new", ""],
+        [" EXISTING ", "existing", "New", "new", ""],
     )
     db.commit()
 
@@ -436,3 +514,35 @@ def test_set_asset_tags_deduplicates_input_and_existing_links(
         .filter_by(user_sub=owner.user_sub, name="new")
         .count()
     ) == 1
+
+
+@pytest.mark.parametrize("model,factory_name", ASSET_CASES)
+def test_set_asset_tags_does_not_duplicate_another_users_tag_name(
+    request,
+    db,
+    user_factory,
+    tag_factory,
+    model,
+    factory_name,
+):
+    """
+    An additive update should not attach a second same-named tag owned by a
+    different user.
+    """
+    factory = request.getfixturevalue(factory_name)
+    owner = user_factory(user_sub="auth0|owner")
+    editor = user_factory(user_sub="auth0|editor")
+    owner_tag = tag_factory(user_sub=owner.user_sub, name="important")
+    editor_tag = tag_factory(user_sub=editor.user_sub, name="important")
+    asset = factory(user_sub=owner.user_sub, tags=[owner_tag])
+
+    set_asset_tags(
+        db,
+        asset,
+        editor.user_sub,
+        ["IMPORTANT"],
+    )
+    db.commit()
+
+    assert [tag.tag_id for tag in asset.tags] == [owner_tag.tag_id]
+    assert editor_tag not in asset.tags

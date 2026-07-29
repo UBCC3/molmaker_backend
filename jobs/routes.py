@@ -3,7 +3,7 @@ import uuid
 import shutil
 import subprocess
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import (
     APIRouter,
@@ -11,12 +11,12 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Body,
     Depends,
     Query,
     status,
     Response,
 )
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from asset_service import (
     get_asset_or_404,
@@ -43,12 +43,13 @@ from utils import (
     get_user_sub,
 )
 from enum_types import CalculationType
+from jobs.schemas import JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 JOB_DIR = "./results"
-CLUSTER_WORK_DIR = os.getenv("CLUSTER_WORK_DIR")
 
-@router.get("/")
+
+@router.get("/", response_model=List[JobResponse])
 def get_all_jobs(
     limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
     offset: int = Query(0, ge=0),
@@ -56,42 +57,52 @@ def get_all_jobs(
     current_user=Depends(verify_token),
 ):
     """
-    List non-deleted jobs directly owned by the authenticated user.
+    List all non-deleted jobs directly owned by the user.
+    Results are ordered by submission time, most recent first.
+
     This includes co-owned jobs even if the user later leaves the group, but
     does not include public jobs owned only by the user's current group.
-    Results are ordered by submission time, most recent first.
+    Serialized linked structures are included, while internal orchestration
+    fields are not.
+
     :param limit: Maximum number of jobs to return, up to 100.
     :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: List of serialized job details.
+    :return: List of job responses.
     """
     user_sub = get_user_sub(current_user)
     jobs = list_user_assets(db, Job, user_sub, limit=limit, offset=offset)
     return [serialize_job(job) for job in jobs]
 
 
-@router.get("/{job_id}")
+@router.get("/{job_id}", response_model=JobResponse)
 def get_job_by_id(
     job_id: str,
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Retrieve one job when the authenticated user has read access.
+    Retrieve details for one accessible, non-deleted job.
+
     Allows admins, direct owners, group admins for the job's group_id, and
-    current group members when the job is public. Public group viewers do not
-    receive another user's user_sub.
+    current group members when the job is public. Other group members do not
+    receive another user's user_sub. Linked structures retain their location
+    field, while internal orchestration fields are never returned.
+
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: Serialized job details.
+    :return: Job details.
     """
     job = get_asset_or_404(db, Job, job_id)
     user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_read_asset)
 
-    return serialize_job(job, include_user_sub=can_view_asset_user_owner(user, job))
+    return serialize_job(
+        job,
+        include_user_sub=can_view_asset_user_owner(user, job),
+    )
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -115,8 +126,13 @@ def delete_job(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=JobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_job(
+    response: Response,
     file: UploadFile = File(...),
     job_id: str = Form(...),
     job_name: str = Form(...),
@@ -133,10 +149,11 @@ def create_job(
     db: Session = Depends(get_db),
 ):
     """
-    Create a new job by uploading a .xyz file and job metadata.
+    Create a legacy job record from an uploaded .xyz file and metadata.
+
     Ownership is derived from the authenticated user's database record. Users in a
     group always create co-owned jobs with user_sub and group_id set.
-    :param tags: List of tags to associate with the job.
+    :param tags: Case-insensitive tags to associate with the job.
     :param file: Upload file containing the job structure (must be .xyz format).
     :param job_id: Unique ID for the job (UUID format).
     :param job_name: Name of the job.
@@ -150,7 +167,7 @@ def create_job(
     :param slurm_id: Optional SLURM ID for job tracking.
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
-    :return: JSONResponse with job details and status code 201 Created.
+    :return: Job details with status code 201 Created.
     """
     try:
         parsed_job_id = uuid.UUID(str(job_id))
@@ -237,13 +254,11 @@ def create_job(
         on_error=lambda: shutil.rmtree(job_path, ignore_errors=True),
     )
 
-    headers = {"Location": f"/jobs/{job_id_str}"}
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED, content=serialize_job(new_job), headers=headers
-    )
+    response.headers["Location"] = f"/jobs/{job_id_str}"
+    return serialize_job(new_job)
 
 
-@router.patch("/{job_id}/visibility", status_code=status.HTTP_200_OK)
+@router.patch("/{job_id}/visibility")
 def update_job_visibility(
     job_id: str,
     is_public: bool = Form(...),
@@ -272,81 +287,90 @@ def update_job_visibility(
     }
 
 
-@router.patch("/{job_id}", status_code=status.HTTP_200_OK)
+@router.patch("/{job_id}", response_model=JobResponse)
 def update_job(
     job_id: str,
-    state: Optional[str] = Form(None),
-    runtime: Optional[str] = Form(None),
-    user_sub: Optional[str] = Form(None),
+    job_name: Optional[str] = Body(
+        default=None,
+        description="New display name. Null means no change.",
+    ),
+    job_notes: Optional[str] = Body(
+        default=None,
+        description="New notes. Use an empty string to clear them.",
+    ),
+    tags: Optional[List[str]] = Body(
+        default=None,
+        description=(
+            "Tags to add. When replace_tags is true, this is the complete "
+            "replacement list."
+        ),
+    ),
+    replace_tags: bool = Body(
+        default=False,
+        description=(
+            "Replace all existing tags instead of adding to them. To clear "
+            "all tags, send an empty tags list with this set to true."
+        ),
+    ),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
     """
-    Update a job's execution status or runtime.
+    Update only user-editable metadata for an accessible, non-deleted job.
+
     Allows admins, direct owners, and group admins for the job's group_id.
-    :param state: Optional new status for the job (e.g., "pending", "running", "completed", "failed", "cancelled").
-    :param runtime: Optional runtime to set for the job (format: "HH:MM:SS").
-    :param user_sub: Optional user subscription ID to update the job for a specific user (not typically used).
+    The JSON body may contain job_name, job_notes, tags, and replace_tags.
+    Unknown fields are ignored. Tags are added by default. Set replace_tags to
+    true to remove all current tags before attaching the supplied tags; an
+    empty list then clears all tags. Tag matching is case-insensitive. An empty
+    job_notes string clears the notes. Omitted or null fields are left
+    unchanged. Status, runtime, ownership, visibility, upload state, and Slurm
+    fields cannot be changed here. Use the separate visibility endpoint for
+    public/private changes.
+
     :param job_id: ID of the job to update.
+    :param job_name: Optional replacement display name.
+    :param job_notes: Optional replacement notes; an empty string clears them.
+    :param tags: Optional tags to add, or the replacement list.
+    :param replace_tags: Whether to replace all current tags before adding tags.
     :param current_user: Current user dependency, verified via token.
     :param db: Database session dependency.
-    :return: JSONResponse with updated job details and status code 200 OK.
+    :return: Updated job details.
     """
     job = get_asset_or_404(db, Job, job_id)
     user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_write_asset)
 
-    if runtime:
-        try:
-            h, m, s = map(int, runtime.split(":"))
-            job.runtime = timedelta(hours=h, minutes=m, seconds=s)
-        except ValueError:
+    if replace_tags and tags is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="replace_tags requires tags",
+        )
+
+    if job_name is None and job_notes is None and tags is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No metadata fields to update",
+        )
+
+    if job_name is not None:
+        normalized_job_name = job_name.strip()
+        if not normalized_job_name:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid runtime format. Use HH:MM:SS.",
+                detail="job_name must not be blank",
             )
-
-    if state is not None:
-        allowed = {"pending", "running", "completed", "failed", "cancelled", "out_of_memory", "timeout"}
-        new_status = state.lower()
-        if new_status not in allowed:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status. Allowed values are: {', '.join(allowed)}",
-            )
-        job.status = new_status
-
-        if new_status in {"completed", "failed", "cancelled", "out_of_memory", "timeout"}:
-            job.completed_at = datetime.now(timezone.utc)
-
-            # Attempt result upload for completed/failed jobs
-            if new_status in {"completed", "failed"} and not job.is_uploaded:
-                if not CLUSTER_WORK_DIR:
-                    # Server misconfiguration — do not crash request, just skip upload
-                    job.is_uploaded = False
-                else:
-                    is_success = "true" if new_status == "completed" else "false"
-                    try:
-                        proc = subprocess.run(
-                            [
-                                "ssh",
-                                "cluster",
-                                "python3",
-                                f"{CLUSTER_WORK_DIR}/Cluster-API-QC/src/upload_result.py",
-                                job_id,
-                                str(job.calculation_type),
-                                is_success,
-                            ],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=120,
-                        )
-                        job.is_uploaded = (proc.returncode == 0)
-                    except subprocess.CalledProcessError:
-                        job.is_uploaded = False
-                    except subprocess.TimeoutExpired:
-                        job.is_uploaded = False
+        job.job_name = normalized_job_name
+    if job_notes is not None:
+        job.job_notes = job_notes.strip() or None
+    if tags is not None:
+        set_asset_tags(
+            db,
+            job,
+            user.user_sub,
+            tags,
+            replace=replace_tags,
+        )
 
     commit_or_rollback(
         db,
@@ -354,12 +378,7 @@ def update_job(
         integrity_error_detail="Database integrity error",
     )
 
-    return {
-        "job_id": job_id,
-        "status": job.status,
-        "runtime": (str(job.runtime) if job.runtime is not None else None),
-        "message": "Job updated successfully.",
-    }
+    return serialize_job(job)
 
 
 @router.post("/advanced_analysis")

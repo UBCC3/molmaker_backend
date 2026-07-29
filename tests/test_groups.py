@@ -442,7 +442,12 @@ class TestGroupsAPI:
         assert all("user_sub" in job for job in result)
 
     def test_group_member_only_sees_public_group_jobs(
-        self, client, group_factory, user_factory, job_factory
+        self,
+        client,
+        group_factory,
+        user_factory,
+        tag_factory,
+        job_factory,
     ):
         """
         Normal group members should only see public group jobs.
@@ -460,12 +465,17 @@ class TestGroupsAPI:
             role="member",
             role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
+        group_member_tag = tag_factory(
+            user_sub=group_member.user_sub,
+            name="shared-result",
+        )
         public_job = job_factory(
             user_sub=group_member.user_sub,
             group_id=group.group_id,
             job_name="public",
             is_public=True,
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            tags=[group_member_tag],
         )
         job_factory(
             user_sub=current_user.user_sub,
@@ -482,7 +492,8 @@ class TestGroupsAPI:
         assert [job["job_id"] for job in result] == [str(public_job.job_id)]
         assert result[0]["job_name"] == "public"
         assert result[0]["group_id"] == str(group.group_id)
-        assert "user_sub" not in result[0]
+        assert result[0]["user_sub"] is None
+        assert result[0]["tags"] == ["shared-result"]
 
     def test_group_member_gets_empty_jobs_list_when_no_group_jobs_are_public(
         self, client, group_factory, user_factory, job_factory

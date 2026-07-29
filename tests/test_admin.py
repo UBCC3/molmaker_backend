@@ -259,7 +259,7 @@ class TestAdminAPI:
         user_factory,
         job_factory,
     ):
-        """Owner, group, tag, and structure loading must not query per job."""
+        """Owner, group, tag, and structure loading must not query once per job."""
         group = group_factory()
         user_factory(group=group, user_sub="auth0|testuser", role="admin")
         owner = user_factory(group=group, user_sub="auth0|owner")

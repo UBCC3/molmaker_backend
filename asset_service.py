@@ -12,7 +12,15 @@ from permissions import (
     can_transfer_asset_ownership,
     is_admin,
 )
-from models import Asset, Group, Job, Structure, Tags, User
+from models import (
+    Asset,
+    Group,
+    Job,
+    Structure,
+    Tags,
+    User,
+    normalize_tag_name,
+)
 from utils import (
     DEFAULT_JOB_LIST_LIMIT,
     DEFAULT_STRUCTURE_LIST_LIMIT,
@@ -74,32 +82,56 @@ def serialize_structure(
         "notes": structure.notes,
     }
     if include_tags:
-        result["tags"] = [tag.name for tag in structure.tags]
+        result["tags"] = serialize_tag_names(structure.tags)
     return result
 
 
-def serialize_job(job: Job, include_user_sub: bool = True) -> Dict[str, Any]:
-    return {
+_JOB_RESPONSE_STATUS_BY_INTERNAL_STATUS = {
+    "pending": "submitting",
+    "finalising": "running",
+    "out_of_memory": "failed",
+    "timeout": "failed",
+}
+
+
+def _job_response_status(job: Job) -> str:
+    return _JOB_RESPONSE_STATUS_BY_INTERNAL_STATUS.get(job.status, job.status)
+
+
+def serialize_job(
+    job: Job,
+    include_user_sub: bool = True,
+) -> Dict[str, Any]:
+    """
+    Serialize a job response without internal orchestration fields.
+    """
+    response_status = _job_response_status(job)
+    result = {
         **serialize_asset(job, include_user_sub=include_user_sub),
         "job_name": job.job_name,
         "job_notes": job.job_notes,
         "filename": job.filename,
-        "status": job.status,
+        "status": response_status,
         "calculation_type": job.calculation_type,
         "method": job.method,
         "basis_set": job.basis_set,
         "charge": job.charge,
         "multiplicity": job.multiplicity,
+        "optimization_type": job.optimization_type,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-        "slurm_id": job.slurm_id and str(job.slurm_id),
+        "tags": serialize_tag_names(job.tags),
         "structures": [
             serialize_structure(structure, include_tags=False)
             for structure in job.structures
         ],
-        "tags": [tag.name for tag in job.tags],
-        "runtime": str(job.runtime) if job.runtime else None,
-        "is_deleted": job.is_deleted,
+        "runtime_seconds": (
+            int(job.runtime.total_seconds()) if job.runtime is not None else None
+        ),
+        "cancel_requested": job.cancel_requested,
+        "failure_reason": job.failure_reason,
+        "failure_message": job.failure_message,
     }
+    return result
 
 
 def list_user_assets(
@@ -413,25 +445,25 @@ def set_asset_tags(
 ) -> None:
     """
     Attach tags to an asset using the provided user's tag namespace.
-    Tags are user-scoped, so user_sub determines which tag rows are reused or
-    created. On co-owned assets, a group admin updating tags uses their own tag
-    rows unless the caller passes a different user_sub. If replace is true,
-    every current tag link on the asset is removed before the requested tags
-    are attached, including links to tags owned by other users.
+    Tags are stored in lowercase and user-scoped, so user_sub determines which
+    tag rows are reused or created. Additive updates consider a tag name linked
+    when any user owns a same-named tag on the asset. On co-owned assets, a
+    group admin therefore cannot add a duplicate visible name. If replace is
+    true, every current tag link on the asset is removed before the requested
+    tags are attached, including links to tags owned by other users.
     """
     if replace:
         asset.tags.clear()
 
     requested_tag_names = set()
     for tag_name in tag_names:
-        clean_tag_name = tag_name.strip()
-        if clean_tag_name:
-            requested_tag_names.add(clean_tag_name)
+        normalized_tag_name = normalize_tag_name(tag_name)
+        if normalized_tag_name:
+            requested_tag_names.add(normalized_tag_name)
 
     linked_tag_names = {
-        tag.name
+        normalize_tag_name(tag.name)
         for tag in asset.tags
-        if tag.user_sub == user_sub
     }
     tag_names_to_link = requested_tag_names - linked_tag_names
 
@@ -469,7 +501,10 @@ def set_asset_tags(
             .filter(Tags.user_sub == user_sub, Tags.name.in_(tag_names_to_link))
             .all()
         )
-        reusable_tag_names = {tag.name for tag in reusable_tags}
+        reusable_tag_names = {
+            normalize_tag_name(tag.name)
+            for tag in reusable_tags
+        }
         new_tag_names = tag_names_to_link - reusable_tag_names
 
     for tag in reusable_tags:
@@ -479,3 +514,15 @@ def set_asset_tags(
         tag = Tags(user_sub=user_sub, name=tag_name)
         db.add(tag)
         asset.tags.append(tag)
+
+
+def serialize_tag_names(tags: Iterable[Tags]) -> List[str]:
+    """Return unique, normalized tag names while preserving relationship order."""
+    result = []
+    seen = set()
+    for tag in tags:
+        normalized_name = normalize_tag_name(tag.name)
+        if normalized_name and normalized_name not in seen:
+            seen.add(normalized_name)
+            result.append(normalized_name)
+    return result

@@ -55,6 +55,19 @@ def _structure_upload_files(
     }
 
 
+def test_openapi_documents_structure_tag_update_mode(client):
+    """Swagger should document additive and replacement tag updates."""
+    schema = client.get("/openapi.json").json()
+    request_schema = schema["paths"]["/structures/{structure_id}"]["patch"][
+        "requestBody"
+    ]["content"]["application/x-www-form-urlencoded"]["schema"]
+    schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
+    properties = schema["components"]["schemas"][schema_name]["properties"]
+
+    assert properties["replace_tags"]["default"] is False
+    assert properties["tags"]["default"] == []
+
+
 class TestStructuresAPI:
     def test_list_structures_returns_current_users_non_deleted_structures_newest_first(
         self,
@@ -232,8 +245,8 @@ class TestStructuresAPI:
         group = group_factory()
         current_user = user_factory(group=group, user_sub="auth0|testuser")
         other_user = user_factory(group=group, user_sub="auth0|other")
-        tag_factory(user_sub=current_user.user_sub, name="alpha")
-        tag_factory(user_sub=current_user.user_sub, name="beta")
+        tag_factory(user_sub=current_user.user_sub, name=" Alpha ")
+        tag_factory(user_sub=current_user.user_sub, name="BETA")
         tag_factory(user_sub=other_user.user_sub, name="other")
 
         response = client.get("/structures/tags")
@@ -425,6 +438,7 @@ class TestStructuresAPI:
                 "formula": "CO2",
                 "notes": "after",
                 "tags": ["existing", "new"],
+                "replace_tags": "true",
             },
         )
 
@@ -449,8 +463,79 @@ class TestStructuresAPI:
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
         assert db.query(Tags).filter_by(user_sub="auth0|testuser", name="new").one()
 
+    def test_owner_adds_structure_tags_by_default(
+        self,
+        client,
+        db,
+        user_factory,
+        tag_factory,
+        structure_factory,
+    ):
+        """Supplied structure tags are additive unless replacement is requested."""
+        user = user_factory(user_sub="auth0|testuser")
+        old_tag = tag_factory(user_sub=user.user_sub, name="old")
+        structure = structure_factory(
+            user_sub=user.user_sub,
+            name="Original",
+            formula="H2O",
+            tags=[old_tag],
+        )
+
+        response = client.patch(
+            f"/structures/{structure.structure_id}",
+            data={
+                "name": "Updated",
+                "formula": "CO2",
+                "tags": ["New"],
+            },
+        )
+
+        assert response.status_code == 200
+        assert sorted(response.json()["tags"]) == ["new", "old"]
+        db.refresh(structure)
+        assert sorted(tag.name for tag in structure.tags) == ["new", "old"]
+
+    def test_owner_clears_structure_tags_with_replacement(
+        self,
+        client,
+        db,
+        user_factory,
+        tag_factory,
+        structure_factory,
+    ):
+        """An empty replacement list clears every tag linked to the structure."""
+        user = user_factory(user_sub="auth0|testuser")
+        old_tag = tag_factory(user_sub=user.user_sub, name="old")
+        structure = structure_factory(
+            user_sub=user.user_sub,
+            name="Original",
+            formula="H2O",
+            tags=[old_tag],
+        )
+
+        response = client.patch(
+            f"/structures/{structure.structure_id}",
+            data={
+                "name": "Updated",
+                "formula": "CO2",
+                "replace_tags": "true",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["tags"] == []
+        db.refresh(structure)
+        assert structure.tags == []
+
     def test_group_admin_can_update_group_structure(
-        self, client, db, set_auth_user, group_factory, user_factory, structure_factory
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        tag_factory,
+        structure_factory,
     ):
         """
         Group admins can update structures with their persisted group_id.
@@ -458,11 +543,13 @@ class TestStructuresAPI:
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
         group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        owner_tag = tag_factory(user_sub=owner.user_sub, name="keep")
         structure = structure_factory(
             user_sub=owner.user_sub,
             group_id=group.group_id,
             name="Original",
             formula="H2O",
+            tags=[owner_tag],
         )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
@@ -474,9 +561,11 @@ class TestStructuresAPI:
         assert response.status_code == 200
         assert response.json()["name"] == "Updated"
         assert response.json()["user_sub"] == owner.user_sub
+        assert response.json()["tags"] == ["keep"]
         db.refresh(structure)
         assert structure.name == "Updated"
         assert structure.formula == "CO2"
+        assert structure.tags == [owner_tag]
 
     def test_owner_can_update_user_owned_structure_visibility(
         self, client, db, user_factory, structure_factory

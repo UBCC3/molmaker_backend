@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 from fastapi import (
     APIRouter,
     Form,
@@ -13,6 +13,7 @@ from dependencies import get_db
 from auth import verify_token
 
 from asset_service import list_all_jobs_with_metadata
+from jobs.schemas import AdminJobResponse
 from group_service import (
     create_group as create_group_record,
     get_group_or_404,
@@ -36,7 +37,7 @@ from utils import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-@router.get("/jobs")
+@router.get("/jobs", response_model=List[AdminJobResponse])
 def get_all_jobs(
     limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
     offset: int = Query(0, ge=0),
@@ -44,14 +45,19 @@ def get_all_jobs(
     current_user=Depends(verify_token),
 ):
     """
-    List all non-deleted jobs for all users, ordered by submission time - most recent first.
-    Job group metadata comes from the job's persisted group_id, not from the
-    owner's current group membership.
+    List all non-deleted jobs for all users, newest first.
+
+    Each response includes the owning user's email and group name, when
+    applicable, to help administrators identify job ownership. Job group
+    information comes from the job's persisted group_id, not from the owner's
+    current group membership. Serialized linked structures are included, but
+    internal orchestration fields are not returned.
+
     :param limit: Maximum number of jobs to return, up to 100.
     :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: List of serialized job details.
+    :return: List of job responses including user and group ownership details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):

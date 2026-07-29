@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
@@ -30,6 +30,7 @@ from asset_service import (
     serialize_structure,
     transfer_asset_ownership,
 )
+from jobs.schemas import JobResponse
 from models import Job, Structure
 from user_service import get_user_or_404, serialize_user_profile
 from utils import (
@@ -46,7 +47,7 @@ from utils import (
 
 router = APIRouter(prefix="/group", tags=["group"])
 
-@router.get("/jobs")
+@router.get("/jobs", response_model=List[JobResponse])
 def get_all_jobs(
     limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
     offset: int = Query(0, ge=0),
@@ -54,12 +55,15 @@ def get_all_jobs(
     current_user=Depends(verify_token),
 ):
     """
-    List non-deleted jobs owned by the authenticated user's current group.
+    List all non-deleted jobs owned by the user's current group, newest first.
+
     Group admins and admins see all group jobs with user ownership metadata.
     Normal members see only public group jobs; other members' user_sub values
     are hidden, while group_id remains visible. Normal members do not receive
     private group jobs from this endpoint even when they are the direct user
-    owner; use GET /jobs/ for the authenticated user's own jobs.
+    owner; use GET /jobs/ for the authenticated user's own jobs. Serialized
+    linked structures are included while internal orchestration fields are not.
+
     :param limit: Maximum number of jobs to return, up to 100.
     :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
@@ -76,7 +80,8 @@ def get_all_jobs(
         offset=offset,
     )
 
-@router.patch("/jobs/{job_id}")
+
+@router.patch("/jobs/{job_id}", response_model=JobResponse)
 def update_job_ownership(
     job_id: str,
     ownership: AssetOwnership = Form(...),
@@ -103,7 +108,7 @@ def update_job_ownership(
         and rejected for user mode.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: Serialized job details with updated ownership.
+    :return: Job details with updated ownership.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     job = get_asset_or_404(db, Job, job_id)

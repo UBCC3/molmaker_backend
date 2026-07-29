@@ -5,6 +5,7 @@ from asset_service import (
     get_asset_or_404,
     list_user_assets,
     require_asset_permission,
+    serialize_tag_names,
     serialize_structure,
     set_asset_tags,
     soft_delete_asset,
@@ -140,17 +141,17 @@ def get_user_tags(
     db: Session = Depends(get_db)
 ):
     """
-    Get all tags associated with a user.
+    Get the authenticated user's normalized, case-insensitive tag names.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
-    :return: List of tags associated with the structure.
+    :return: List of tag names in their canonical lowercase form.
     """
     try:
         user_id = get_user_sub(user)
         tags = (db.query(Tags)
                 .filter(Tags.user_sub == user_id)
                 .all())
-        return [t.name for t in tags]
+        return serialize_tag_names(tags)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -248,13 +249,18 @@ def update_structure(
     formula: str = Form(...),
     notes: str = Form(None),
     tags: List[str] = Form([]),
+    replace_tags: bool = Form(False),
     user=Depends(verify_token),
     db: Session = Depends(get_db)
 ):
     """
     Update an existing structure when the authenticated user has write access.
     Allows admins, direct owners, and group admins for the structure's group_id.
-    :param tags: List of tags to associate with the structure.
+    Tags are added by default. Set replace_tags to true to remove all current
+    tags before attaching the supplied tags. Sending no tags with replace_tags
+    set to true clears all tags.
+    :param tags: Optional case-insensitive tags to add or use as replacements.
+    :param replace_tags: Whether to replace all current tags before adding tags.
     :param structure_id: ID of the structure to update.
     :param name: New name for the structure.
     :param formula: Chemical formula of the structure.
@@ -277,7 +283,7 @@ def update_structure(
             structure,
             db_user.user_sub,
             tags,
-            replace=True,
+            replace=replace_tags,
         )
 
         commit_or_rollback(
@@ -333,7 +339,7 @@ def create_and_upload_structure(
     group always create co-owned structures with user_sub and group_id set.
     :param formula: Chemical formula of the structure.
     :param image: UploadFile containing the structure image.
-    :param tags: List of tags to associate with the structure.
+    :param tags: Case-insensitive tags to associate with the structure.
     :param notes: Optional notes for the structure.
     :param name: Name of the structure.
     :param file: File containing the structure data.

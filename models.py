@@ -15,7 +15,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import declared_attr, relationship, synonym
+from sqlalchemy.orm import declared_attr, relationship, synonym, validates
 
 from database import Base
 import uuid
@@ -72,6 +72,11 @@ jobs_tags = Table(
         primary_key=True
     ),
 )
+
+
+def normalize_tag_name(name: str) -> str:
+    """Return the canonical, case-insensitive form stored for a tag name."""
+    return name.strip().casefold()
 
 
 class Asset(Base):
@@ -234,6 +239,13 @@ class Tags(Base):
     tag_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_sub = Column(String, nullable=False)
     name = Column(String, nullable=False)
+
+    @validates("name")
+    def validate_name(self, _key, value):
+        normalized_name = normalize_tag_name(value)
+        if not normalized_name:
+            raise ValueError("Tag name must not be blank")
+        return normalized_name
 
     jobs = relationship(
         'Job',
