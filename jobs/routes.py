@@ -132,7 +132,6 @@ def delete_job(
     status_code=status.HTTP_201_CREATED,
 )
 def create_job(
-    response: Response,
     file: UploadFile = File(...),
     job_id: str = Form(...),
     job_name: str = Form(...),
@@ -254,7 +253,6 @@ def create_job(
         on_error=lambda: shutil.rmtree(job_path, ignore_errors=True),
     )
 
-    response.headers["Location"] = f"/jobs/{job_id_str}"
     return serialize_job(new_job)
 
 

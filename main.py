@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
+from calculation.routes import router as calculation_router
 from jobs.routes import router as jobs_router
 from structures.routes import router as structures_router
 from enums.routes import router as enums_router
@@ -24,6 +25,7 @@ def create_app(create_tables: bool = False) -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(calculation_router)
     app.include_router(jobs_router)
     app.include_router(structures_router)
     app.include_router(enums_router)

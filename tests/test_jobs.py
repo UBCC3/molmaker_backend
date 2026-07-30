@@ -1115,7 +1115,6 @@ class TestJobsAPI:
         )
 
         assert response.status_code == 201
-        assert response.headers["location"] == f"/jobs/{job_id}"
         result = response.json()
         assert result["job_id"] == str(job_id)
         assert result["job_name"] == "Water energy"
