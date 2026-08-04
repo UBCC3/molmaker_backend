@@ -104,3 +104,13 @@ def test_initial_outage_backoff_cannot_exceed_cap(monkeypatch):
         ),
     ):
         OrchestrationSettings.from_env()
+
+
+def test_status_batch_size_cannot_exceed_dispatch_limit(monkeypatch):
+    monkeypatch.setenv("STATUS_BATCH_SIZE", "1001")
+
+    with pytest.raises(
+        ValueError,
+        match="STATUS_BATCH_SIZE must not exceed 1000",
+    ):
+        OrchestrationSettings.from_env()

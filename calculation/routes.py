@@ -40,7 +40,7 @@ def submit_custom_calculation(
     method: str = Form(...),
     basis_set: str = Form(...),
     charge: int = Form(...),
-    multiplicity: int = Form(..., ge=1),
+    multiplicity: int = Form(..., ge=1, le=6),
     optimization_type: Optional[Literal["ground", "ts"]] = Form(None),
     keywords: Optional[UploadFile] = File(None),
     job_name: str = Form(...),
@@ -63,7 +63,7 @@ def submit_custom_calculation(
     :param method: Computational method.
     :param basis_set: Basis set.
     :param charge: Molecule charge.
-    :param multiplicity: Molecule multiplicity.
+    :param multiplicity: Molecule multiplicity from 1 to 6.
     :param optimization_type: Ground-state or transition-state mode.
     :param keywords: Additional calculation settings in JSON format.
     :param job_name: Display name for the job.
@@ -110,7 +110,7 @@ def submit_standard_analysis(
     file: Optional[UploadFile] = File(None),
     structure_id: Optional[str] = Form(None),
     charge: int = Form(...),
-    multiplicity: int = Form(..., ge=1),
+    multiplicity: int = Form(..., ge=1, le=6),
     optimization_type: Literal["ground", "ts"] = Form("ground"),
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
@@ -128,7 +128,7 @@ def submit_standard_analysis(
     :param file: Molecule in XYZ format.
     :param structure_id: ID of a stored molecule.
     :param charge: Molecule charge.
-    :param multiplicity: Molecule multiplicity.
+    :param multiplicity: Molecule multiplicity from 1 to 6.
     :param optimization_type: Ground-state or transition-state optimization.
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.

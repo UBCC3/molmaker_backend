@@ -77,6 +77,30 @@ def test_openapi_documents_durable_calculation_submission_contract(client):
         )
 
 
+@pytest.mark.parametrize(
+    "path,data",
+    [
+        ("/calculation/custom", _custom_data(multiplicity="7")),
+        (
+            "/calculation/workflow/standard_analysis",
+            _standard_data(multiplicity="7"),
+        ),
+    ],
+)
+def test_calculation_endpoints_reject_unsupported_multiplicity(
+    client,
+    path,
+    data,
+):
+    response = client.post(
+        path,
+        data=data,
+        files={"file": ("input.xyz", b"xyz", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 422
+
+
 def test_custom_submission_persists_and_stages_without_external_orchestration(
     client,
     db,

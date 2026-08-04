@@ -22,6 +22,8 @@ SETTING_DEFAULTS = {
     "DATABASE_STATEMENT_TIMEOUT_SECONDS": 30,
 }
 
+MAX_STATUS_BATCH_SIZE = 1_000
+
 
 def _positive_integer_from_env(name: str) -> int:
     raw_value = os.getenv(name, str(SETTING_DEFAULTS[name]))
@@ -93,5 +95,9 @@ class OrchestrationSettings:
             raise ValueError(
                 "RECONCILER_OUTAGE_INITIAL_BACKOFF_SECONDS must be less than "
                 "or equal to RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS"
+            )
+        if settings.status_batch_size > MAX_STATUS_BATCH_SIZE:
+            raise ValueError(
+                f"STATUS_BATCH_SIZE must not exceed {MAX_STATUS_BATCH_SIZE}"
             )
         return settings
