@@ -29,7 +29,11 @@ RUN_OPTIONS = {
 
 @pytest.fixture
 def client():
-    return ClusterDispatchClient(WORK_DIR, timeout_seconds=37)
+    return ClusterDispatchClient(
+        WORK_DIR,
+        timeout_seconds=37,
+        transfer_timeout_seconds=41,
+    )
 
 
 @pytest.fixture
@@ -74,11 +78,77 @@ def ssh_command(remote_command):
 def test_client_reads_cluster_settings(monkeypatch):
     monkeypatch.setenv("CLUSTER_WORK_DIR", "/remote/molmaker")
     monkeypatch.setenv("SLURM_COMMAND_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("STORAGE_OPERATION_TIMEOUT_SECONDS", "46")
 
     client = ClusterDispatchClient.from_env()
 
     assert client.cluster_work_dir == PurePosixPath("/remote/molmaker")
     assert client.timeout_seconds == 45
+    assert client.transfer_timeout_seconds == 46
+
+
+def test_stage_job_inputs_is_repeat_safe(client, run_dispatch, tmp_path):
+    job_directory = tmp_path / str(JOB_ID)
+    job_directory.mkdir()
+    (job_directory / "input.xyz").write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    calls = run_dispatch()
+
+    client.stage_job_inputs(JOB_ID, job_directory)
+    client.stage_job_inputs(JOB_ID, job_directory)
+
+    expected_call = (
+        [
+            "scp",
+            "-r",
+            str(job_directory),
+            "cluster:/home/test/molmaker/jobs/",
+        ],
+        {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": 41,
+        },
+    )
+    assert calls == [expected_call, expected_call]
+
+
+def test_stage_job_inputs_requires_the_expected_input_file(
+    client,
+    run_dispatch,
+    tmp_path,
+):
+    job_directory = tmp_path / str(JOB_ID)
+    job_directory.mkdir()
+    calls = run_dispatch()
+
+    with pytest.raises(JobDispatchError, match="input file is missing"):
+        client.stage_job_inputs(JOB_ID, job_directory)
+
+    assert calls == []
+
+
+def test_stage_job_inputs_hides_transfer_errors(client, run_dispatch, tmp_path):
+    job_directory = tmp_path / str(JOB_ID)
+    job_directory.mkdir()
+    (job_directory / "input.xyz").write_text("xyz", encoding="utf-8")
+    secret = "remote error containing a secret"
+    run_dispatch(stderr=secret, returncode=1)
+
+    with pytest.raises(ClusterServiceError) as caught:
+        client.stage_job_inputs(JOB_ID, job_directory)
+
+    assert secret not in str(caught.value)
+
+
+def test_stage_job_inputs_reports_a_transfer_timeout(client, run_dispatch, tmp_path):
+    job_directory = tmp_path / str(JOB_ID)
+    job_directory.mkdir()
+    (job_directory / "input.xyz").write_text("xyz", encoding="utf-8")
+    run_dispatch(error=subprocess.TimeoutExpired(["scp"], timeout=41))
+
+    with pytest.raises(ClusterServiceError, match="transfer timed out"):
+        client.stage_job_inputs(JOB_ID, job_directory)
 
 
 def test_submit_custom_job_builds_one_safely_quoted_command(client, run_dispatch):

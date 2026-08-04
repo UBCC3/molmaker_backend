@@ -7,7 +7,7 @@ import os
 import shlex
 import subprocess
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal
 from uuid import UUID
 
@@ -88,20 +88,66 @@ class ClusterDispatchClient:
 
     cluster_work_dir: PurePosixPath
     timeout_seconds: int
+    transfer_timeout_seconds: int
 
     @classmethod
-    def from_env(cls) -> "ClusterDispatchClient":
+    def from_env(
+        cls,
+        settings: OrchestrationSettings | None = None,
+    ) -> "ClusterDispatchClient":
         cluster_work_dir = os.getenv("CLUSTER_WORK_DIR")
         if not cluster_work_dir:
             raise ValueError("CLUSTER_WORK_DIR must be configured")
-        timeout = OrchestrationSettings.from_env().slurm_command_timeout_seconds
-        return cls(PurePosixPath(cluster_work_dir), timeout)
+        settings = settings or OrchestrationSettings.from_env()
+        return cls(
+            PurePosixPath(cluster_work_dir),
+            settings.slurm_command_timeout_seconds,
+            settings.storage_operation_timeout_seconds,
+        )
 
     def job_directory(self, job_id: UUID | str) -> PurePosixPath:
         return self.cluster_work_dir / "jobs" / _job_id(job_id)
 
     def upload_manifest_path(self, job_id: UUID | str) -> PurePosixPath:
         return self.job_directory(job_id) / "upload-urls.json"
+
+    def stage_job_inputs(
+        self,
+        job_id: UUID | str,
+        local_job_directory: Path,
+    ) -> None:
+        """Copy one job directory to its deterministic Alliance location."""
+
+        job_id = _job_id(job_id)
+        local_job_directory = Path(local_job_directory)
+        if (
+            local_job_directory.name != job_id
+            or not (local_job_directory / "input.xyz").is_file()
+        ):
+            raise JobDispatchError("Calculation input file is missing")
+
+        try:
+            completed = subprocess.run(
+                [
+                    "scp",
+                    "-r",
+                    str(local_job_directory),
+                    f"{SSH_HOST}:{self.cluster_work_dir}/jobs/",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.transfer_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            raise ClusterServiceError("Cluster input transfer timed out") from None
+        except OSError:
+            raise ClusterServiceError(
+                "Cluster input transfer could not start"
+            ) from None
+
+        if completed.returncode:
+            raise ClusterServiceError("Cluster input transfer failed")
 
     def submit_job(
         self,
