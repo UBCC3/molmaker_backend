@@ -48,7 +48,7 @@ EXPECTED_ACTIVE_STATES = {
 EXPECTED_FAILURE_REASONS = {
     "BOOT_FAIL": JobFailureReason.cluster_failed,
     "DEADLINE": JobFailureReason.cluster_failed,
-    "FAILED": JobFailureReason.cluster_failed,
+    "FAILED": JobFailureReason.calculation_failed,
     "LAUNCH_FAILED": JobFailureReason.cluster_failed,
     "NODE_FAIL": JobFailureReason.node_failure,
     "OUT_OF_MEMORY": JobFailureReason.out_of_memory,

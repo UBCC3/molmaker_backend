@@ -151,6 +151,69 @@ def test_stage_job_inputs_reports_a_transfer_timeout(client, run_dispatch, tmp_p
         client.stage_job_inputs(JOB_ID, job_directory)
 
 
+def test_stage_upload_manifest_uses_the_exact_remote_job_path(
+    client,
+    run_dispatch,
+    tmp_path,
+):
+    manifest = tmp_path / "upload-urls.json"
+    manifest.write_text('{"zip":"signed-url"}', encoding="utf-8")
+    calls = run_dispatch()
+
+    client.stage_upload_manifest(JOB_ID, manifest)
+
+    assert calls == [
+        (
+            [
+                "scp",
+                str(manifest),
+                "cluster:/home/test/molmaker/jobs/"
+                "11111111-1111-4111-8111-111111111111/upload-urls.json",
+            ],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": 41,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("filename", ["wrong-name.json", "upload-urls.json"])
+def test_stage_upload_manifest_requires_the_expected_local_file(
+    client,
+    run_dispatch,
+    tmp_path,
+    filename,
+):
+    manifest = tmp_path / filename
+    if filename != "upload-urls.json":
+        manifest.write_text("{}", encoding="utf-8")
+    calls = run_dispatch()
+
+    with pytest.raises(ClusterServiceError, match="manifest is unavailable"):
+        client.stage_upload_manifest(JOB_ID, manifest)
+
+    assert calls == []
+
+
+def test_stage_upload_manifest_hides_transfer_errors(
+    client,
+    run_dispatch,
+    tmp_path,
+):
+    manifest = tmp_path / "upload-urls.json"
+    secret = "https://storage.example/?X-Amz-Signature=secret"
+    manifest.write_text(json.dumps({"zip": secret}), encoding="utf-8")
+    run_dispatch(stderr=secret, returncode=1)
+
+    with pytest.raises(ClusterServiceError) as caught:
+        client.stage_upload_manifest(JOB_ID, manifest)
+
+    assert secret not in str(caught.value)
+
+
 def test_submit_custom_job_builds_one_safely_quoted_command(client, run_dispatch):
     calls = run_dispatch(stdout="12345\n")
 
@@ -318,6 +381,30 @@ def test_upload_artifacts_uses_the_job_manifest(client, run_dispatch):
                 "11111111-1111-4111-8111-111111111111 frequency completed "
                 "/home/test/molmaker/jobs/"
                 "11111111-1111-4111-8111-111111111111/upload-urls.json"
+            ),
+            RUN_OPTIONS,
+        )
+    ]
+
+
+def test_upload_artifacts_can_allow_a_missing_error_file(client, run_dispatch):
+    calls = run_dispatch(stdout=f'{{"job_id":"{JOB_ID}","uploaded":true}}')
+
+    client.upload_artifacts(
+        job_id=JOB_ID,
+        calculation_type=CalculationType.frequency,
+        terminal_status=JobStatus.failed,
+        allow_missing_error=True,
+    )
+
+    assert calls == [
+        (
+            ssh_command(
+                "python3 /home/test/molmaker/dispatch.py upload-artifacts "
+                "11111111-1111-4111-8111-111111111111 frequency failed "
+                "/home/test/molmaker/jobs/"
+                "11111111-1111-4111-8111-111111111111/upload-urls.json "
+                "--allow-missing-error"
             ),
             RUN_OPTIONS,
         )

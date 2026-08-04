@@ -24,6 +24,7 @@ def test_job_status_values_match_the_orchestration_contract():
 
 def test_job_failure_reason_values_are_separate_from_statuses():
     assert {reason.value for reason in JobFailureReason} == {
+        "calculation_failed",
         "out_of_memory",
         "timeout",
         "node_failure",

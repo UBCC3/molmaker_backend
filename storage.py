@@ -3,21 +3,47 @@ import sys
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
+
+from enum_types import JobFailureReason
 
 BUCKET_NAME: str = "ubchemica-bucket-1"
 REGION: str = "ca-central-1"
 BUCKET_ROOT_DIR: str = "ubchemica"
 
-def generate_presigned_put_url(key: str):
+CALCULATION_ARTIFACT_FILENAMES = {
+    "energy": {"mol": "input.xyz"},
+    "frequency": {"vib": "vib.xyz", "jdx": "ir.jdx"},
+    "orbitals": {"esp": "esp.cube", "molden": "orbitals.molden"},
+    "optimization": {"trajectory": "trajectory.xyz", "opt": "opt.xyz"},
+    "transition": {"trajectory": "trajectory.xyz", "opt": "opt.xyz"},
+    "irc": {"trajectory": "trajectory.xyz", "opt": "opt.xyz"},
+    "standard": {
+        "trajectory": "trajectory.xyz",
+        "opt": "opt.xyz",
+        "esp": "esp.cube",
+        "molden": "orbitals.molden",
+        "vib": "vib.xyz",
+        "jdx": "ir.jdx",
+    },
+}
+
+
+class StorageServiceError(RuntimeError):
+    """An artifact storage operation could not be completed."""
+
+
+def generate_presigned_put_url(key: str) -> str:
     """
-    Returns a presigned URL which allows anyone (with that URL) to PUT a file into s3://bucket/key.
+    Return a presigned URL for uploading one object.
+
     - expires_in: time in seconds that the URL remains valid.
     """
     # TODO: Fix the aws access later
     s3 = boto3.client(
         "s3",
         region_name=REGION,
-        config=Config(signature_version="s3v4")
+        config=Config(signature_version="s3v4"),
     )
 
     url = s3.generate_presigned_url(
@@ -28,49 +54,38 @@ def generate_presigned_put_url(key: str):
 
     return url
 
-def construct_upload_script(job_id: str, calculation_type: str):
+
+def construct_upload_script(job_id: str, calculation_type: str) -> dict[str, str]:
     # All calculations' artifacts
-    zip = generate_presigned_put_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
+    archive = generate_presigned_put_url(
+        f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"
+    )
 
     job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
     result = generate_presigned_put_url(job_dir + "result.json")
     error = generate_presigned_put_url(job_dir + "result.err")
 
     urls = {
-        "zip": zip,
+        "zip": archive,
         "result": result,
         "error": error,
     }
 
-    match calculation_type:
-        case "energy":
-            urls["mol"] = generate_presigned_put_url(job_dir + "input.xyz")
-        case "frequency":
-            urls["vib"] = generate_presigned_put_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_put_url(job_dir + "ir.jdx")
-        case "orbitals":
-            urls["esp"] = generate_presigned_put_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_put_url(job_dir + "orbitals.molden")
-        case "optimization" | "transition" | "irc":
-            urls["trajectory"] = generate_presigned_put_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_put_url(job_dir + "opt.xyz")
-        case "standard":
-            urls["trajectory"] = generate_presigned_put_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_put_url(job_dir + "opt.xyz")
-            urls["esp"] = generate_presigned_put_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_put_url(job_dir + "orbitals.molden")
-            urls["vib"] = generate_presigned_put_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_put_url(job_dir + "ir.jdx")
-        case _:
-            urls["calculation_type"] = calculation_type
+    artifact_filenames = CALCULATION_ARTIFACT_FILENAMES.get(calculation_type)
+    if artifact_filenames is None:
+        urls["calculation_type"] = calculation_type
+    else:
+        for name, filename in artifact_filenames.items():
+            urls[name] = generate_presigned_put_url(job_dir + filename)
 
     return urls
 
-def generate_presigned_get_url(key: str):
+
+def generate_presigned_get_url(key: str) -> str:
     s3 = boto3.client(
         "s3",
         region_name=REGION,
-        config=Config(signature_version="s3v4")
+        config=Config(signature_version="s3v4"),
     )
 
     url = s3.generate_presigned_url(
@@ -81,10 +96,102 @@ def generate_presigned_get_url(key: str):
 
     return url
 
+
 def presign_zip_download_url(job_id: str) -> str:
     return generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
 
-def construct_fetch_script(job_id: str, calculation_type: str, success: bool) -> dict[str, str]:
+
+def finalisation_artifact_keys(
+    job_id: str,
+    calculation_type: str,
+    terminal_status: str,
+) -> dict[str, str]:
+    """Return deterministic upload destinations for one finalisation attempt."""
+
+    if calculation_type not in CALCULATION_ARTIFACT_FILENAMES:
+        raise ValueError("calculation_type is invalid")
+
+    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
+    keys = {"zip": f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"}
+    if terminal_status == "completed":
+        keys["result"] = job_dir + "result.json"
+        keys.update(
+            {
+                name: job_dir + filename
+                for name, filename in CALCULATION_ARTIFACT_FILENAMES[
+                    calculation_type
+                ].items()
+            }
+        )
+    elif terminal_status in {"failed", "cancelled"}:
+        # The uploader uses this destination when an error file is available.
+        keys["error"] = job_dir + "result.err"
+    else:
+        raise ValueError("terminal_status is invalid")
+    return keys
+
+
+def generate_finalisation_upload_urls(
+    job_id: str,
+    calculation_type: str,
+    terminal_status: str,
+) -> dict[str, str]:
+    """Generate fresh upload URLs without retaining them after this call."""
+
+    try:
+        return {
+            name: generate_presigned_put_url(key)
+            for name, key in finalisation_artifact_keys(
+                job_id,
+                calculation_type,
+                terminal_status,
+            ).items()
+        }
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create artifact upload URLs") from error
+
+
+def required_finalisation_artifacts_exist(
+    job_id: str,
+    calculation_type: str,
+    terminal_status: str,
+    failure_reason: str | None,
+) -> bool:
+    """Return whether a previous finalisation upload already completed."""
+
+    keys = finalisation_artifact_keys(job_id, calculation_type, terminal_status)
+    error_is_required = (
+        terminal_status == "failed"
+        and failure_reason == JobFailureReason.calculation_failed.value
+    )
+    required_keys = (
+        list(keys.values())
+        if terminal_status == "completed" or error_is_required
+        else [keys["zip"]]
+    )
+    try:
+        s3 = boto3.client(
+            "s3",
+            region_name=REGION,
+            config=Config(signature_version="s3v4"),
+        )
+        for key in required_keys:
+            s3.head_object(Bucket=BUCKET_NAME, Key=key)
+    except ClientError as error:
+        error_code = str(error.response.get("Error", {}).get("Code", ""))
+        if error_code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise StorageServiceError("Could not verify uploaded artifacts") from error
+    except BotoCoreError as error:
+        raise StorageServiceError("Could not verify uploaded artifacts") from error
+    return True
+
+
+def construct_fetch_script(
+    job_id: str,
+    calculation_type: str,
+    success: bool,
+) -> dict[str, str]:
     job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
     urls = {
         # "zip": generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"),
@@ -95,29 +202,14 @@ def construct_fetch_script(job_id: str, calculation_type: str, success: bool) ->
         return urls
 
     urls["result"] = generate_presigned_get_url(job_dir + "result.json")
-    match calculation_type:
-        case "energy":
-            urls["mol"] = generate_presigned_get_url(job_dir + "input.xyz")
-        case "frequency":
-            urls["vib"] = generate_presigned_get_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_get_url(job_dir + "ir.jdx")
-        case "orbitals":
-            urls["esp"] = generate_presigned_get_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_get_url(job_dir + "orbitals.molden")
-        case "optimization" | "transition" | "irc":
-            urls["trajectory"] = generate_presigned_get_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_get_url(job_dir + "opt.xyz")
-        case "standard":
-            urls["trajectory"] = generate_presigned_get_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_get_url(job_dir + "opt.xyz")
-            urls["esp"] = generate_presigned_get_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_get_url(job_dir + "orbitals.molden")
-            urls["vib"] = generate_presigned_get_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_get_url(job_dir + "ir.jdx")
-        case _:
-            pass
+    for name, filename in CALCULATION_ARTIFACT_FILENAMES.get(
+        calculation_type,
+        {},
+    ).items():
+        urls[name] = generate_presigned_get_url(job_dir + filename)
 
     return urls
+
 
 if __name__ == "__main__":
     urls_path = sys.argv[1]

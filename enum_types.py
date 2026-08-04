@@ -22,6 +22,7 @@ class JobStatus(str, Enum):
 
 
 class JobFailureReason(str, Enum):
+    calculation_failed = "calculation_failed"
     out_of_memory = "out_of_memory"
     timeout = "timeout"
     node_failure = "node_failure"

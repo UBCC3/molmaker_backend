@@ -126,28 +126,60 @@ class ClusterDispatchClient:
         ):
             raise JobDispatchError("Calculation input file is missing")
 
+        self._copy_to_cluster(
+            local_job_directory,
+            f"{self.cluster_work_dir}/jobs/",
+            recursive=True,
+            operation="Cluster input transfer",
+        )
+
+    def stage_upload_manifest(
+        self,
+        job_id: UUID | str,
+        local_manifest: Path,
+    ) -> None:
+        """Copy one temporary upload manifest to its exact job path."""
+
+        local_manifest = Path(local_manifest)
+        if (
+            local_manifest.name != "upload-urls.json"
+            or not local_manifest.is_file()
+        ):
+            raise ClusterServiceError("Artifact upload manifest is unavailable")
+        self._copy_to_cluster(
+            local_manifest,
+            str(self.upload_manifest_path(job_id)),
+            recursive=False,
+            operation="Artifact upload manifest transfer",
+        )
+
+    def _copy_to_cluster(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        recursive: bool,
+        operation: str,
+    ) -> None:
+        arguments = ["scp"]
+        if recursive:
+            arguments.append("-r")
+        arguments.extend([str(source), f"{SSH_HOST}:{destination}"])
         try:
             completed = subprocess.run(
-                [
-                    "scp",
-                    "-r",
-                    str(local_job_directory),
-                    f"{SSH_HOST}:{self.cluster_work_dir}/jobs/",
-                ],
+                arguments,
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=self.transfer_timeout_seconds,
             )
         except subprocess.TimeoutExpired:
-            raise ClusterServiceError("Cluster input transfer timed out") from None
+            raise ClusterServiceError(f"{operation} timed out") from None
         except OSError:
-            raise ClusterServiceError(
-                "Cluster input transfer could not start"
-            ) from None
+            raise ClusterServiceError(f"{operation} could not start") from None
 
         if completed.returncode:
-            raise ClusterServiceError("Cluster input transfer failed")
+            raise ClusterServiceError(f"{operation} failed")
 
     def submit_job(
         self,
@@ -253,17 +285,21 @@ class ClusterDispatchClient:
         job_id: UUID | str,
         calculation_type: CalculationType,
         terminal_status: JobStatus,
+        allow_missing_error: bool = False,
     ) -> None:
         job_id = _job_id(job_id)
+        arguments = [
+            "upload-artifacts",
+            job_id,
+            calculation_type.value,
+            terminal_status.value,
+            str(self.upload_manifest_path(job_id)),
+        ]
+        if allow_missing_error:
+            arguments.append("--allow-missing-error")
         response = _json_object(
             self._run(
-                [
-                    "upload-artifacts",
-                    job_id,
-                    calculation_type.value,
-                    terminal_status.value,
-                    str(self.upload_manifest_path(job_id)),
-                ],
+                arguments,
                 "artifact upload",
                 scope="job",
             ),

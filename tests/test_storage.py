@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 import storage
 from conftest import make_auth0_payload
@@ -104,6 +105,158 @@ class TestConstructUploadScript:
             f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.json",
             f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/result.err",
         }
+
+
+class TestFinalisationStorage:
+    @pytest.mark.parametrize(
+        ("terminal_status", "expected_names"),
+        [
+            ("completed", {"zip", "result", "vib", "jdx"}),
+            ("failed", {"zip", "error"}),
+            ("cancelled", {"zip", "error"}),
+        ],
+    )
+    def test_artifact_keys_are_deterministic(
+        self,
+        terminal_status,
+        expected_names,
+    ):
+        first = storage.finalisation_artifact_keys(
+            "job-123",
+            "frequency",
+            terminal_status,
+        )
+        second = storage.finalisation_artifact_keys(
+            "job-123",
+            "frequency",
+            terminal_status,
+        )
+
+        assert first == second
+        assert set(first) == expected_names
+        assert first["zip"] == "ubchemica/archive/job-123.zip"
+        assert all(
+            key.startswith("ubchemica/jobs/job-123/")
+            for name, key in first.items()
+            if name != "zip"
+        )
+
+    def test_upload_urls_are_generated_afresh_for_the_same_keys(self, monkeypatch):
+        calls = []
+
+        def generate(key):
+            calls.append(key)
+            return f"attempt-{len(calls)}:{key}"
+
+        monkeypatch.setattr(storage, "generate_presigned_put_url", generate)
+
+        first = storage.generate_finalisation_upload_urls(
+            "job-123",
+            "energy",
+            "completed",
+        )
+        second = storage.generate_finalisation_upload_urls(
+            "job-123",
+            "energy",
+            "completed",
+        )
+
+        assert first.keys() == second.keys()
+        assert first != second
+        assert calls[:3] == calls[3:]
+
+    def test_presigning_failure_is_a_shared_storage_error(self, monkeypatch):
+        def fail(_key):
+            raise EndpointConnectionError(endpoint_url="https://s3.example")
+
+        monkeypatch.setattr(storage, "generate_presigned_put_url", fail)
+
+        with pytest.raises(storage.StorageServiceError, match="upload URLs"):
+            storage.generate_finalisation_upload_urls(
+                "job-123",
+                "energy",
+                "completed",
+            )
+
+    @pytest.mark.parametrize(
+        ("terminal_status", "failure_reason", "expected_names"),
+        [
+            ("completed", None, ["zip", "result", "vib", "jdx"]),
+            (
+                "failed",
+                "calculation_failed",
+                ["zip", "error"],
+            ),
+            ("failed", "timeout", ["zip"]),
+            ("failed", "cluster_failed", ["zip"]),
+            ("cancelled", None, ["zip"]),
+        ],
+    )
+    def test_only_required_objects_are_checked(
+        self,
+        monkeypatch,
+        terminal_status,
+        failure_reason,
+        expected_names,
+    ):
+        checked_keys = []
+
+        class S3:
+            def head_object(self, *, Bucket, Key):
+                assert Bucket == storage.BUCKET_NAME
+                checked_keys.append(Key)
+
+        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
+
+        result = storage.required_finalisation_artifacts_exist(
+            "job-123",
+            "frequency",
+            terminal_status,
+            failure_reason,
+        )
+
+        all_keys = storage.finalisation_artifact_keys(
+            "job-123",
+            "frequency",
+            terminal_status,
+        )
+        assert result is True
+        assert checked_keys == [all_keys[name] for name in expected_names]
+
+    def test_missing_required_object_returns_false(self, monkeypatch):
+        class S3:
+            def head_object(self, **_kwargs):
+                raise ClientError(
+                    {"Error": {"Code": "404", "Message": "missing"}},
+                    "HeadObject",
+                )
+
+        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
+
+        assert storage.required_finalisation_artifacts_exist(
+            "job-123",
+            "energy",
+            "completed",
+            None,
+        ) is False
+
+    def test_object_check_failure_is_a_shared_storage_error(self, monkeypatch):
+        class S3:
+            def head_object(self, **_kwargs):
+                raise ClientError(
+                    {"Error": {"Code": "503", "Message": "unavailable"}},
+                    "HeadObject",
+                )
+
+        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
+
+        with pytest.raises(storage.StorageServiceError, match="verify"):
+            storage.required_finalisation_artifacts_exist(
+                "job-123",
+                "energy",
+                "completed",
+                None,
+            )
 
 
 class TestConstructFetchScript:
