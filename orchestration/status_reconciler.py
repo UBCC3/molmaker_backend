@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence
 
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from database import get_session_local
 from enum_types import JobFailureReason, JobStatus
 from models import Job
+from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
     AllocationStatus,
     ClusterClientError,
@@ -106,18 +107,19 @@ def _transition_for_state(raw_state: str) -> StatusTransition | None:
 
 
 @dataclass
-class StatusReconciler:
+class StatusReconciler(BaseReconciler):
     """Check every submitted or running job in temporary Slurm batches."""
+
+    shared_service_errors = (ClusterServiceError, SQLAlchemyError)
+    shared_service_error_message = (
+        "Status round stopped by a shared service problem"
+    )
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
-    _outage_delay: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._outage_delay = self.settings.outage_initial_backoff_seconds
 
     @classmethod
     def from_env(cls) -> "StatusReconciler":
@@ -128,61 +130,28 @@ class StatusReconciler:
             settings=settings,
         )
 
-    def run_round(self) -> int:
+    @property
+    def poll_interval_seconds(self) -> float:
+        return self.settings.status_poll_interval_seconds
+
+    def _run_round(self, db: Session) -> int:
         """Check one fixed snapshot and return the number of selected jobs."""
 
-        db = self.session_factory()
-        db.expire_on_commit = False
-        try:
-            jobs = (
-                db.query(Job)
-                .filter(
-                    Job.status.in_(
-                        [JobStatus.submitted.value, JobStatus.running.value]
-                    ),
-                    Job.slurm_id.isnot(None),
-                )
-                .order_by(Job.submitted_at.asc(), Job.job_id.asc())
-                .all()
+        jobs = (
+            db.query(Job)
+            .filter(
+                Job.status.in_([JobStatus.submitted.value, JobStatus.running.value]),
+                Job.slurm_id.isnot(None),
             )
-            self._commit(db)
+            .order_by(Job.submitted_at.asc(), Job.job_id.asc())
+            .all()
+        )
+        self._commit(db)
 
-            batch_size = self.settings.status_batch_size
-            for start in range(0, len(jobs), batch_size):
-                self._process_batch(db, jobs[start : start + batch_size])
-            return len(jobs)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
-    def run_forever(self, *, rounds: int | None = None) -> None:
-        """Run non-overlapping rounds with shared-outage backoff."""
-
-        completed_rounds = 0
-        while rounds is None or completed_rounds < rounds:
-            started_at = self.clock()
-            try:
-                self.run_round()
-            except (ClusterServiceError, SQLAlchemyError):
-                logger.warning("Status round stopped by a shared service problem")
-                delay = self._outage_delay
-                self._outage_delay = min(
-                    self._outage_delay * 2,
-                    self.settings.outage_max_backoff_seconds,
-                )
-            else:
-                elapsed = max(0.0, self.clock() - started_at)
-                delay = max(
-                    0.0,
-                    self.settings.status_poll_interval_seconds - elapsed,
-                )
-                self._outage_delay = self.settings.outage_initial_backoff_seconds
-
-            completed_rounds += 1
-            if rounds is None or completed_rounds < rounds:
-                self.sleep(delay)
+        batch_size = self.settings.status_batch_size
+        for start in range(0, len(jobs), batch_size):
+            self._process_batch(db, jobs[start : start + batch_size])
+        return len(jobs)
 
     def _process_batch(self, db: Session, jobs: Sequence[Job]) -> None:
         slurm_ids = [str(job.slurm_id) for job in jobs]
@@ -286,14 +255,6 @@ class StatusReconciler:
             completed_at=now,
         )
         return update
-
-    @staticmethod
-    def _commit(db: Session) -> None:
-        try:
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            raise
 
 
 def main() -> None:

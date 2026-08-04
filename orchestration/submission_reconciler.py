@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from database import get_session_local
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
+from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
     ClusterDispatchClient,
     ClusterServiceError,
@@ -25,23 +26,29 @@ from orchestration.cluster_client import (
 from orchestration.settings import OrchestrationSettings
 
 
-logger = logging.getLogger(__name__)
-
-
 @dataclass
-class SubmissionReconciler:
+class SubmissionReconciler(BaseReconciler):
     """Process a small, oldest-first round of jobs awaiting submission."""
+
+    shared_service_errors = (
+        ClusterServiceError,
+        SubmissionOutcomeUnknownError,
+        SQLAlchemyError,
+    )
+    shared_service_error_message = (
+        "Submission round stopped by a cluster service problem"
+    )
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
     backend_jobs_directory: Path
     sleep: Callable[[float], None] = time.sleep
-    _outage_delay: int = field(init=False)
+    clock: Callable[[], float] = time.monotonic
 
     def __post_init__(self) -> None:
         self.backend_jobs_directory = Path(self.backend_jobs_directory)
-        self._outage_delay = self.settings.outage_initial_backoff_seconds
+        super().__post_init__()
 
     @classmethod
     def from_env(cls) -> "SubmissionReconciler":
@@ -56,56 +63,26 @@ class SubmissionReconciler:
             backend_jobs_directory=Path(backend_work_dir) / "jobs",
         )
 
-    def run_round(self) -> int:
+    @property
+    def poll_interval_seconds(self) -> float:
+        return self.settings.submission_poll_interval_seconds
+
+    def _run_round(self, db: Session) -> int:
         """Process one fixed selection and return the number of selected jobs."""
 
-        db = self.session_factory()
-        db.expire_on_commit = False
-        try:
-            jobs = (
-                db.query(Job)
-                .filter(Job.status == JobStatus.submitting.value)
-                .order_by(Job.submitted_at.asc(), Job.job_id.asc())
-                .limit(self.settings.submission_query_limit)
-                .all()
-            )
-            # End the selection transaction before any file transfer or SSH call.
-            # Keeping loaded scalar values avoids reopening it during the round.
-            self._commit(db)
-            for job in jobs:
-                self._process_job(db, job)
-            return len(jobs)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
-    def run_forever(self, *, rounds: int | None = None) -> None:
-        """Run continuously, backing off only after shared service failures."""
-
-        completed_rounds = 0
-        while rounds is None or completed_rounds < rounds:
-            try:
-                self.run_round()
-            except (
-                ClusterServiceError,
-                SubmissionOutcomeUnknownError,
-                SQLAlchemyError,
-            ):
-                logger.warning("Submission round stopped by a cluster service problem")
-                delay = self._outage_delay
-                self._outage_delay = min(
-                    self._outage_delay * 2,
-                    self.settings.outage_max_backoff_seconds,
-                )
-            else:
-                delay = self.settings.submission_poll_interval_seconds
-                self._outage_delay = self.settings.outage_initial_backoff_seconds
-
-            completed_rounds += 1
-            if rounds is None or completed_rounds < rounds:
-                self.sleep(delay)
+        jobs = (
+            db.query(Job)
+            .filter(Job.status == JobStatus.submitting.value)
+            .order_by(Job.submitted_at.asc(), Job.job_id.asc())
+            .limit(self.settings.submission_query_limit)
+            .all()
+        )
+        # End the selection transaction before any file transfer or SSH call.
+        # Keeping loaded scalar values avoids reopening it during the round.
+        self._commit(db)
+        for job in jobs:
+            self._process_job(db, job)
+        return len(jobs)
 
     def _process_job(self, db: Session, job: Job) -> None:
         if job.slurm_id:
@@ -171,14 +148,6 @@ class SubmissionReconciler:
         if slurm_id:
             return slurm_id
         return self.cluster_client.find_accounting_allocation(job.job_id)
-
-    @staticmethod
-    def _commit(db: Session) -> None:
-        try:
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            raise
 
     def _mark_submitted(self, db: Session, job: Job, slurm_id: str) -> None:
         job.slurm_id = slurm_id

@@ -6,7 +6,7 @@ import json
 import logging
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from database import get_session_local
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
+from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
     ClusterDispatchClient,
     ClusterServiceError,
@@ -30,15 +31,23 @@ from storage import (
 )
 
 
-logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = frozenset(
     {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
 )
 
 
 @dataclass
-class FinalisationReconciler:
+class FinalisationReconciler(BaseReconciler):
     """Upload one oldest-first selection before publishing terminal jobs."""
+
+    shared_service_errors = (
+        ClusterServiceError,
+        StorageServiceError,
+        SQLAlchemyError,
+    )
+    shared_service_error_message = (
+        "Finalisation round stopped by a shared service problem"
+    )
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
@@ -50,10 +59,7 @@ class FinalisationReconciler:
         required_finalisation_artifacts_exist
     )
     sleep: Callable[[float], None] = time.sleep
-    _outage_delay: int = field(init=False)
-
-    def __post_init__(self) -> None:
-        self._outage_delay = self.settings.outage_initial_backoff_seconds
+    clock: Callable[[], float] = time.monotonic
 
     @classmethod
     def from_env(cls) -> "FinalisationReconciler":
@@ -64,52 +70,24 @@ class FinalisationReconciler:
             settings=settings,
         )
 
-    def run_round(self) -> int:
+    @property
+    def poll_interval_seconds(self) -> float:
+        return self.settings.finalisation_poll_interval_seconds
+
+    def _run_round(self, db: Session) -> int:
         """Process one fixed selection and return the number of selected jobs."""
 
-        db = self.session_factory()
-        db.expire_on_commit = False
-        try:
-            jobs = (
-                db.query(Job)
-                .filter(Job.status == JobStatus.finalising.value)
-                .order_by(Job.submitted_at.asc(), Job.job_id.asc())
-                .limit(self.settings.finalisation_query_limit)
-                .all()
-            )
-            self._commit(db)
-            for job in jobs:
-                self._process_job(db, job)
-            return len(jobs)
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
-
-    def run_forever(self, *, rounds: int | None = None) -> None:
-        """Run continuously, backing off after shared cluster or S3 failures."""
-
-        completed_rounds = 0
-        while rounds is None or completed_rounds < rounds:
-            try:
-                self.run_round()
-            except (ClusterServiceError, StorageServiceError, SQLAlchemyError):
-                logger.warning(
-                    "Finalisation round stopped by a shared service problem"
-                )
-                delay = self._outage_delay
-                self._outage_delay = min(
-                    self._outage_delay * 2,
-                    self.settings.outage_max_backoff_seconds,
-                )
-            else:
-                delay = self.settings.finalisation_poll_interval_seconds
-                self._outage_delay = self.settings.outage_initial_backoff_seconds
-
-            completed_rounds += 1
-            if rounds is None or completed_rounds < rounds:
-                self.sleep(delay)
+        jobs = (
+            db.query(Job)
+            .filter(Job.status == JobStatus.finalising.value)
+            .order_by(Job.submitted_at.asc(), Job.job_id.asc())
+            .limit(self.settings.finalisation_query_limit)
+            .all()
+        )
+        self._commit(db)
+        for job in jobs:
+            self._process_job(db, job)
+        return len(jobs)
 
     def _process_job(self, db: Session, job: Job) -> None:
         try:
@@ -205,14 +183,6 @@ class FinalisationReconciler:
             job.failure_reason = None
             job.failure_message = None
         self._commit(db)
-
-    @staticmethod
-    def _commit(db: Session) -> None:
-        try:
-            db.commit()
-        except SQLAlchemyError:
-            db.rollback()
-            raise
 
 
 def main() -> None:

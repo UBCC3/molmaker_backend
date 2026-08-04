@@ -48,6 +48,7 @@ def make_reconciler(settings, user_factory):
         generate_upload_urls=None,
         required_artifacts_exist=None,
         sleep=None,
+        clock=None,
     ):
         if required_artifacts_exist is None:
             required_artifacts_exist = Mock(return_value=False)
@@ -59,6 +60,7 @@ def make_reconciler(settings, user_factory):
             or Mock(return_value={"zip": "https://upload.test/archive"}),
             required_artifacts_exist=required_artifacts_exist,
             sleep=sleep or Mock(),
+            clock=clock or Mock(return_value=0.0),
         )
 
     return make

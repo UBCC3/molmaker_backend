@@ -39,7 +39,7 @@ def settings():
 def make_reconciler(tmp_path, settings, user_factory):
     user_factory(user_sub="auth0|testuser")
 
-    def make(*, client=None, current_settings=None, sleep=None):
+    def make(*, client=None, current_settings=None, sleep=None, clock=None):
         if client is None:
             client = Mock(spec=ClusterDispatchClient)
             client.find_active_allocation.return_value = None
@@ -51,6 +51,7 @@ def make_reconciler(tmp_path, settings, user_factory):
             settings=current_settings or settings,
             backend_jobs_directory=tmp_path / "jobs",
             sleep=sleep or Mock(),
+            clock=clock or Mock(return_value=0.0),
         )
 
     return make
