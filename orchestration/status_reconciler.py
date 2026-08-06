@@ -17,10 +17,11 @@ from enum_types import JobFailureReason, JobStatus
 from models import Job
 from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
-    AllocationStatus,
     ClusterClientError,
     ClusterDispatchClient,
     ClusterServiceError,
+    JobDispatchError,
+    SlurmJobStatus,
 )
 from orchestration.settings import OrchestrationSettings
 
@@ -155,42 +156,79 @@ class StatusReconciler(BaseReconciler):
 
     def _process_batch(self, db: Session, jobs: Sequence[Job]) -> None:
         slurm_ids = [str(job.slurm_id) for job in jobs]
-        statuses = self.cluster_client.get_allocation_statuses(slurm_ids)
+        slurm_job_status_by_id = self.cluster_client.get_slurm_job_statuses(
+            slurm_ids
+        )
+        self._request_cancellations(jobs, slurm_job_status_by_id)
         now = datetime.now(timezone.utc)
         updates = [
-            self._job_update(job, statuses.get(str(job.slurm_id)), now)
+            self._job_update(
+                job,
+                slurm_job_status_by_id.get(str(job.slurm_id)),
+                now,
+            )
             for job in jobs
         ]
         db.execute(update(Job), updates)
         self._commit(db)
 
+    def _request_cancellations(
+        self,
+        jobs: Sequence[Job],
+        slurm_job_status_by_id: dict[str, SlurmJobStatus],
+    ) -> None:
+        for job in jobs:
+            if not job.cancel_requested:
+                continue
+
+            slurm_job_status = slurm_job_status_by_id.get(str(job.slurm_id))
+            transition = (
+                _transition_for_state(slurm_job_status.state)
+                if slurm_job_status
+                else None
+            )
+            if transition and transition.terminal_status:
+                continue
+
+            try:
+                self.cluster_client.cancel_slurm_job(str(job.slurm_id))
+            except JobDispatchError:
+                logger.warning(
+                    "Cluster did not accept the job cancellation request; "
+                    "it will be retried",
+                    extra={
+                        "job_id": str(job.job_id),
+                        "slurm_id": str(job.slurm_id),
+                    },
+                )
+
     def _job_update(
         self,
         job: Job,
-        allocation: AllocationStatus | None,
+        slurm_job_status: SlurmJobStatus | None,
         now: datetime,
     ) -> dict[str, object]:
-        if allocation is None or (
-            allocation.elapsed_seconds is not None
-            and allocation.elapsed_seconds < 0
+        if slurm_job_status is None or (
+            slurm_job_status.elapsed_seconds is not None
+            and slurm_job_status.elapsed_seconds < 0
         ):
             return self._status_error_update(job, now)
 
-        transition = _transition_for_state(allocation.state)
+        transition = _transition_for_state(slurm_job_status.state)
         if transition is None:
             logger.warning(
                 "Slurm returned an unknown job state",
                 extra={
                     "job_id": str(job.job_id),
                     "slurm_id": str(job.slurm_id),
-                    "slurm_state": allocation.state,
+                    "slurm_state": slurm_job_status.state,
                 },
             )
             return self._status_error_update(job, now)
 
         runtime = (
-            timedelta(seconds=allocation.elapsed_seconds)
-            if allocation.elapsed_seconds is not None
+            timedelta(seconds=slurm_job_status.elapsed_seconds)
+            if slurm_job_status.elapsed_seconds is not None
             else job.runtime
         )
         if transition.terminal_status:
@@ -199,9 +237,9 @@ class StatusReconciler(BaseReconciler):
                 extra={
                     "job_id": str(job.job_id),
                     "slurm_id": str(job.slurm_id),
-                    "slurm_state": allocation.state,
-                    "slurm_exit_code": allocation.exit_code,
-                    "runtime_seconds": allocation.elapsed_seconds,
+                    "slurm_state": slurm_job_status.state,
+                    "slurm_exit_code": slurm_job_status.exit_code,
+                    "runtime_seconds": slurm_job_status.elapsed_seconds,
                 },
             )
 
@@ -238,7 +276,7 @@ class StatusReconciler(BaseReconciler):
             return update
 
         try:
-            self.cluster_client.cancel_allocation(str(job.slurm_id))
+            self.cluster_client.cancel_slurm_job(str(job.slurm_id))
         except ClusterClientError:
             logger.error(
                 "Slurm job may be orphaned because cancellation could not be confirmed",

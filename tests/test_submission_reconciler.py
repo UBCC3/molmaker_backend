@@ -42,8 +42,8 @@ def make_reconciler(tmp_path, settings, user_factory):
     def make(*, client=None, current_settings=None, sleep=None, clock=None):
         if client is None:
             client = Mock(spec=ClusterDispatchClient)
-            client.find_active_allocation.return_value = None
-            client.find_accounting_allocation.return_value = None
+            client.find_active_slurm_id.return_value = None
+            client.find_accounting_slurm_id.return_value = None
             client.submit_job.return_value = "12345"
         return SubmissionReconciler(
             session_factory=TestingSessionLocal,
@@ -184,10 +184,10 @@ def test_restart_recovers_an_existing_submission_without_resubmitting(
 ):
     client = Mock(spec=ClusterDispatchClient)
     if lookup == "active":
-        client.find_active_allocation.return_value = "11111"
+        client.find_active_slurm_id.return_value = "11111"
     else:
-        client.find_active_allocation.return_value = None
-        client.find_accounting_allocation.return_value = "22222"
+        client.find_active_slurm_id.return_value = None
+        client.find_accounting_slurm_id.return_value = "22222"
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=1)
 
@@ -197,11 +197,88 @@ def test_restart_recovers_an_existing_submission_without_resubmitting(
     assert saved.status == JobStatus.submitted.value
     assert saved.slurm_id == ("11111" if lookup == "active" else "22222")
     assert saved.attempt_count == 0
-    client.find_active_allocation.assert_called_once_with(job.job_id)
+    client.find_active_slurm_id.assert_called_once_with(job.job_id)
     if lookup == "active":
-        client.find_accounting_allocation.assert_not_called()
+        client.find_accounting_slurm_id.assert_not_called()
     else:
-        client.find_accounting_allocation.assert_called_once_with(job.job_id)
+        client.find_accounting_slurm_id.assert_called_once_with(job.job_id)
+    client.stage_job_inputs.assert_not_called()
+    client.submit_job.assert_not_called()
+
+
+def test_cancel_request_before_any_attempt_finishes_without_cluster_work(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    job = job_factory(cancel_requested=True, is_deleted=True)
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.cancelled.value
+    assert saved.terminal_status == JobStatus.cancelled.value
+    assert saved.cancel_requested is True
+    assert saved.completed_at is not None
+    assert saved.is_deleted is True
+    client.find_active_slurm_id.assert_not_called()
+    client.find_accounting_slurm_id.assert_not_called()
+    client.stage_job_inputs.assert_not_called()
+    client.submit_job.assert_not_called()
+    client.cancel_slurm_job.assert_not_called()
+
+
+def test_cancel_request_after_an_uncertain_attempt_checks_before_finishing(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.find_active_slurm_id.return_value = None
+    client.find_accounting_slurm_id.return_value = None
+    reconciler = make_reconciler(client=client)
+    job = job_factory(attempt_count=1, cancel_requested=True)
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.cancelled.value
+    assert saved.terminal_status == JobStatus.cancelled.value
+    assert saved.attempt_count == 0
+    client.find_active_slurm_id.assert_called_once_with(job.job_id)
+    client.find_accounting_slurm_id.assert_called_once_with(job.job_id)
+    client.stage_job_inputs.assert_not_called()
+    client.submit_job.assert_not_called()
+    client.cancel_slurm_job.assert_not_called()
+
+
+@pytest.mark.parametrize("lookup", ["active", "accounting"])
+def test_cancel_request_recovers_an_uncertain_submission_for_status_cancellation(
+    db,
+    job_factory,
+    make_reconciler,
+    lookup,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    if lookup == "active":
+        client.find_active_slurm_id.return_value = "71001"
+    else:
+        client.find_active_slurm_id.return_value = None
+        client.find_accounting_slurm_id.return_value = "71002"
+    reconciler = make_reconciler(client=client)
+    job = job_factory(attempt_count=1, cancel_requested=True)
+
+    reconciler.run_round()
+
+    expected_slurm_id = "71001" if lookup == "active" else "71002"
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.submitted.value
+    assert saved.slurm_id == expected_slurm_id
+    assert saved.attempt_count == 0
+    assert saved.cancel_requested is True
+    client.cancel_slurm_job.assert_not_called()
     client.stage_job_inputs.assert_not_called()
     client.submit_job.assert_not_called()
 
@@ -212,8 +289,8 @@ def test_recovery_checks_squeue_then_sacct_before_a_confirmed_resubmission(
     make_reconciler,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.find_active_allocation.return_value = None
-    client.find_accounting_allocation.return_value = None
+    client.find_active_slurm_id.return_value = None
+    client.find_accounting_slurm_id.return_value = None
     client.submit_job.return_value = "33333"
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=1)
@@ -222,8 +299,8 @@ def test_recovery_checks_squeue_then_sacct_before_a_confirmed_resubmission(
     reconciler.run_round()
 
     assert [method[0] for method in client.method_calls] == [
-        "find_active_allocation",
-        "find_accounting_allocation",
+        "find_active_slurm_id",
+        "find_accounting_slurm_id",
         "stage_job_inputs",
         "submit_job",
     ]
@@ -239,8 +316,8 @@ def test_unknown_submission_outcome_is_recovered_even_at_the_attempt_limit(
     make_reconciler,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.find_active_allocation.return_value = None
-    client.find_accounting_allocation.return_value = None
+    client.find_active_slurm_id.return_value = None
+    client.find_accounting_slurm_id.return_value = None
     client.submit_job.side_effect = SubmissionOutcomeUnknownError("find the job")
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=2)
@@ -255,7 +332,7 @@ def test_unknown_submission_outcome_is_recovered_even_at_the_attempt_limit(
     db.rollback()
 
     client.reset_mock()
-    client.find_active_allocation.return_value = "44444"
+    client.find_active_slurm_id.return_value = "44444"
     reconciler.run_round()
 
     recovered = refresh(db, job)
@@ -321,8 +398,8 @@ def test_job_failure_at_the_limit_marks_only_that_job_failed(
     make_reconciler,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.find_active_allocation.return_value = None
-    client.find_accounting_allocation.return_value = None
+    client.find_active_slurm_id.return_value = None
+    client.find_accounting_slurm_id.return_value = None
     client.submit_job.side_effect = JobDispatchError("job submission failed")
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=2)
@@ -344,8 +421,8 @@ def test_no_match_after_the_attempt_limit_fails_without_another_submission(
     make_reconciler,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.find_active_allocation.return_value = None
-    client.find_accounting_allocation.return_value = None
+    client.find_active_slurm_id.return_value = None
+    client.find_accounting_slurm_id.return_value = None
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=3)
 
@@ -367,10 +444,10 @@ def test_lookup_outage_stops_the_round_without_changing_attempts(
 ):
     client = Mock(spec=ClusterDispatchClient)
     if failed_lookup == "active":
-        client.find_active_allocation.side_effect = ClusterServiceError("outage")
+        client.find_active_slurm_id.side_effect = ClusterServiceError("outage")
     else:
-        client.find_active_allocation.return_value = None
-        client.find_accounting_allocation.side_effect = ClusterServiceError("outage")
+        client.find_active_slurm_id.return_value = None
+        client.find_accounting_slurm_id.side_effect = ClusterServiceError("outage")
     reconciler = make_reconciler(client=client)
     recovering = job_factory(
         attempt_count=1,
@@ -387,9 +464,9 @@ def test_lookup_outage_stops_the_round_without_changing_attempts(
     assert refresh(db, recovering).attempt_count == 1
     assert refresh(db, untouched).attempt_count == 0
     if failed_lookup == "active":
-        client.find_accounting_allocation.assert_not_called()
+        client.find_accounting_slurm_id.assert_not_called()
     else:
-        client.find_accounting_allocation.assert_called_once_with(recovering.job_id)
+        client.find_accounting_slurm_id.assert_called_once_with(recovering.job_id)
     client.stage_job_inputs.assert_not_called()
     client.submit_job.assert_not_called()
 

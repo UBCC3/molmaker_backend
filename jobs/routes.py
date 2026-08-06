@@ -42,7 +42,7 @@ from utils import (
     commit_or_rollback,
     get_user_sub,
 )
-from enum_types import CalculationType
+from enum_types import CalculationType, JobStatus
 from jobs.schemas import JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -124,6 +124,70 @@ def delete_job(
     soft_delete_asset(db, user, job)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{job_id}/cancel",
+    response_model=JobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    response_description="Cancellation was requested and is still in progress.",
+    responses={
+        status.HTTP_200_OK: {
+            "model": JobResponse,
+            "description": "The job is cancelled.",
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "The job is not in a cancellable state."
+        },
+    },
+)
+def cancel_job(
+    job_id: str,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """
+    Cancel a job that the user is allowed to edit.
+
+    The request is saved and completed in the background. Repeating a
+    cancellation request is safe. Finished jobs cannot be cancelled.
+
+    :param job_id: ID of the job to cancel.
+    :param response: HTTP response used when the job is already cancelled.
+    :param db: Database session dependency.
+    :param current_user: Current user dependency, verified via token.
+    :return: Current job details.
+    """
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_write_asset)
+
+    if job.status == JobStatus.cancelled.value:
+        response.status_code = status.HTTP_200_OK
+        return serialize_job(job)
+
+    can_cancel = job.status in (
+        JobStatus.submitting.value,
+        JobStatus.submitted.value,
+        JobStatus.running.value,
+    ) or (
+        job.status == JobStatus.finalising.value
+        and job.terminal_status == JobStatus.cancelled.value
+    )
+    if not can_cancel:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job is not in a cancellable state",
+        )
+
+    job.cancel_requested = True
+    commit_or_rollback(
+        db,
+        refresh=job,
+        error_detail="Failed to cancel job",
+    )
+    return serialize_job(job)
 
 
 @router.post(

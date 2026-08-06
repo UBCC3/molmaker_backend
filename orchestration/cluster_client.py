@@ -42,7 +42,7 @@ class ClusterServiceError(ClusterClientError):
 
 
 @dataclass(frozen=True)
-class AllocationStatus:
+class SlurmJobStatus:
     slurm_id: str
     state: str
     exit_code: str | None
@@ -214,16 +214,16 @@ class ClusterDispatchClient:
         except ValueError:
             raise SubmissionOutcomeUnknownError(UNKNOWN_SUBMISSION_MESSAGE) from None
 
-    def find_active_allocation(self, job_id: UUID | str) -> str | None:
+    def find_active_slurm_id(self, job_id: UUID | str) -> str | None:
         return self._find("find-active", job_id)
 
-    def find_accounting_allocation(self, job_id: UUID | str) -> str | None:
+    def find_accounting_slurm_id(self, job_id: UUID | str) -> str | None:
         return self._find("find-accounting", job_id)
 
-    def get_allocation_statuses(
+    def get_slurm_job_statuses(
         self, slurm_ids: Iterable[str | int]
-    ) -> dict[str, AllocationStatus]:
-        """Fetch one temporary batch of allocation statuses."""
+    ) -> dict[str, SlurmJobStatus]:
+        """Fetch one temporary batch of Slurm job statuses."""
 
         requested = [_slurm_id(value) for value in slurm_ids]
         if not requested:
@@ -234,7 +234,7 @@ class ClusterDispatchClient:
             self._run(["status-batch", *requested], "status lookup"),
             "status lookup",
         )
-        statuses: dict[str, AllocationStatus] = {}
+        slurm_job_status_by_id: dict[str, SlurmJobStatus] = {}
         required_fields = {"slurm_id", "state", "exit_code", "elapsed_seconds"}
         for row in rows:
             if not isinstance(row, dict) or not required_fields <= row.keys():
@@ -245,7 +245,10 @@ class ClusterDispatchClient:
                 raise ClusterServiceError(
                     "Invalid status lookup response from cluster"
                 ) from None
-            if slurm_id not in requested_ids or slurm_id in statuses:
+            if (
+                slurm_id not in requested_ids
+                or slurm_id in slurm_job_status_by_id
+            ):
                 raise ClusterServiceError("Invalid status lookup response from cluster")
 
             state = row["state"]
@@ -260,14 +263,19 @@ class ClusterDispatchClient:
             ):
                 raise ClusterServiceError("Invalid status lookup response from cluster")
 
-            statuses[slurm_id] = AllocationStatus(slurm_id, state, exit_code, elapsed)
-        return statuses
+            slurm_job_status_by_id[slurm_id] = SlurmJobStatus(
+                slurm_id,
+                state,
+                exit_code,
+                elapsed,
+            )
+        return slurm_job_status_by_id
 
-    def cancel_allocation(self, slurm_id: str | int) -> None:
+    def cancel_slurm_job(self, slurm_id: str | int) -> None:
         slurm_id = _slurm_id(slurm_id)
         response = _json_object(
             self._run(
-                ["cancel-allocation", slurm_id],
+                ["cancel-slurm-job", slurm_id],
                 "job cancellation",
                 scope="job",
             ),

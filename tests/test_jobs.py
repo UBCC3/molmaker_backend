@@ -144,6 +144,14 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
         "tags",
         "replace_tags",
     }
+    cancel_responses = paths["/jobs/{job_id}/cancel"]["post"]["responses"]
+    assert cancel_responses["202"]["content"]["application/json"]["schema"][
+        "$ref"
+    ].endswith("/JobResponse")
+    assert cancel_responses["200"]["content"]["application/json"]["schema"][
+        "$ref"
+    ].endswith("/JobResponse")
+    assert "409" in cancel_responses
 
 
 class TestJobsAPI:
@@ -449,6 +457,7 @@ class TestJobsAPI:
                 "/jobs/not-a-uuid",
                 {"json": {"job_name": "Updated"}},
             ),
+            ("post", "/jobs/not-a-uuid/cancel", {}),
         ],
     )
     def test_job_routes_return_404_for_invalid_job_id(
@@ -569,6 +578,236 @@ class TestJobsAPI:
         DELETE /jobs/{job_id} should return 404 when no job exists for the ID.
         """
         response = client.delete(f"/jobs/{uuid.uuid4()}")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Job not found"
+
+    def test_owner_can_request_cancellation_before_the_first_attempt(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        """The submission worker owns the status even before the first attempt."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            status="submitting",
+            attempt_count=0,
+            slurm_id=None,
+        )
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 202
+        payload = response.json()
+        assert payload["status"] == "submitting"
+        assert payload["cancel_requested"] is True
+        assert "slurm_id" not in payload
+        db.refresh(job)
+        assert job.status == "submitting"
+        assert job.terminal_status is None
+        assert job.completed_at is None
+
+    @pytest.mark.parametrize(
+        "job_values,expected_status",
+        [
+            ({"status": "submitting", "attempt_count": 1}, "submitting"),
+            ({"status": "submitted", "slurm_id": "101"}, "submitted"),
+            ({"status": "running", "slurm_id": "102"}, "running"),
+        ],
+    )
+    def test_active_job_cancellation_is_saved_for_background_processing(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+        job_values,
+        expected_status,
+    ):
+        """Jobs that may be on the cluster keep their status while cancellation runs."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, **job_values)
+
+        first_response = client.post(f"/jobs/{job.job_id}/cancel")
+        second_response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert first_response.status_code == 202
+        assert second_response.status_code == 202
+        assert second_response.json()["status"] == expected_status
+        assert second_response.json()["cancel_requested"] is True
+        assert "slurm_id" not in second_response.json()
+        db.refresh(job)
+        assert job.status == job_values["status"]
+        assert job.cancel_requested is True
+
+    def test_cancelling_an_already_cancelled_job_returns_its_current_state(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        """Repeated cancellation remains safe after the job becomes cancelled."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            status="cancelled",
+            terminal_status="cancelled",
+            cancel_requested=True,
+        )
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "cancelled"
+        assert response.json()["cancel_requested"] is True
+        db.refresh(job)
+        assert job.status == "cancelled"
+
+    def test_cancelled_job_awaiting_artifacts_accepts_a_repeated_request(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        """A cluster-cancelled job remains safe to cancel while artifacts finish."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            user_sub=user.user_sub,
+            status="finalising",
+            terminal_status="cancelled",
+        )
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 202
+        assert response.json()["status"] == "running"
+        assert response.json()["cancel_requested"] is True
+        db.refresh(job)
+        assert job.cancel_requested is True
+
+    @pytest.mark.parametrize(
+        "job_values",
+        [
+            {"status": "completed"},
+            {"status": "failed"},
+            {"status": "finalising", "terminal_status": "completed"},
+            {"status": "finalising", "terminal_status": "failed"},
+        ],
+    )
+    def test_finished_jobs_cannot_be_cancelled(
+        self,
+        client,
+        db,
+        user_factory,
+        job_factory,
+        job_values,
+    ):
+        """A cancellation request cannot replace an outcome already reached."""
+        user = user_factory(user_sub="auth0|testuser")
+        job = job_factory(user_sub=user.user_sub, **job_values)
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Job is not in a cancellable state"
+        db.refresh(job)
+        assert job.cancel_requested is False
+
+    @pytest.mark.parametrize("role", ["admin", "group_admin"])
+    def test_admins_can_cancel_jobs_allowed_by_existing_write_permissions(
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+        role,
+    ):
+        """System admins and same-group admins use the normal job write rules."""
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        actor = user_factory(
+            group=group,
+            user_sub=f"auth0|{role}",
+            role=role,
+        )
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            status="submitted",
+            slurm_id="201",
+        )
+        set_auth_user(
+            make_auth0_payload(
+                actor.user_sub,
+                role=actor.role,
+                group_id=actor.group_id,
+            )
+        )
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 202
+        db.refresh(job)
+        assert job.cancel_requested is True
+
+    def test_normal_group_member_cannot_cancel_another_owners_job(
+        self,
+        client,
+        db,
+        set_auth_user,
+        group_factory,
+        user_factory,
+        job_factory,
+    ):
+        """Read access to a group job does not grant cancellation access."""
+        group = group_factory()
+        owner = user_factory(group=group, user_sub="auth0|owner")
+        member = user_factory(group=group, user_sub="auth0|member")
+        job = job_factory(
+            user_sub=owner.user_sub,
+            group_id=group.group_id,
+            is_public=True,
+            status="running",
+            slurm_id="301",
+        )
+        set_auth_user(
+            make_auth0_payload(
+                member.user_sub,
+                role=member.role,
+                group_id=member.group_id,
+            )
+        )
+
+        response = client.post(f"/jobs/{job.job_id}/cancel")
+
+        assert response.status_code == 403
+        db.refresh(job)
+        assert job.cancel_requested is False
+
+    @pytest.mark.parametrize("deleted", [False, True])
+    def test_cancel_job_returns_404_for_missing_or_deleted_job(
+        self,
+        client,
+        user_factory,
+        job_factory,
+        deleted,
+    ):
+        """Cancellation uses the same non-deleted public job lookup as other routes."""
+        user_factory(user_sub="auth0|testuser")
+        job_id = (
+            job_factory(user_sub="auth0|testuser", is_deleted=True).job_id
+            if deleted
+            else uuid.uuid4()
+        )
+
+        response = client.post(f"/jobs/{job_id}/cancel")
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"

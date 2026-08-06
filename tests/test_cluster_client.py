@@ -9,10 +9,10 @@ import pytest
 import orchestration.cluster_client as cluster_client
 from enum_types import CalculationType, JobStatus
 from orchestration.cluster_client import (
-    AllocationStatus,
     ClusterDispatchClient,
     ClusterServiceError,
     JobDispatchError,
+    SlurmJobStatus,
     SubmissionOutcomeUnknownError,
 )
 
@@ -274,8 +274,8 @@ def test_submit_standard_job_omits_method_and_basis_set(client, run_dispatch):
 @pytest.mark.parametrize(
     ("method_name", "subcommand"),
     [
-        ("find_active_allocation", "find-active"),
-        ("find_accounting_allocation", "find-accounting"),
+        ("find_active_slurm_id", "find-active"),
+        ("find_accounting_slurm_id", "find-accounting"),
     ],
 )
 def test_job_lookups_use_the_exact_job_id(
@@ -311,7 +311,7 @@ def test_job_lookups_use_the_exact_job_id(
 def test_job_lookup_returns_none_when_no_job_matches(client, run_dispatch):
     run_dispatch(stdout='{"jobs":[]}')
 
-    assert client.find_active_allocation(JOB_ID) is None
+    assert client.find_active_slurm_id(JOB_ID) is None
 
 
 def test_status_batch_returns_typed_rows_and_allows_missing_jobs(client, run_dispatch):
@@ -330,9 +330,11 @@ def test_status_batch_returns_typed_rows_and_allows_missing_jobs(client, run_dis
         )
     )
 
-    result = client.get_allocation_statuses(["12345", "67890"])
+    result = client.get_slurm_job_statuses(["12345", "67890"])
 
-    assert result == {"12345": AllocationStatus("12345", "CANCELLED+", "0:15", 62)}
+    assert result == {
+        "12345": SlurmJobStatus("12345", "CANCELLED+", "0:15", 62)
+    }
     assert calls == [
         (
             ssh_command(
@@ -343,26 +345,26 @@ def test_status_batch_returns_typed_rows_and_allows_missing_jobs(client, run_dis
     ]
 
 
-def test_cancel_allocation_checks_the_acknowledgement(client, run_dispatch):
+def test_cancel_slurm_job_checks_the_acknowledgement(client, run_dispatch):
     calls = run_dispatch(stdout='{"slurm_id":"12345","cancel_requested":true}')
 
-    client.cancel_allocation("12345")
+    client.cancel_slurm_job("12345")
 
     assert calls == [
         (
             ssh_command(
-                "python3 /home/test/molmaker/dispatch.py cancel-allocation 12345"
+                "python3 /home/test/molmaker/dispatch.py cancel-slurm-job 12345"
             ),
             RUN_OPTIONS,
         )
     ]
 
 
-def test_cancel_allocation_rejects_a_bad_acknowledgement(client, run_dispatch):
+def test_cancel_slurm_job_rejects_a_bad_acknowledgement(client, run_dispatch):
     run_dispatch(stdout='{"slurm_id":"12345","cancel_requested":1}')
 
     with pytest.raises(ClusterServiceError, match="Invalid"):
-        client.cancel_allocation("12345")
+        client.cancel_slurm_job("12345")
 
 
 def test_upload_artifacts_uses_the_job_manifest(client, run_dispatch):
@@ -418,7 +420,7 @@ def test_allow_list_rejection_is_a_shared_cluster_failure(client, run_dispatch):
     )
 
     with pytest.raises(ClusterServiceError, match="rejected"):
-        client.find_accounting_allocation(JOB_ID)
+        client.find_accounting_slurm_id(JOB_ID)
 
 
 @pytest.mark.parametrize(
@@ -465,14 +467,14 @@ def test_timeout_category_depends_on_the_operation(
         if operation == "submission":
             submit(client)
         else:
-            client.find_active_allocation(JOB_ID)
+            client.find_active_slurm_id(JOB_ID)
 
 
 def test_success_with_stderr_is_not_accepted(client, run_dispatch):
     run_dispatch(stdout='{"jobs":[]}', stderr="unexpected warning\n")
 
     with pytest.raises(ClusterServiceError, match="unexpected error output"):
-        client.find_active_allocation(JOB_ID)
+        client.find_active_slurm_id(JOB_ID)
 
 
 @pytest.mark.parametrize(
@@ -489,7 +491,7 @@ def test_lookup_rejects_malformed_responses(client, run_dispatch, stdout):
     run_dispatch(stdout=stdout)
 
     with pytest.raises(ClusterServiceError):
-        client.find_active_allocation(JOB_ID)
+        client.find_active_slurm_id(JOB_ID)
 
 
 def test_lookup_rejects_multiple_matches(client, run_dispatch):
@@ -497,7 +499,7 @@ def test_lookup_rejects_multiple_matches(client, run_dispatch):
     run_dispatch(stdout=json.dumps({"jobs": [row, row]}))
 
     with pytest.raises(ClusterServiceError, match="multiple"):
-        client.find_active_allocation(JOB_ID)
+        client.find_active_slurm_id(JOB_ID)
 
 
 @pytest.mark.parametrize(
@@ -511,7 +513,7 @@ def test_lookup_rejects_wrong_fields(client, run_dispatch, row):
     run_dispatch(stdout=json.dumps({"jobs": [row]}))
 
     with pytest.raises(ClusterServiceError):
-        client.find_active_allocation(JOB_ID)
+        client.find_active_slurm_id(JOB_ID)
 
 
 @pytest.mark.parametrize(
@@ -540,16 +542,16 @@ def test_status_batch_rejects_unrequested_or_duplicate_rows(client, run_dispatch
     run_dispatch(stdout=json.dumps({"jobs": rows}))
 
     with pytest.raises(ClusterServiceError, match="Invalid"):
-        client.get_allocation_statuses(["12345"])
+        client.get_slurm_job_statuses(["12345"])
 
 
 def test_invalid_ids_do_not_contact_ssh(client, run_dispatch):
     calls = run_dispatch(stdout="12345")
 
     with pytest.raises(ValueError, match="job_id"):
-        client.find_active_allocation("not-a-uuid")
+        client.find_active_slurm_id("not-a-uuid")
     with pytest.raises(ValueError, match="slurm_id"):
-        client.cancel_allocation("123; touch /tmp/example")
+        client.cancel_slurm_job("123; touch /tmp/example")
 
     assert calls == []
 

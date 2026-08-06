@@ -7,9 +7,10 @@ import pytest
 from enum_types import JobFailureReason, JobStatus
 from models import Job
 from orchestration.cluster_client import (
-    AllocationStatus,
     ClusterDispatchClient,
     ClusterServiceError,
+    JobDispatchError,
+    SlurmJobStatus,
 )
 from orchestration.settings import OrchestrationSettings
 from orchestration.status_reconciler import (
@@ -98,8 +99,8 @@ def refresh(db, job):
     return db.get(Job, job.job_id)
 
 
-def allocation(slurm_id, state, *, elapsed=10, exit_code="0:0"):
-    return AllocationStatus(
+def slurm_job_status(slurm_id, state, *, elapsed=10, exit_code="0:0"):
+    return SlurmJobStatus(
         slurm_id=str(slurm_id),
         state=state,
         exit_code=exit_code,
@@ -179,6 +180,7 @@ def test_round_batches_every_active_job_in_stable_order_and_uses_one_update_each
     ignored_missing_id = job_factory(
         status=JobStatus.submitted.value,
         slurm_id=None,
+        cancel_requested=True,
         submitted_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
     )
     oldest = job_factory(
@@ -201,16 +203,17 @@ def test_round_batches_every_active_job_in_stable_order_and_uses_one_update_each
     def status_batch(slurm_ids):
         assert worker_session.in_transaction() is False
         return {
-            slurm_id: allocation(slurm_id, "RUNNING") for slurm_id in slurm_ids
+            slurm_id: slurm_job_status(slurm_id, "RUNNING")
+            for slurm_id in slurm_ids
         }
 
-    client.get_allocation_statuses.side_effect = status_batch
+    client.get_slurm_job_statuses.side_effect = status_batch
     sql_statements.clear()
 
     selected_count = reconciler.run_round()
 
     assert selected_count == 3
-    assert client.get_allocation_statuses.call_args_list == [
+    assert client.get_slurm_job_statuses.call_args_list == [
         call(["101", "102"]),
         call(["103"]),
     ]
@@ -227,6 +230,7 @@ def test_round_batches_every_active_job_in_stable_order_and_uses_one_update_each
     assert refresh(db, newest).status == JobStatus.running.value
     assert refresh(db, ignored_status).status == JobStatus.submitting.value
     assert refresh(db, ignored_missing_id).status == JobStatus.submitted.value
+    assert refresh(db, ignored_missing_id).cancel_requested is True
 
 
 def test_batch_saves_runtime_and_hands_terminal_jobs_to_finalisation(
@@ -246,12 +250,12 @@ def test_batch_saves_runtime_and_hands_terminal_jobs_to_finalisation(
     completed = job_factory(status=JobStatus.running.value, slurm_id="203")
     timed_out = job_factory(status=JobStatus.running.value, slurm_id="204")
     cancelled = job_factory(status=JobStatus.running.value, slurm_id="205")
-    client.get_allocation_statuses.return_value = {
-        "201": allocation("201", "PENDING", elapsed=None, exit_code=None),
-        "202": allocation("202", "RUNNING", elapsed=65),
-        "203": allocation("203", "COMPLETED", elapsed=90),
-        "204": allocation("204", "TIMEOUT", elapsed=120, exit_code="0:15"),
-        "205": allocation("205", "CANCELLED+", elapsed=30, exit_code="0:15"),
+    client.get_slurm_job_statuses.return_value = {
+        "201": slurm_job_status("201", "PENDING", elapsed=None, exit_code=None),
+        "202": slurm_job_status("202", "RUNNING", elapsed=65),
+        "203": slurm_job_status("203", "COMPLETED", elapsed=90),
+        "204": slurm_job_status("204", "TIMEOUT", elapsed=120, exit_code="0:15"),
+        "205": slurm_job_status("205", "CANCELLED+", elapsed=30, exit_code="0:15"),
     }
 
     with caplog.at_level("INFO"):
@@ -288,6 +292,167 @@ def test_batch_saves_runtime_and_hands_terminal_jobs_to_finalisation(
     ) == 3
 
 
+def test_cancel_requests_include_soft_deleted_jobs_and_keep_polling_them(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    queued = job_factory(
+        status=JobStatus.submitted.value,
+        slurm_id="211",
+        cancel_requested=True,
+        is_deleted=True,
+    )
+    running = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="212",
+        cancel_requested=True,
+    )
+    client.get_slurm_job_statuses.return_value = {
+        "211": slurm_job_status("211", "PENDING", elapsed=None, exit_code=None),
+        "212": slurm_job_status("212", "RUNNING", elapsed=25),
+    }
+
+    reconciler.run_round()
+
+    assert client.cancel_slurm_job.call_args_list == [call("211"), call("212")]
+    saved_queued = refresh(db, queued)
+    assert saved_queued.status == JobStatus.submitted.value
+    assert saved_queued.cancel_requested is True
+    assert saved_queued.is_deleted is True
+    saved_running = refresh(db, running)
+    assert saved_running.status == JobStatus.running.value
+    assert saved_running.cancel_requested is True
+
+
+def test_terminal_slurm_jobs_are_not_cancelled_again(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    cancelled = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="221",
+        cancel_requested=True,
+    )
+    completed = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="222",
+        cancel_requested=True,
+    )
+    client.get_slurm_job_statuses.return_value = {
+        "221": slurm_job_status("221", "CANCELLED"),
+        "222": slurm_job_status("222", "COMPLETED"),
+    }
+
+    reconciler.run_round()
+
+    client.cancel_slurm_job.assert_not_called()
+    assert refresh(db, cancelled).terminal_status == JobStatus.cancelled.value
+    assert refresh(db, completed).terminal_status == JobStatus.completed.value
+
+
+def test_job_specific_cancellation_failure_is_retried_until_cancelled(
+    db,
+    job_factory,
+    make_reconciler,
+    caplog,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    job = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="231",
+        cancel_requested=True,
+        attempt_count=2,
+    )
+    client.get_slurm_job_statuses.side_effect = [
+        {"231": slurm_job_status("231", "RUNNING", elapsed=10)},
+        {"231": slurm_job_status("231", "RUNNING", elapsed=12)},
+        {"231": slurm_job_status("231", "CANCELLED", elapsed=13)},
+    ]
+    client.cancel_slurm_job.side_effect = [
+        JobDispatchError("not accepted"),
+        None,
+    ]
+
+    with caplog.at_level("WARNING"):
+        reconciler.run_round()
+        reconciler.run_round()
+        reconciler.run_round()
+
+    assert client.cancel_slurm_job.call_args_list == [call("231"), call("231")]
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.finalising.value
+    assert saved.terminal_status == JobStatus.cancelled.value
+    assert saved.attempt_count == 0
+    assert saved.cancel_requested is True
+    assert any("will be retried" in record.message for record in caplog.records)
+
+
+def test_cancellation_outage_stops_the_batch_without_incrementing_job_attempts(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    cancelling = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="241",
+        cancel_requested=True,
+        attempt_count=1,
+    )
+    healthy = job_factory(
+        status=JobStatus.submitted.value,
+        slurm_id="242",
+        attempt_count=2,
+    )
+    client.get_slurm_job_statuses.return_value = {
+        "241": slurm_job_status("241", "RUNNING"),
+        "242": slurm_job_status("242", "RUNNING"),
+    }
+    client.cancel_slurm_job.side_effect = ClusterServiceError("outage")
+
+    with pytest.raises(ClusterServiceError):
+        reconciler.run_round()
+
+    saved_cancelling = refresh(db, cancelling)
+    assert saved_cancelling.status == JobStatus.running.value
+    assert saved_cancelling.attempt_count == 1
+    assert saved_cancelling.cancel_requested is True
+    saved_healthy = refresh(db, healthy)
+    assert saved_healthy.status == JobStatus.submitted.value
+    assert saved_healthy.attempt_count == 2
+
+
+def test_cancellation_is_attempted_even_when_status_is_temporarily_missing(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.get_slurm_job_statuses.return_value = {}
+    reconciler = make_reconciler(client=client)
+    job = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="251",
+        cancel_requested=True,
+    )
+
+    reconciler.run_round()
+
+    client.cancel_slurm_job.assert_called_once_with("251")
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.running.value
+    assert saved.attempt_count == 1
+    assert saved.cancel_requested is True
+
+
 def test_missing_unknown_and_malformed_results_only_increment_the_affected_jobs(
     db,
     job_factory,
@@ -303,10 +468,10 @@ def test_missing_unknown_and_malformed_results_only_increment_the_affected_jobs(
     missing = job_factory(status=JobStatus.submitted.value, slurm_id="302")
     unknown = job_factory(status=JobStatus.running.value, slurm_id="303")
     malformed = job_factory(status=JobStatus.running.value, slurm_id="304")
-    client.get_allocation_statuses.return_value = {
-        "301": allocation("301", "RUNNING", elapsed=5),
-        "303": allocation("303", "FUTURE_STATE", elapsed=6),
-        "304": allocation("304", "RUNNING", elapsed=-1),
+    client.get_slurm_job_statuses.return_value = {
+        "301": slurm_job_status("301", "RUNNING", elapsed=5),
+        "303": slurm_job_status("303", "FUTURE_STATE", elapsed=6),
+        "304": slurm_job_status("304", "RUNNING", elapsed=-1),
     }
 
     reconciler.run_round()
@@ -319,7 +484,7 @@ def test_missing_unknown_and_malformed_results_only_increment_the_affected_jobs(
     assert refresh(db, unknown).status == JobStatus.running.value
     assert refresh(db, malformed).attempt_count == 1
     assert refresh(db, malformed).status == JobStatus.running.value
-    client.cancel_allocation.assert_not_called()
+    client.cancel_slurm_job.assert_not_called()
 
 
 def test_repeated_job_status_failure_cancels_and_fails_only_that_job(
@@ -339,8 +504,8 @@ def test_repeated_job_status_failure_cancels_and_fails_only_that_job(
         slurm_id="402",
         attempt_count=1,
     )
-    client.get_allocation_statuses.return_value = {
-        "402": allocation("402", "RUNNING", elapsed=20),
+    client.get_slurm_job_statuses.return_value = {
+        "402": slurm_job_status("402", "RUNNING", elapsed=20),
     }
 
     reconciler.run_round()
@@ -352,7 +517,7 @@ def test_repeated_job_status_failure_cancels_and_fails_only_that_job(
     assert saved_failed.failure_message == "Job status could not be confirmed"
     assert saved_failed.completed_at is not None
     assert saved_failed.slurm_id == "401"
-    client.cancel_allocation.assert_called_once_with("401")
+    client.cancel_slurm_job.assert_called_once_with("401")
 
     saved_healthy = refresh(db, healthy)
     assert saved_healthy.status == JobStatus.running.value
@@ -366,8 +531,8 @@ def test_unconfirmed_cancellation_logs_an_orphan_alert_and_still_fails_the_job(
     caplog,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.get_allocation_statuses.return_value = {}
-    client.cancel_allocation.side_effect = ClusterServiceError("cluster unavailable")
+    client.get_slurm_job_statuses.return_value = {}
+    client.cancel_slurm_job.side_effect = ClusterServiceError("cluster unavailable")
     reconciler = make_reconciler(client=client)
     job = job_factory(
         status=JobStatus.running.value,
@@ -391,7 +556,7 @@ def test_shared_batch_failure_stops_the_round_without_changing_jobs(
     settings,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.get_allocation_statuses.side_effect = ClusterServiceError(
+    client.get_slurm_job_statuses.side_effect = ClusterServiceError(
         "sacct unavailable"
     )
     reconciler = make_reconciler(
@@ -416,7 +581,7 @@ def test_shared_batch_failure_stops_the_round_without_changing_jobs(
     assert refresh(db, first).status == JobStatus.submitted.value
     assert refresh(db, second).attempt_count == 2
     assert refresh(db, second).status == JobStatus.running.value
-    client.get_allocation_statuses.assert_called_once_with(["601"])
+    client.get_slurm_job_statuses.assert_called_once_with(["601"])
 
 
 class FakeClock:

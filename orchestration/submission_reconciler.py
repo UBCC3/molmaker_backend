@@ -89,10 +89,17 @@ class SubmissionReconciler(BaseReconciler):
             self._mark_submitted(db, job, job.slurm_id)
             return
 
+        if job.cancel_requested and not job.attempt_count:
+            self._mark_cancelled(db, job)
+            return
+
         if job.attempt_count:
             recovered_slurm_id = self._find_existing_submission(job)
             if recovered_slurm_id:
                 self._mark_submitted(db, job, recovered_slurm_id)
+                return
+            if job.cancel_requested:
+                self._mark_cancelled(db, job)
                 return
             if job.attempt_count >= self.settings.max_attempts:
                 self._mark_failed(
@@ -144,10 +151,10 @@ class SubmissionReconciler(BaseReconciler):
         self._mark_submitted(db, job, slurm_id)
 
     def _find_existing_submission(self, job: Job) -> str | None:
-        slurm_id = self.cluster_client.find_active_allocation(job.job_id)
+        slurm_id = self.cluster_client.find_active_slurm_id(job.job_id)
         if slurm_id:
             return slurm_id
-        return self.cluster_client.find_accounting_allocation(job.job_id)
+        return self.cluster_client.find_accounting_slurm_id(job.job_id)
 
     def _mark_submitted(self, db: Session, job: Job, slurm_id: str) -> None:
         job.slurm_id = slurm_id
@@ -155,6 +162,15 @@ class SubmissionReconciler(BaseReconciler):
         job.attempt_count = 0
         job.failure_reason = None
         job.failure_message = None
+        self._commit(db)
+
+    def _mark_cancelled(self, db: Session, job: Job) -> None:
+        job.status = JobStatus.cancelled.value
+        job.terminal_status = JobStatus.cancelled.value
+        job.attempt_count = 0
+        job.failure_reason = None
+        job.failure_message = None
+        job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
 
     def _mark_failed(self, db: Session, job: Job, message: str) -> None:
