@@ -57,9 +57,7 @@ def generate_presigned_put_url(key: str) -> str:
 
 def construct_upload_script(job_id: str, calculation_type: str) -> dict[str, str]:
     # All calculations' artifacts
-    archive = generate_presigned_put_url(
-        f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"
-    )
+    archive = generate_presigned_put_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
 
     job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
     result = generate_presigned_put_url(job_dir + "result.json")
@@ -98,7 +96,10 @@ def generate_presigned_get_url(key: str) -> str:
 
 
 def presign_zip_download_url(job_id: str) -> str:
-    return generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
+    try:
+        return generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create archive download URL") from error
 
 
 def finalisation_artifact_keys(
@@ -209,6 +210,29 @@ def construct_fetch_script(
         urls[name] = generate_presigned_get_url(job_dir + filename)
 
     return urls
+
+
+def generate_job_artifact_download_urls(
+    job_id: str,
+    calculation_type: str,
+    terminal_status: str,
+    failure_reason: str | None,
+) -> dict[str, str]:
+    """Generate download URLs for artifacts known to exist for a finished job."""
+
+    keys = finalisation_artifact_keys(
+        job_id,
+        calculation_type,
+        terminal_status,
+    )
+    keys.pop("zip")
+    if failure_reason != JobFailureReason.calculation_failed.value:
+        keys.pop("error", None)
+
+    try:
+        return {name: generate_presigned_get_url(key) for name, key in keys.items()}
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create artifact download URLs") from error
 
 
 if __name__ == "__main__":
