@@ -1,14 +1,6 @@
-import os
-import uuid
-import shutil
-import subprocess
-from pathlib import Path
-from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import (
     APIRouter,
-    UploadFile,
-    File,
     Form,
     HTTPException,
     Body,
@@ -32,7 +24,7 @@ from permissions import (
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Job, Structure
+from models import Job
 from dependencies import get_db
 from auth import verify_token
 from user_service import get_user_or_404
@@ -42,11 +34,10 @@ from utils import (
     commit_or_rollback,
     get_user_sub,
 )
-from enum_types import CalculationType, JobStatus
+from enum_types import JobStatus
 from jobs.schemas import JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-JOB_DIR = "./results"
 
 
 @router.get("/", response_model=List[JobResponse])
@@ -190,136 +181,6 @@ def cancel_job(
     return serialize_job(job)
 
 
-@router.post(
-    "/",
-    response_model=JobResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-def create_job(
-    file: UploadFile = File(...),
-    job_id: str = Form(...),
-    job_name: str = Form(...),
-    job_notes: Optional[str] = Form(None),
-    tags: List[str] = Form([]),
-    method: str = Form(...),
-    basis_set: str = Form(...),
-    calculation_type: CalculationType = Form(...),
-    charge: int = Form(...),
-    multiplicity: int = Form(...),
-    structure_id: Optional[str] = Form(None),
-    slurm_id: Optional[str] = Form(None),
-    current_user=Depends(verify_token),
-    db: Session = Depends(get_db),
-):
-    """
-    Create a legacy job record from an uploaded .xyz file and metadata.
-
-    Ownership is derived from the authenticated user's database record. Users in a
-    group always create co-owned jobs with user_sub and group_id set.
-    :param tags: Case-insensitive tags to associate with the job.
-    :param file: Upload file containing the job structure (must be .xyz format).
-    :param job_id: Unique ID for the job (UUID format).
-    :param job_name: Name of the job.
-    :param job_notes: Optional notes for the job.
-    :param method: Computational method to be used for the job.
-    :param basis_set: Basis set to be used for the job.
-    :param calculation_type: Type of calculation to be performed (energy, geometry, optimization, frequency).
-    :param charge: Charge of the system for the job.
-    :param multiplicity: Multiplicity of the system for the job.
-    :param structure_id: Optional structure ID to associate with the job.
-    :param slurm_id: Optional SLURM ID for job tracking.
-    :param current_user: Current user dependency, verified via token.
-    :param db: Database session dependency.
-    :return: Job details with status code 201 Created.
-    """
-    try:
-        parsed_job_id = uuid.UUID(str(job_id))
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid job_id",
-        )
-    job_id_str = str(parsed_job_id)
-
-    safe_name = Path(file.filename or "").name
-    if not safe_name.lower().endswith(".xyz"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file format. Only .xyz allowed.",
-        )
-
-    user = get_user_or_404(db, get_user_sub(current_user))
-    user_sub = user.user_sub
-
-    job_path = os.path.join(JOB_DIR, job_id_str)
-    os.makedirs(job_path, exist_ok=True)
-    file_path = os.path.join(job_path, safe_name)
-
-    try:
-        # Save file
-        with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        new_job = Job(
-            job_id=parsed_job_id,
-            job_name=job_name,
-            job_notes=job_notes,
-            filename=safe_name,
-            method=method,
-            basis_set=basis_set,
-            calculation_type=calculation_type.value,
-            charge=charge,
-            multiplicity=multiplicity,
-            slurm_id=slurm_id,
-            submitted_at=datetime.now(timezone.utc),
-            user_sub=user_sub,
-            group_id=user.group_id,
-            status="pending",
-            is_deleted=False,
-            is_uploaded=False,
-        )
-        db.add(new_job)
-
-        set_asset_tags(db, new_job, user_sub, tags or [])
-
-        # Link to an existing structure the requester can read. Public group
-        # structures are allowed; deleted or inaccessible structures are not.
-        if structure_id:
-            structure = get_asset_or_404(
-                db,
-                Structure,
-                structure_id,
-                "Structure not found or not accessible",
-            )
-            if not can_read_asset(user, structure):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Structure not found or not accessible",
-                )
-            new_job.structures.append(structure)
-
-    except HTTPException:
-        db.rollback()
-        shutil.rmtree(job_path, ignore_errors=True)
-        raise
-    except Exception:
-        db.rollback()
-        shutil.rmtree(job_path, ignore_errors=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create job",
-        )
-
-    commit_or_rollback(
-        db,
-        refresh=new_job,
-        error_detail="Failed to create job",
-        on_error=lambda: shutil.rmtree(job_path, ignore_errors=True),
-    )
-
-    return serialize_job(new_job)
-
-
 @router.patch("/{job_id}/visibility")
 def update_job_visibility(
     job_id: str,
@@ -441,85 +302,3 @@ def update_job(
     )
 
     return serialize_job(job)
-
-
-@router.post("/advanced_analysis")
-def run_advanced_analysis(
-    file: UploadFile = File(...),
-    calculation_type: CalculationType = Form(...),
-    method: str = Form(...),
-    basis_set: str = Form(...),
-    charge: int = Form(...),
-    multiplicity: int = Form(...),
-    current_user=Depends(verify_token),
-):
-    """
-    Run an advanced analysis on a job by uploading a file and providing job details.
-    :param file: Upload file containing the job structure (must be .xyz format).
-    :param calculation_type: Type of calculation to be performed (energy, geometry, optimization, frequency).
-    :param method: Computational method to be used for the job.
-    :param basis_set: Basis set to be used for the job.
-    :param charge: Charge of the system for the job.
-    :param multiplicity: Multiplicity of the system for the job.
-    :return: JSONResponse with status code 200 OK and message indicating success.
-    """
-    safe_name = Path(file.filename or "").name
-    if not safe_name.lower().endswith(".xyz"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file format. Only .xyz allowed.",
-        )
-
-    job_id = str(uuid.uuid4())
-    upload_path = f"uploads/{job_id}.xyz"
-    os.makedirs(os.path.dirname(upload_path), exist_ok=True)
-
-    # Save upload locally
-    with open(upload_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    # Copy the file to the cluster
-    try:
-        subprocess.run(
-            ["scp", upload_path, f"cluster:uploads/{job_id}.xyz"],
-            check=True,
-            timeout=120,
-        )
-    except subprocess.CalledProcessError:
-        raise HTTPException(status_code=500, detail="Failed to transfer file to cluster")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timed out transferring file to cluster")
-
-    # Submit job on the cluster
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                "cluster",
-                "python3",
-                "advance_analysis.py",
-                "submit",
-                job_id,
-                f"uploads/{job_id}.xyz",
-                calculation_type,
-                method,
-                basis_set,
-                str(charge),
-                str(multiplicity),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Cluster submission failed: {e.stderr}")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timed out submitting job to cluster")
-
-    slurm_id = result.stdout.strip()
-    return {
-        "job_id": job_id,
-        "slurm_id": slurm_id,
-        "message": f"Advanced analysis started successfully with SLURM ID {slurm_id}.",
-    }

@@ -46,7 +46,6 @@ def _forbid_cluster_and_upload_url_calls(monkeypatch):
         )
 
     monkeypatch.setattr(subprocess, "run", forbidden)
-    monkeypatch.setattr(storage, "construct_upload_script", forbidden)
     monkeypatch.setattr(storage, "generate_presigned_put_url", forbidden)
 
 

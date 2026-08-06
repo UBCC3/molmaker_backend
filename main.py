@@ -10,7 +10,6 @@ from admin.routes import router as admin_router
 from users.routes import router as user_router
 from groups.routes import router as groups_router
 from request.routes import router as requests_router
-from cluster.routes import router as cluster_router
 from s3.routes import router as s3_router
 
 
@@ -29,7 +28,6 @@ def create_app(create_tables: bool = False) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(structures_router)
     app.include_router(enums_router)
-    app.include_router(cluster_router)
     app.include_router(admin_router)
     app.include_router(user_router)
     app.include_router(groups_router)

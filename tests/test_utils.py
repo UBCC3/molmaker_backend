@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from utils import (
-    clean_up_upload_cache,
     commit_or_rollback,
     get_user_sub,
 )
@@ -236,28 +235,3 @@ class TestGetUserSub:
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Unauthorized"
-
-
-class TestCleanUpUploadCache:
-    def test_removes_existing_directory(self, tmp_path):
-        """
-        clean_up_upload_cache should remove an existing job upload directory.
-        """
-        job_dir = tmp_path / "job-cache"
-        nested_dir = job_dir / "nested"
-        nested_dir.mkdir(parents=True)
-        (nested_dir / "input.xyz").write_text("1\nH\n", encoding="utf-8")
-
-        clean_up_upload_cache(str(job_dir))
-
-        assert not job_dir.exists()
-
-    def test_missing_directory_does_not_fail(self, tmp_path):
-        """
-        clean_up_upload_cache should be safe to call for paths that do not exist.
-        """
-        missing_dir = tmp_path / "missing-job-cache"
-
-        clean_up_upload_cache(str(missing_dir))
-
-        assert not missing_dir.exists()

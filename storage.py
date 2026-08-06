@@ -1,6 +1,3 @@
-import json
-import sys
-
 import boto3
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
@@ -53,30 +50,6 @@ def generate_presigned_put_url(key: str) -> str:
     )
 
     return url
-
-
-def construct_upload_script(job_id: str, calculation_type: str) -> dict[str, str]:
-    # All calculations' artifacts
-    archive = generate_presigned_put_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
-
-    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
-    result = generate_presigned_put_url(job_dir + "result.json")
-    error = generate_presigned_put_url(job_dir + "result.err")
-
-    urls = {
-        "zip": archive,
-        "result": result,
-        "error": error,
-    }
-
-    artifact_filenames = CALCULATION_ARTIFACT_FILENAMES.get(calculation_type)
-    if artifact_filenames is None:
-        urls["calculation_type"] = calculation_type
-    else:
-        for name, filename in artifact_filenames.items():
-            urls[name] = generate_presigned_put_url(job_dir + filename)
-
-    return urls
 
 
 def generate_presigned_get_url(key: str) -> str:
@@ -188,30 +161,6 @@ def required_finalisation_artifacts_exist(
     return True
 
 
-def construct_fetch_script(
-    job_id: str,
-    calculation_type: str,
-    success: bool,
-) -> dict[str, str]:
-    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
-    urls = {
-        # "zip": generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"),
-    }
-
-    if not success:
-        urls["error"] = generate_presigned_get_url(job_dir + "result.err")
-        return urls
-
-    urls["result"] = generate_presigned_get_url(job_dir + "result.json")
-    for name, filename in CALCULATION_ARTIFACT_FILENAMES.get(
-        calculation_type,
-        {},
-    ).items():
-        urls[name] = generate_presigned_get_url(job_dir + filename)
-
-    return urls
-
-
 def generate_job_artifact_download_urls(
     job_id: str,
     calculation_type: str,
@@ -233,14 +182,3 @@ def generate_job_artifact_download_urls(
         return {name: generate_presigned_get_url(key) for name, key in keys.items()}
     except (BotoCoreError, ClientError) as error:
         raise StorageServiceError("Could not create artifact download URLs") from error
-
-
-if __name__ == "__main__":
-    urls_path = sys.argv[1]
-    job_id = sys.argv[2]
-    calculation_type = sys.argv[3]
-
-    urls = construct_upload_script(job_id, calculation_type)
-
-    with open(urls_path, "w") as f:
-        f.write(json.dumps(urls))
