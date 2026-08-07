@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 from abc import ABC, abstractmethod
-from typing import Callable, ClassVar
+from typing import Callable, ClassVar, Self, Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -13,7 +14,7 @@ from orchestration.settings import OrchestrationSettings
 
 
 class BaseReconciler(ABC):
-    """Handle the common loop, outage backoff, and database cleanup."""
+    """Handle common startup, looping, backoff, and database cleanup."""
 
     session_factory: Callable[[], Session]
     settings: OrchestrationSettings
@@ -21,10 +22,53 @@ class BaseReconciler(ABC):
     clock: Callable[[], float]
     shared_service_errors: ClassVar[tuple[type[Exception], ...]]
     shared_service_error_message: ClassVar[str]
+    reconciler_name: ClassVar[str]
     _outage_delay: int
 
     def __post_init__(self) -> None:
         self._outage_delay = self.settings.outage_initial_backoff_seconds
+
+    @classmethod
+    @abstractmethod
+    def from_env(cls) -> Self:
+        """Create the reconciler from process configuration."""
+
+    @classmethod
+    def run_cli(cls, argv: Sequence[str] | None = None) -> None:
+        """Start one reconciler from the command line."""
+
+        parser = argparse.ArgumentParser(
+            description=f"Run the {cls.reconciler_name} job reconciler."
+        )
+        parser.add_argument(
+            "--once",
+            action="store_true",
+            help="Run one round and exit.",
+        )
+        arguments = parser.parse_args(argv)
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        logger = logging.getLogger(cls.__module__)
+
+        try:
+            reconciler = cls.from_env()
+            mode = "once" if arguments.once else "continuous"
+            logger.info(
+                "reconciler_started reconciler=%s mode=%s",
+                cls.reconciler_name,
+                mode,
+            )
+            reconciler.run_forever(rounds=1 if arguments.once else None)
+            logger.info("reconciler_stopped reconciler=%s", cls.reconciler_name)
+        except Exception:
+            logger.exception(
+                "reconciler_stopped_with_error reconciler=%s",
+                cls.reconciler_name,
+            )
+            raise
 
     def run_round(self) -> int:
         """Run one round and always close its database session."""
@@ -50,9 +94,14 @@ class BaseReconciler(ABC):
         while rounds is None or completed_rounds < rounds:
             try:
                 delay = self._run_round_and_get_poll_delay()
-            except self.shared_service_errors:
+            except self.shared_service_errors as error:
                 logging.getLogger(type(self).__module__).warning(
-                    self.shared_service_error_message
+                    "%s reconciler=%s retry_in_seconds=%s error_type=%s error=%s",
+                    self.shared_service_error_message,
+                    self.reconciler_name,
+                    self._outage_delay,
+                    type(error).__name__,
+                    error,
                 )
                 delay = self._outage_delay
                 self._outage_delay = min(
@@ -68,9 +117,18 @@ class BaseReconciler(ABC):
 
     def _run_round_and_get_poll_delay(self) -> float:
         started_at = self.clock()
-        self.run_round()
+        selected_jobs = self.run_round()
         elapsed = max(0.0, self.clock() - started_at)
-        return max(0.0, self.poll_interval_seconds - elapsed)
+        delay = max(0.0, self.poll_interval_seconds - elapsed)
+        logging.getLogger(type(self).__module__).info(
+            "round_complete reconciler=%s selected_jobs=%s "
+            "duration_seconds=%.3f next_poll_seconds=%.3f",
+            self.reconciler_name,
+            selected_jobs,
+            elapsed,
+            delay,
+        )
+        return delay
 
     @property
     @abstractmethod

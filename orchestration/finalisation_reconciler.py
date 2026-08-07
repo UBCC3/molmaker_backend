@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
 import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -48,6 +47,7 @@ class FinalisationReconciler(BaseReconciler):
     shared_service_error_message = (
         "Finalisation round stopped by a shared service problem"
     )
+    reconciler_name = "finalisation"
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
@@ -185,11 +185,10 @@ class FinalisationReconciler(BaseReconciler):
         self._commit(db)
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Start the finalisation reconciler."""
 
-    logging.basicConfig(level=logging.INFO)
-    FinalisationReconciler.from_env().run_forever()
+    FinalisationReconciler.run_cli(argv)
 
 
 if __name__ == "__main__":

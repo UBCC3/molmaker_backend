@@ -546,7 +546,13 @@ def test_unconfirmed_cancellation_logs_an_orphan_alert_and_still_fails_the_job(
     saved = refresh(db, job)
     assert saved.status == JobStatus.failed.value
     assert saved.failure_reason == JobFailureReason.status_check_failed.value
-    assert any("may be orphaned" in record.message for record in caplog.records)
+    orphan_log = next(
+        record.message
+        for record in caplog.records
+        if "may be orphaned" in record.message
+    )
+    assert str(job.job_id) in orphan_log
+    assert "slurm_id=501" in orphan_log
 
 
 def test_shared_batch_failure_stops_the_round_without_changing_jobs(

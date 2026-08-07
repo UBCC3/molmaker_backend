@@ -1,9 +1,11 @@
+import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import Mock, call
 
 import pytest
 
+import orchestration.submission_reconciler as submission_reconciler
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
 from orchestration.cluster_client import (
@@ -69,6 +71,74 @@ def stage_input(reconciler, job, *, keywords=False):
 def refresh(db, job):
     db.expire_all()
     return db.get(Job, job.job_id)
+
+
+def test_startup_readiness_creates_and_checks_the_job_staging_directory(
+    make_reconciler,
+    monkeypatch,
+):
+    reconciler = make_reconciler()
+    monkeypatch.setattr(
+        submission_reconciler.shutil,
+        "disk_usage",
+        lambda _path: Mock(free=2 * submission_reconciler.GIGABYTE),
+    )
+
+    reconciler.check_job_staging_readiness()
+
+    assert reconciler.backend_jobs_directory.is_dir()
+
+
+def test_startup_readiness_rejects_insufficient_job_staging_space(
+    make_reconciler,
+    monkeypatch,
+):
+    reconciler = make_reconciler()
+    monkeypatch.setattr(
+        submission_reconciler.shutil,
+        "disk_usage",
+        lambda _path: Mock(free=submission_reconciler.GIGABYTE // 2),
+    )
+
+    with pytest.raises(RuntimeError, match="at least 1 GB is required"):
+        reconciler.check_job_staging_readiness()
+
+
+def test_from_env_checks_job_staging_readiness(
+    settings,
+    tmp_path,
+    monkeypatch,
+    mocker,
+):
+    work_directory = tmp_path / "backend"
+    session_factory = Mock()
+    cluster_client = Mock(spec=ClusterDispatchClient)
+    monkeypatch.setenv("BACKEND_WORK_DIR", str(work_directory))
+    mocker.patch.object(
+        OrchestrationSettings,
+        "from_env",
+        return_value=settings,
+    )
+    mocker.patch.object(
+        submission_reconciler,
+        "get_session_local",
+        return_value=session_factory,
+    )
+    mocker.patch.object(
+        ClusterDispatchClient,
+        "from_env",
+        return_value=cluster_client,
+    )
+    readiness_check = mocker.patch.object(
+        SubmissionReconciler,
+        "check_job_staging_readiness",
+        autospec=True,
+    )
+
+    reconciler = SubmissionReconciler.from_env()
+
+    readiness_check.assert_called_once_with(reconciler)
+    assert reconciler.backend_jobs_directory == work_directory / "jobs"
 
 
 def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
@@ -173,6 +243,7 @@ def test_success_commits_the_attempt_before_submission_and_saves_the_slurm_id(
     assert saved.failure_message is None
     assert client.method_calls[0] == call.stage_job_inputs(job.job_id, job_directory)
     assert client.method_calls[1][0] == "submit_job"
+    assert not job_directory.exists()
 
 
 @pytest.mark.parametrize("lookup", ["active", "accounting"])
@@ -190,6 +261,7 @@ def test_restart_recovers_an_existing_submission_without_resubmitting(
         client.find_accounting_slurm_id.return_value = "22222"
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=1)
+    job_directory = stage_input(reconciler, job)
 
     reconciler.run_round()
 
@@ -204,6 +276,7 @@ def test_restart_recovers_an_existing_submission_without_resubmitting(
         client.find_accounting_slurm_id.assert_called_once_with(job.job_id)
     client.stage_job_inputs.assert_not_called()
     client.submit_job.assert_not_called()
+    assert not job_directory.exists()
 
 
 def test_cancel_request_before_any_attempt_finishes_without_cluster_work(
@@ -214,6 +287,7 @@ def test_cancel_request_before_any_attempt_finishes_without_cluster_work(
     client = Mock(spec=ClusterDispatchClient)
     reconciler = make_reconciler(client=client)
     job = job_factory(cancel_requested=True, is_deleted=True)
+    job_directory = stage_input(reconciler, job)
 
     reconciler.run_round()
 
@@ -228,6 +302,7 @@ def test_cancel_request_before_any_attempt_finishes_without_cluster_work(
     client.stage_job_inputs.assert_not_called()
     client.submit_job.assert_not_called()
     client.cancel_slurm_job.assert_not_called()
+    assert not job_directory.exists()
 
 
 def test_cancel_request_after_an_uncertain_attempt_checks_before_finishing(
@@ -321,7 +396,7 @@ def test_unknown_submission_outcome_is_recovered_even_at_the_attempt_limit(
     client.submit_job.side_effect = SubmissionOutcomeUnknownError("find the job")
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=2)
-    stage_input(reconciler, job)
+    job_directory = stage_input(reconciler, job)
 
     with pytest.raises(SubmissionOutcomeUnknownError):
         reconciler.run_round()
@@ -329,6 +404,7 @@ def test_unknown_submission_outcome_is_recovered_even_at_the_attempt_limit(
     uncertain = refresh(db, job)
     assert uncertain.status == JobStatus.submitting.value
     assert uncertain.attempt_count == 3
+    assert job_directory.exists()
     db.rollback()
 
     client.reset_mock()
@@ -340,6 +416,7 @@ def test_unknown_submission_outcome_is_recovered_even_at_the_attempt_limit(
     assert recovered.slurm_id == "44444"
     assert recovered.attempt_count == 0
     client.submit_job.assert_not_called()
+    assert not job_directory.exists()
 
 
 def test_job_failure_is_retried_in_a_later_round(
@@ -351,7 +428,7 @@ def test_job_failure_is_retried_in_a_later_round(
     client.submit_job.side_effect = JobDispatchError("job submission failed")
     reconciler = make_reconciler(client=client)
     job = job_factory()
-    stage_input(reconciler, job)
+    job_directory = stage_input(reconciler, job)
 
     reconciler.run_round()
 
@@ -359,6 +436,7 @@ def test_job_failure_is_retried_in_a_later_round(
     assert saved.status == JobStatus.submitting.value
     assert saved.attempt_count == 1
     assert saved.failure_reason is None
+    assert job_directory.exists()
 
 
 def test_job_failure_does_not_stop_unrelated_jobs(
@@ -378,8 +456,8 @@ def test_job_failure_does_not_stop_unrelated_jobs(
     successful = job_factory(
         submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
     )
-    stage_input(reconciler, failed_attempt)
-    stage_input(reconciler, successful)
+    failed_directory = stage_input(reconciler, failed_attempt)
+    successful_directory = stage_input(reconciler, successful)
 
     reconciler.run_round()
 
@@ -390,6 +468,8 @@ def test_job_failure_does_not_stop_unrelated_jobs(
     assert second.status == JobStatus.submitted.value
     assert second.slurm_id == "55555"
     assert client.submit_job.call_count == 2
+    assert failed_directory.exists()
+    assert not successful_directory.exists()
 
 
 def test_job_failure_at_the_limit_marks_only_that_job_failed(
@@ -403,7 +483,7 @@ def test_job_failure_at_the_limit_marks_only_that_job_failed(
     client.submit_job.side_effect = JobDispatchError("job submission failed")
     reconciler = make_reconciler(client=client)
     job = job_factory(attempt_count=2)
-    stage_input(reconciler, job)
+    job_directory = stage_input(reconciler, job)
 
     reconciler.run_round()
 
@@ -413,6 +493,34 @@ def test_job_failure_at_the_limit_marks_only_that_job_failed(
     assert saved.failure_reason == JobFailureReason.submission_failed.value
     assert saved.failure_message == "job submission failed"
     assert saved.completed_at is not None
+    assert not job_directory.exists()
+
+
+def test_cleanup_failure_does_not_change_a_successful_submission(
+    db,
+    job_factory,
+    make_reconciler,
+    monkeypatch,
+    caplog,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.submit_job.return_value = "88888"
+    reconciler = make_reconciler(client=client)
+    job = job_factory()
+    job_directory = stage_input(reconciler, job)
+    monkeypatch.setattr(
+        "orchestration.submission_reconciler.shutil.rmtree",
+        Mock(side_effect=PermissionError("permission denied")),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.submitted.value
+    assert saved.slurm_id == "88888"
+    assert job_directory.exists()
+    assert "staged_input_cleanup_failed" in caplog.text
 
 
 def test_no_match_after_the_attempt_limit_fails_without_another_submission(

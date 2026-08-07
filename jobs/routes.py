@@ -247,9 +247,7 @@ def update_job(
     true to remove all current tags before attaching the supplied tags; an
     empty list then clears all tags. Tag matching is case-insensitive. An empty
     job_notes string clears the notes. Omitted or null fields are left
-    unchanged. Status, runtime, ownership, visibility, upload state, and Slurm
-    fields cannot be changed here. Use the separate visibility endpoint for
-    public/private changes.
+    unchanged. Use the separate visibility endpoint for public/private changes.
 
     :param job_id: ID of the job to update.
     :param job_name: Optional replacement display name.

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
+from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -26,6 +29,9 @@ from orchestration.cluster_client import (
 from orchestration.settings import OrchestrationSettings
 
 
+GIGABYTE = 1_000_000_000
+
+
 @dataclass
 class SubmissionReconciler(BaseReconciler):
     """Process a small, oldest-first round of jobs awaiting submission."""
@@ -38,6 +44,7 @@ class SubmissionReconciler(BaseReconciler):
     shared_service_error_message = (
         "Submission round stopped by a cluster service problem"
     )
+    reconciler_name = "submission"
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
@@ -47,7 +54,7 @@ class SubmissionReconciler(BaseReconciler):
     clock: Callable[[], float] = time.monotonic
 
     def __post_init__(self) -> None:
-        self.backend_jobs_directory = Path(self.backend_jobs_directory)
+        self.backend_jobs_directory = Path(self.backend_jobs_directory).expanduser()
         super().__post_init__()
 
     @classmethod
@@ -56,12 +63,38 @@ class SubmissionReconciler(BaseReconciler):
         backend_work_dir = os.getenv("BACKEND_WORK_DIR")
         if not backend_work_dir:
             raise ValueError("BACKEND_WORK_DIR must be configured")
-        return cls(
+        reconciler = cls(
             session_factory=get_session_local(),
             cluster_client=ClusterDispatchClient.from_env(settings),
             settings=settings,
             backend_jobs_directory=Path(backend_work_dir) / "jobs",
         )
+        reconciler.check_job_staging_readiness()
+        return reconciler
+
+    def check_job_staging_readiness(self) -> None:
+        """Check that local job inputs can be staged before submission starts."""
+
+        try:
+            self.backend_jobs_directory.mkdir(parents=True, exist_ok=True)
+            if not self.backend_jobs_directory.is_dir():
+                raise NotADirectoryError(self.backend_jobs_directory)
+            with tempfile.TemporaryFile(dir=self.backend_jobs_directory):
+                pass
+            free_bytes = shutil.disk_usage(self.backend_jobs_directory).free
+        except OSError as error:
+            raise RuntimeError(
+                f"Job staging directory is not ready: {self.backend_jobs_directory}"
+            ) from error
+
+        minimum_space_gb = self.settings.backend_job_staging_min_space_gb
+        required_bytes = minimum_space_gb * GIGABYTE
+        if free_bytes < required_bytes:
+            free_gb = free_bytes / GIGABYTE
+            raise RuntimeError(
+                f"Job staging directory has only {free_gb:.1f} GB free; "
+                f"at least {minimum_space_gb} GB is required"
+            )
 
     @property
     def poll_interval_seconds(self) -> float:
@@ -163,6 +196,7 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_reason = None
         job.failure_message = None
         self._commit(db)
+        self._delete_staged_inputs(job.job_id)
 
     def _mark_cancelled(self, db: Session, job: Job) -> None:
         job.status = JobStatus.cancelled.value
@@ -172,6 +206,7 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_message = None
         job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
+        self._delete_staged_inputs(job.job_id)
 
     def _mark_failed(self, db: Session, job: Job, message: str) -> None:
         job.status = JobStatus.failed.value
@@ -179,13 +214,27 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_message = message
         job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
+        self._delete_staged_inputs(job.job_id)
+
+    def _delete_staged_inputs(self, job_id: UUID | str) -> None:
+        job_directory = self.backend_jobs_directory / str(job_id)
+        try:
+            shutil.rmtree(job_directory)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            logging.getLogger(__name__).warning(
+                "staged_input_cleanup_failed job_id=%s path=%s error=%s",
+                job_id,
+                job_directory,
+                error,
+            )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Start the submission reconciler."""
 
-    logging.basicConfig(level=logging.INFO)
-    SubmissionReconciler.from_env().run_forever()
+    SubmissionReconciler.run_cli(argv)
 
 
 if __name__ == "__main__":

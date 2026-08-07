@@ -20,6 +20,7 @@ SETTING_DEFAULTS = {
     "SLURM_COMMAND_TIMEOUT_SECONDS": 120,
     "STORAGE_OPERATION_TIMEOUT_SECONDS": 120,
     "DATABASE_STATEMENT_TIMEOUT_SECONDS": 30,
+    "BACKEND_JOB_STAGING_MIN_SPACE_GB": 1,
 }
 
 MAX_STATUS_BATCH_SIZE = 1_000
@@ -51,6 +52,7 @@ class OrchestrationSettings:
     slurm_command_timeout_seconds: int
     storage_operation_timeout_seconds: int
     database_statement_timeout_seconds: int
+    backend_job_staging_min_space_gb: int = 1
 
     @classmethod
     def from_env(cls) -> "OrchestrationSettings":
@@ -86,6 +88,9 @@ class OrchestrationSettings:
             ),
             database_statement_timeout_seconds=_positive_integer_from_env(
                 "DATABASE_STATEMENT_TIMEOUT_SECONDS"
+            ),
+            backend_job_staging_min_space_gb=_positive_integer_from_env(
+                "BACKEND_JOB_STAGING_MIN_SPACE_GB"
             ),
         )
         if (

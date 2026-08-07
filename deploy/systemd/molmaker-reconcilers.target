@@ -1,0 +1,9 @@
+[Unit]
+Description=Molmaker job reconcilers
+Wants=molmaker-reconciler@submission.service
+Wants=molmaker-reconciler@status.service
+Wants=molmaker-reconciler@finalisation.service
+After=network-online.target molmaker.service
+
+[Install]
+WantedBy=multi-user.target

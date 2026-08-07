@@ -86,13 +86,51 @@ psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f molmaker.sql
 
 Set the matching database values in `.env`.
 
-### 4. Start the backend
+### 4. Start the API and reconcilers
+
+Start the API in one terminal:
 
 ```zsh
 python -m uvicorn main:app --reload
 ```
 
 The API is available at `http://localhost:8000` by default.
+
+On the server, ensure the environment file is available at `/home/backend/.env`.
+Then install and start the `systemd` services for the first time from the
+repository root:
+
+```zsh
+sudo cp deploy/systemd/molmaker-reconciler@.service /etc/systemd/system/
+sudo cp deploy/systemd/molmaker-reconcilers.target /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now molmaker-reconcilers.target
+```
+
+Systemd then runs exactly one copy of each reconciler and starts them again when
+the server boots. After installation, restart all three with:
+
+```zsh
+sudo systemctl restart molmaker-reconcilers.target
+```
+
+The service definitions are in `deploy/systemd`. Logs are available through
+the system journal.
+
+Before starting, the submission reconciler checks that `BACKEND_WORK_DIR/jobs`
+is writable and that the volume has at least
+`BACKEND_JOB_STAGING_MIN_SPACE_GB` free. The default is 1 GB and can be changed
+in `.env`.
+
+> For local debugging, run one reconciler directly by choosing `submission`,
+> `status`, or `finalisation` in the module name. For example:
+>
+> ```zsh
+> python -m orchestration.submission_reconciler
+> ```
+>
+> Add `--once` to run one round and exit. This does not start the other two
+> reconcilers.
 
 ## Tests
 

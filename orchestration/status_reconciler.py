@@ -115,6 +115,7 @@ class StatusReconciler(BaseReconciler):
     shared_service_error_message = (
         "Status round stopped by a shared service problem"
     )
+    reconciler_name = "status"
 
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
@@ -279,11 +280,10 @@ class StatusReconciler(BaseReconciler):
             self.cluster_client.cancel_slurm_job(str(job.slurm_id))
         except ClusterClientError:
             logger.error(
-                "Slurm job may be orphaned because cancellation could not be confirmed",
-                extra={
-                    "job_id": str(job.job_id),
-                    "slurm_id": str(job.slurm_id),
-                },
+                "Slurm job may be orphaned because cancellation could not be confirmed "
+                "job_id=%s slurm_id=%s",
+                job.job_id,
+                job.slurm_id,
             )
 
         update.update(
@@ -295,11 +295,10 @@ class StatusReconciler(BaseReconciler):
         return update
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Start the status reconciler."""
 
-    logging.basicConfig(level=logging.INFO)
-    StatusReconciler.from_env().run_forever()
+    StatusReconciler.run_cli(argv)
 
 
 if __name__ == "__main__":
