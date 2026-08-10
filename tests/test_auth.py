@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from conftest import make_auth0_payload
 from models import Job
+from settings import get_settings
 
 # Helper to mock verify_token as a FastAPI dependency override
 def mock_verify_token(payload):
@@ -22,6 +23,11 @@ def mock_verify_token(payload):
 # 1. verify_token unit tests (the function itself, not via HTTP)
 
 class TestVerifyTokenUnit:
+    @pytest.fixture(autouse=True)
+    def auth_settings(self, monkeypatch):
+        monkeypatch.setenv("AUTH0_DOMAIN", "test.auth0.com")
+        monkeypatch.setenv("API_AUDIENCE", "test-audience")
+        get_settings.cache_clear()
     
     @patch("auth.requests.get")
     @patch("auth.jwt.get_unverified_header")
@@ -186,7 +192,7 @@ class TestVerifyTokenUnit:
         """
         verify_token passes audience and issuer to jwt.decode
         """
-        from auth import verify_token, API_AUDIENCE, AUTH0_DOMAIN
+        from auth import verify_token
         from fastapi.security import HTTPAuthorizationCredentials
 
         mock_requests_get.return_value.json.return_value = {
@@ -206,5 +212,5 @@ class TestVerifyTokenUnit:
         verify_token(credentials)
 
         _, kwargs = mock_decode.call_args
-        assert kwargs.get("audience") == API_AUDIENCE or \
-            mock_decode.call_args[0][2] == API_AUDIENCE
+        assert kwargs["audience"] == "test-audience"
+        assert kwargs["issuer"] == "https://test.auth0.com/"

@@ -10,7 +10,7 @@ from typing import Callable, ClassVar, Self, Sequence
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 
 
 class BaseReconciler(ABC):

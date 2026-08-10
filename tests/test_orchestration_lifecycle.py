@@ -6,7 +6,7 @@ from enum_types import JobStatus
 from models import Job
 from orchestration.cluster_client import ClusterDispatchClient, SlurmJobStatus
 from orchestration.finalisation_reconciler import FinalisationReconciler
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 from orchestration.status_reconciler import StatusReconciler
 from orchestration.submission_reconciler import SubmissionReconciler
 
@@ -24,7 +24,6 @@ def _settings():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
         backend_job_staging_min_space_gb=1,
     )
 

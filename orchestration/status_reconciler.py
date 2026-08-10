@@ -23,7 +23,7 @@ from orchestration.cluster_client import (
     JobDispatchError,
     SlurmJobStatus,
 )
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings, get_settings
 
 
 logger = logging.getLogger(__name__)
@@ -125,10 +125,11 @@ class StatusReconciler(BaseReconciler):
 
     @classmethod
     def from_env(cls) -> "StatusReconciler":
-        settings = OrchestrationSettings.from_env()
+        backend_settings = get_settings()
+        settings = backend_settings.orchestration
         return cls(
             session_factory=get_session_local(),
-            cluster_client=ClusterDispatchClient.from_env(settings),
+            cluster_client=ClusterDispatchClient.from_settings(backend_settings),
             settings=settings,
         )
 

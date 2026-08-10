@@ -1,4 +1,3 @@
-import os
 from typing import Dict, Optional
 
 import requests
@@ -13,6 +12,7 @@ from request_service import (
     lock_users_for_membership_change,
     set_user_role_and_group,
 )
+from settings import get_settings
 from utils import DEFAULT_USER_LIST_LIMIT, commit_or_rollback, get_user_sub
 
 
@@ -132,18 +132,21 @@ def update_user_role_and_group(
 
 def get_auth0_management_token() -> Optional[str]:
     try:
+        auth0_domain, client_id, client_secret = (
+            get_settings().auth0_management()
+        )
         response = requests.post(
-            f'https://{os.getenv("AUTH0_DOMAIN")}/oauth/token',
+            f"https://{auth0_domain}/oauth/token",
             json={
-                "client_id": os.getenv("AUTH0_CLIENT_ID"),
-                "client_secret": os.getenv("AUTH0_CLIENT_SECRET"),
-                "audience": f'https://{os.getenv("AUTH0_DOMAIN")}/api/v2/',
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "audience": f"https://{auth0_domain}/api/v2/",
                 "grant_type": "client_credentials",
             },
         )
         response.raise_for_status()
         return response.json()["access_token"]
-    except requests.RequestException as error:
+    except (EnvironmentError, requests.RequestException) as error:
         print(f"Error obtaining Auth0 management token: {error}")
         return None
 
@@ -187,7 +190,7 @@ def delete_user_local_data(db: Session, user: User) -> None:
 def delete_user_from_auth0(user_sub: str, token: str, db: Session) -> None:
     try:
         print(f"Deleting user {user_sub} from Auth0")
-        auth0_domain = os.getenv("AUTH0_DOMAIN")
+        auth0_domain = get_settings().require_auth0_domain()
         response = requests.delete(
             f"https://{auth0_domain}/api/v2/users/{user_sub}",
             headers={"Authorization": f"Bearer {token}"},

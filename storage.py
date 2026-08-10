@@ -3,10 +3,7 @@ from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from enum_types import JobFailureReason
-
-BUCKET_NAME: str = "ubchemica-bucket-1"
-REGION: str = "ca-central-1"
-BUCKET_ROOT_DIR: str = "ubchemica"
+from settings import get_settings
 
 CALCULATION_ARTIFACT_FILENAMES = {
     "energy": {"mol": "input.xyz"},
@@ -30,22 +27,29 @@ class StorageServiceError(RuntimeError):
     """An artifact storage operation could not be completed."""
 
 
+def create_s3_client():
+    """Create an S3 client using the shared region and AWS credential chain."""
+
+    settings = get_settings()
+    return boto3.client(
+        "s3",
+        region_name=settings.s3_region,
+        config=Config(signature_version="s3v4"),
+    )
+
+
 def generate_presigned_put_url(key: str) -> str:
     """
     Return a presigned URL for uploading one object.
 
     - expires_in: time in seconds that the URL remains valid.
     """
-    # TODO: Fix the aws access later
-    s3 = boto3.client(
-        "s3",
-        region_name=REGION,
-        config=Config(signature_version="s3v4"),
-    )
+    settings = get_settings()
+    s3 = create_s3_client()
 
     url = s3.generate_presigned_url(
         ClientMethod="put_object",
-        Params={"Bucket": BUCKET_NAME, "Key": key},
+        Params={"Bucket": settings.s3_bucket_name, "Key": key},
         ExpiresIn=3600,
     )
 
@@ -53,15 +57,12 @@ def generate_presigned_put_url(key: str) -> str:
 
 
 def generate_presigned_get_url(key: str) -> str:
-    s3 = boto3.client(
-        "s3",
-        region_name=REGION,
-        config=Config(signature_version="s3v4"),
-    )
+    settings = get_settings()
+    s3 = create_s3_client()
 
     url = s3.generate_presigned_url(
         ClientMethod="get_object",
-        Params={"Bucket": BUCKET_NAME, "Key": key},
+        Params={"Bucket": settings.s3_bucket_name, "Key": key},
         ExpiresIn=3600,
     )
 
@@ -70,7 +71,8 @@ def generate_presigned_get_url(key: str) -> str:
 
 def presign_zip_download_url(job_id: str) -> str:
     try:
-        return generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
+        bucket_root = get_settings().s3_bucket_root
+        return generate_presigned_get_url(f"{bucket_root}/archive/{job_id}.zip")
     except (BotoCoreError, ClientError) as error:
         raise StorageServiceError("Could not create archive download URL") from error
 
@@ -85,8 +87,9 @@ def finalisation_artifact_keys(
     if calculation_type not in CALCULATION_ARTIFACT_FILENAMES:
         raise ValueError("calculation_type is invalid")
 
-    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
-    keys = {"zip": f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"}
+    bucket_root = get_settings().s3_bucket_root
+    job_dir = f"{bucket_root}/jobs/{job_id}/"
+    keys = {"zip": f"{bucket_root}/archive/{job_id}.zip"}
     if terminal_status == "completed":
         keys["result"] = job_dir + "result.json"
         keys.update(
@@ -144,13 +147,10 @@ def required_finalisation_artifacts_exist(
         else [keys["zip"]]
     )
     try:
-        s3 = boto3.client(
-            "s3",
-            region_name=REGION,
-            config=Config(signature_version="s3v4"),
-        )
+        settings = get_settings()
+        s3 = create_s3_client()
         for key in required_keys:
-            s3.head_object(Bucket=BUCKET_NAME, Key=key)
+            s3.head_object(Bucket=settings.s3_bucket_name, Key=key)
     except ClientError as error:
         error_code = str(error.response.get("Error", {}).get("Code", ""))
         if error_code in {"404", "NoSuchKey", "NotFound"}:

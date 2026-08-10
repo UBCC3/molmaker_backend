@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Any, Iterable, Literal
 from uuid import UUID
 
 from enum_types import CalculationType, JobStatus
-from orchestration.settings import OrchestrationSettings
+from settings import BackendSettings
 
 
 SSH_HOST = "cluster"
@@ -91,18 +90,15 @@ class ClusterDispatchClient:
     transfer_timeout_seconds: int
 
     @classmethod
-    def from_env(
+    def from_settings(
         cls,
-        settings: OrchestrationSettings | None = None,
+        settings: BackendSettings,
     ) -> "ClusterDispatchClient":
-        cluster_work_dir = os.getenv("CLUSTER_WORK_DIR")
-        if not cluster_work_dir:
-            raise ValueError("CLUSTER_WORK_DIR must be configured")
-        settings = settings or OrchestrationSettings.from_env()
+        orchestration = settings.orchestration
         return cls(
-            PurePosixPath(cluster_work_dir),
-            settings.slurm_command_timeout_seconds,
-            settings.storage_operation_timeout_seconds,
+            settings.require_cluster_work_dir(),
+            orchestration.slurm_command_timeout_seconds,
+            orchestration.storage_operation_timeout_seconds,
         )
 
     def job_directory(self, job_id: UUID | str) -> PurePosixPath:

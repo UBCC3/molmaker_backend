@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import tempfile
 import time
@@ -26,7 +25,7 @@ from orchestration.cluster_client import (
     JobDispatchError,
     SubmissionOutcomeUnknownError,
 )
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings, get_settings
 
 
 GIGABYTE = 1_000_000_000
@@ -59,15 +58,15 @@ class SubmissionReconciler(BaseReconciler):
 
     @classmethod
     def from_env(cls) -> "SubmissionReconciler":
-        settings = OrchestrationSettings.from_env()
-        backend_work_dir = os.getenv("BACKEND_WORK_DIR")
-        if not backend_work_dir:
-            raise ValueError("BACKEND_WORK_DIR must be configured")
+        backend_settings = get_settings()
+        settings = backend_settings.orchestration
         reconciler = cls(
             session_factory=get_session_local(),
-            cluster_client=ClusterDispatchClient.from_env(settings),
+            cluster_client=ClusterDispatchClient.from_settings(backend_settings),
             settings=settings,
-            backend_jobs_directory=Path(backend_work_dir) / "jobs",
+            backend_jobs_directory=(
+                backend_settings.require_backend_work_dir() / "jobs"
+            ),
         )
         reconciler.check_job_staging_readiness()
         return reconciler

@@ -14,7 +14,7 @@ from orchestration.cluster_client import (
     JobDispatchError,
     SubmissionOutcomeUnknownError,
 )
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 from orchestration.submission_reconciler import SubmissionReconciler
 from conftest import TestingSessionLocal
 
@@ -33,7 +33,6 @@ def settings():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
     )
 
 
@@ -107,17 +106,17 @@ def test_startup_readiness_rejects_insufficient_job_staging_space(
 def test_from_env_checks_job_staging_readiness(
     settings,
     tmp_path,
-    monkeypatch,
     mocker,
 ):
     work_directory = tmp_path / "backend"
     session_factory = Mock()
     cluster_client = Mock(spec=ClusterDispatchClient)
-    monkeypatch.setenv("BACKEND_WORK_DIR", str(work_directory))
+    backend_settings = Mock(orchestration=settings)
+    backend_settings.require_backend_work_dir.return_value = work_directory
     mocker.patch.object(
-        OrchestrationSettings,
-        "from_env",
-        return_value=settings,
+        submission_reconciler,
+        "get_settings",
+        return_value=backend_settings,
     )
     mocker.patch.object(
         submission_reconciler,
@@ -126,7 +125,7 @@ def test_from_env_checks_job_staging_readiness(
     )
     mocker.patch.object(
         ClusterDispatchClient,
-        "from_env",
+        "from_settings",
         return_value=cluster_client,
     )
     readiness_check = mocker.patch.object(
@@ -138,6 +137,7 @@ def test_from_env_checks_job_staging_readiness(
     reconciler = SubmissionReconciler.from_env()
 
     readiness_check.assert_called_once_with(reconciler)
+    ClusterDispatchClient.from_settings.assert_called_once_with(backend_settings)
     assert reconciler.backend_jobs_directory == work_directory / "jobs"
 
 

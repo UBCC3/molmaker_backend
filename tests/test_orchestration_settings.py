@@ -2,13 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from orchestration.settings import (
-    SETTING_DEFAULTS,
+from settings import (
+    BackendSettings,
+    ORCHESTRATION_DEFAULTS,
     OrchestrationSettings,
 )
 
 
-SETTING_NAMES = tuple(SETTING_DEFAULTS)
+SETTING_NAMES = tuple(ORCHESTRATION_DEFAULTS)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,7 +20,7 @@ def clear_orchestration_environment(monkeypatch):
 
 
 def test_orchestration_settings_use_documented_defaults():
-    settings = OrchestrationSettings.from_env()
+    settings = BackendSettings.from_env().orchestration
 
     assert settings == OrchestrationSettings(
         submission_poll_interval_seconds=5,
@@ -33,7 +34,6 @@ def test_orchestration_settings_use_documented_defaults():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
     )
 
 
@@ -41,12 +41,12 @@ def test_env_example_contains_every_orchestration_default():
     example_values = {}
     for line in (PROJECT_ROOT / ".env.example").read_text().splitlines():
         name, separator, value = line.partition("=")
-        if separator and name in SETTING_DEFAULTS:
+        if separator and name in ORCHESTRATION_DEFAULTS:
             example_values[name] = value
 
     assert example_values == {
         name: str(default)
-        for name, default in SETTING_DEFAULTS.items()
+        for name, default in ORCHESTRATION_DEFAULTS.items()
     }
 
 
@@ -54,7 +54,7 @@ def test_orchestration_settings_read_environment_overrides(monkeypatch):
     for position, name in enumerate(SETTING_NAMES, start=1):
         monkeypatch.setenv(name, str(position))
 
-    settings = OrchestrationSettings.from_env()
+    settings = BackendSettings.from_env().orchestration
 
     assert settings.submission_poll_interval_seconds == 1
     assert settings.submission_query_limit == 2
@@ -67,8 +67,7 @@ def test_orchestration_settings_read_environment_overrides(monkeypatch):
     assert settings.outage_max_backoff_seconds == 9
     assert settings.slurm_command_timeout_seconds == 10
     assert settings.storage_operation_timeout_seconds == 11
-    assert settings.database_statement_timeout_seconds == 12
-    assert settings.backend_job_staging_min_space_gb == 13
+    assert settings.backend_job_staging_min_space_gb == 12
 
 
 @pytest.mark.parametrize("invalid_value", ["not-a-number", "1.5"])
@@ -79,7 +78,7 @@ def test_orchestration_settings_reject_non_integer_values(
     monkeypatch.setenv("STATUS_BATCH_SIZE", invalid_value)
 
     with pytest.raises(ValueError, match="STATUS_BATCH_SIZE must be an integer"):
-        OrchestrationSettings.from_env()
+        BackendSettings.from_env()
 
 
 @pytest.mark.parametrize("invalid_value", ["0", "-1"])
@@ -90,7 +89,7 @@ def test_orchestration_settings_reject_non_positive_values(
     monkeypatch.setenv("MAX_ATTEMPTS", invalid_value)
 
     with pytest.raises(ValueError, match="MAX_ATTEMPTS must be greater than zero"):
-        OrchestrationSettings.from_env()
+        BackendSettings.from_env()
 
 
 def test_initial_outage_backoff_cannot_exceed_cap(monkeypatch):
@@ -104,7 +103,7 @@ def test_initial_outage_backoff_cannot_exceed_cap(monkeypatch):
             "or equal to RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS"
         ),
     ):
-        OrchestrationSettings.from_env()
+        BackendSettings.from_env()
 
 
 def test_status_batch_size_cannot_exceed_dispatch_limit(monkeypatch):
@@ -114,4 +113,4 @@ def test_status_batch_size_cannot_exceed_dispatch_limit(monkeypatch):
         ValueError,
         match="STATUS_BATCH_SIZE must not exceed 1000",
     ):
-        OrchestrationSettings.from_env()
+        BackendSettings.from_env()

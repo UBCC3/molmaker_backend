@@ -21,7 +21,6 @@ from dependencies import get_db
 from auth import verify_token
 from user_service import get_user_or_404
 import os, uuid, shutil
-import boto3
 from pathlib import Path
 from utils import (
     DEFAULT_STRUCTURE_LIST_LIMIT,
@@ -33,21 +32,11 @@ from datetime import datetime, timezone
 from typing import List
 from ase.io import read
 from pymatgen.core import Molecule
-from botocore.client import Config
+from settings import get_settings
+from storage import create_s3_client
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 JOB_DIR = "./results"
-
-# session = boto3.Session()
-# s3 = session.client('s3')
-BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
-REGION: str = "ca-central-1"
-
-s3 = boto3.client(
-    "s3",
-    region_name=REGION,
-    config=Config(signature_version="s3v4")
-)
 
 @router.get("/")
 def get_all_structures(
@@ -79,6 +68,8 @@ def get_all_structures(
             limit=limit,
             offset=offset,
         )
+        settings = get_settings()
+        s3 = create_s3_client()
 
         return [
             {
@@ -86,7 +77,7 @@ def get_all_structures(
                 "imageS3URL": s3.generate_presigned_url(
                     "get_object",
                     Params={
-                        "Bucket": BUCKET_NAME,
+                        "Bucket": settings.s3_bucket_name,
                         "Key": f"structures/{s.id}.png"
                     },
                     ExpiresIn=3600
@@ -169,9 +160,11 @@ def get_presigned_url_for_structure(
     require_asset_permission(db_user, structure, can_read_asset)
     key = f"structures/{structure.id}.xyz"
     try:
+        settings = get_settings()
+        s3 = create_s3_client()
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
-            Params={"Bucket": BUCKET_NAME, "Key": key},
+            Params={"Bucket": settings.s3_bucket_name, "Key": key},
             ExpiresIn=300
         )
         return JSONResponse({"url": url})
@@ -349,6 +342,8 @@ def create_and_upload_structure(
     """
     structure_path = None
     try:
+        settings = get_settings()
+        s3 = create_s3_client()
         db_user = get_user_or_404(db, get_user_sub(user))
         user_id = db_user.user_sub
 
@@ -364,13 +359,22 @@ def create_and_upload_structure(
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        s3_link = upload_structure_to_s3(file_path, structure_id_str)
+        s3_link = upload_structure_to_s3(
+            file_path,
+            structure_id_str,
+            s3,
+            settings.s3_bucket_name,
+        )
         uploaded_at = datetime.now(timezone.utc)
 
         print("FORMULA", formula)
         try:
             image_key = f"structures/{structure_id_str}.png"
-            s3.upload_fileobj(image.file, BUCKET_NAME, image_key)
+            s3.upload_fileobj(
+                image.file,
+                settings.s3_bucket_name,
+                image_key,
+            )
         except Exception as e:
             print("Upload to s3 failed:", e)
             raise
@@ -412,13 +416,18 @@ def create_and_upload_structure(
             shutil.rmtree(structure_path, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-def upload_structure_to_s3(local_file_path: str, structure_id: str):
+def upload_structure_to_s3(
+    local_file_path: str,
+    structure_id: str,
+    s3,
+    bucket_name: str,
+):
     key = f"structures/{structure_id}.xyz"
 
     try:
-        s3.upload_file(local_file_path, BUCKET_NAME, key)
-        print(f"Uploaded to s3://{BUCKET_NAME}/{key}")
-        return f"s3://{BUCKET_NAME}/{key}"
+        s3.upload_file(local_file_path, bucket_name, key)
+        print(f"Uploaded to s3://{bucket_name}/{key}")
+        return f"s3://{bucket_name}/{key}"
     except Exception as e:
         print("Upload to s3 failed:", e)
         raise

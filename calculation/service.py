@@ -1,4 +1,3 @@
-import os
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -6,8 +5,6 @@ from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 
-import boto3
-from botocore.client import Config
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -15,6 +12,8 @@ from asset_service import get_asset_or_404, set_asset_tags
 from enum_types import CalculationType, JobStatus
 from models import Job, Structure, User
 from permissions import can_read_asset
+from settings import get_settings
+from storage import create_s3_client
 from utils import commit_or_rollback
 
 
@@ -22,9 +21,6 @@ INPUT_FILENAME = "input.xyz"
 KEYWORDS_FILENAME = "keywords.json"
 STANDARD_ANALYSIS_METHOD = "mp2"
 STANDARD_ANALYSIS_BASIS_SET = "6-311+G(2d,p)"
-S3_REGION = "ca-central-1"
-
-
 def _normalized_required_text(value: str, field_name: str) -> str:
     normalized_value = value.strip()
     if not normalized_value:
@@ -88,13 +84,14 @@ def _resolve_source_structure(
 
 
 def _backend_jobs_directory() -> Path:
-    backend_work_dir = os.getenv("BACKEND_WORK_DIR")
-    if not backend_work_dir:
+    try:
+        backend_work_dir = get_settings().require_backend_work_dir()
+    except EnvironmentError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Calculation submission storage is not configured",
-        )
-    return Path(backend_work_dir) / "jobs"
+        ) from None
+    return backend_work_dir / "jobs"
 
 
 def _copy_upload(upload: UploadFile, destination: Path) -> None:
@@ -110,11 +107,7 @@ def download_structure_source(location: str, destination: Path) -> None:
     if parsed_location.scheme != "s3" or not parsed_location.netloc or not object_key:
         raise ValueError("Structure location must be an S3 URI")
 
-    s3 = boto3.client(
-        "s3",
-        region_name=S3_REGION,
-        config=Config(signature_version="s3v4"),
-    )
+    s3 = create_s3_client()
     s3.download_file(
         parsed_location.netloc,
         object_key,

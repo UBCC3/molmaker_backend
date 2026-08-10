@@ -12,7 +12,7 @@ from orchestration.cluster_client import (
     JobDispatchError,
     SlurmJobStatus,
 )
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 from orchestration.status_reconciler import (
     ACTIVE_SLURM_STATES,
     FAILURE_REASON_BY_SLURM_STATE,
@@ -74,7 +74,6 @@ def settings():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
     )
 
 

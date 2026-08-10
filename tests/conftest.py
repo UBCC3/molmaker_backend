@@ -14,6 +14,16 @@ from dependencies import get_db
 from enum_types import JobStatus
 from main import create_app
 from models import Group, Job, Request, Structure, Tags, User
+from settings import get_settings
+
+
+@pytest.fixture(autouse=True)
+def clear_backend_settings_cache():
+    """Keep environment overrides isolated between tests."""
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 # --- Test database ---
 

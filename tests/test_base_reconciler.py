@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from orchestration.base_reconciler import BaseReconciler
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 
 
 def _settings() -> OrchestrationSettings:
@@ -20,7 +20,6 @@ def _settings() -> OrchestrationSettings:
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
         backend_job_staging_min_space_gb=1,
     )
 

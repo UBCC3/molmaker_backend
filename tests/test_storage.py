@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 import storage
 from conftest import make_auth0_payload
 from enum_types import JobFailureReason, JobStatus
+from settings import get_settings
 
 def _url(prefix, key):
     return f"{prefix}:{key}"
@@ -119,7 +120,7 @@ class TestFinalisationStorage:
 
         class S3:
             def head_object(self, *, Bucket, Key):
-                assert Bucket == storage.BUCKET_NAME
+                assert Bucket == get_settings().s3_bucket_name
                 checked_keys.append(Key)
 
         monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
@@ -215,7 +216,7 @@ class TestJobArtifactDownloadUrls:
             failure_reason,
         )
 
-        job_dir = f"{storage.BUCKET_ROOT_DIR}/jobs/{job_id}/"
+        job_dir = f"{get_settings().s3_bucket_root}/jobs/{job_id}/"
         expected = {
             name: _url("get", job_dir + filename)
             for name, filename in expected_artifacts.items()
@@ -246,7 +247,7 @@ class TestPresignZipDownloadUrl:
 
         result = storage.presign_zip_download_url(job_id)
 
-        archive_key = f"{storage.BUCKET_ROOT_DIR}/archive/{job_id}.zip"
+        archive_key = f"{get_settings().s3_bucket_root}/archive/{job_id}.zip"
         assert result == _url("get", archive_key)
         assert mock_get_urls == [archive_key]
 

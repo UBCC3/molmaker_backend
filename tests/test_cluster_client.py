@@ -15,6 +15,7 @@ from orchestration.cluster_client import (
     SlurmJobStatus,
     SubmissionOutcomeUnknownError,
 )
+from settings import BackendSettings
 
 
 JOB_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
@@ -80,7 +81,7 @@ def test_client_reads_cluster_settings(monkeypatch):
     monkeypatch.setenv("SLURM_COMMAND_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("STORAGE_OPERATION_TIMEOUT_SECONDS", "46")
 
-    client = ClusterDispatchClient.from_env()
+    client = ClusterDispatchClient.from_settings(BackendSettings.from_env())
 
     assert client.cluster_work_dir == PurePosixPath("/remote/molmaker")
     assert client.timeout_seconds == 45

@@ -15,7 +15,7 @@ from orchestration.cluster_client import (
     JobDispatchError,
 )
 from orchestration.finalisation_reconciler import FinalisationReconciler
-from orchestration.settings import OrchestrationSettings
+from settings import OrchestrationSettings
 from storage import StorageServiceError
 
 
@@ -33,7 +33,6 @@ def settings():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        database_statement_timeout_seconds=30,
     )
 
 

@@ -4,6 +4,7 @@ import uuid
 
 from conftest import make_auth0_payload
 from models import Structure, Tags
+from settings import get_settings
 
 
 class FakeS3Client:
@@ -35,8 +36,13 @@ def _mock_structure_s3(monkeypatch):
     import structures.routes as structures_routes
 
     fake_s3 = FakeS3Client()
-    monkeypatch.setattr(structures_routes, "s3", fake_s3)
-    monkeypatch.setattr(structures_routes, "BUCKET_NAME", "test-bucket")
+    monkeypatch.setenv("S3_BUCKET_NAME", "test-bucket")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        structures_routes,
+        "create_s3_client",
+        lambda: fake_s3,
+    )
     return fake_s3
 
 
