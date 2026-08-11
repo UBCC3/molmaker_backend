@@ -6,8 +6,15 @@ calculation results.
 
 ## Documentation
 
-- [Membership request design](docs/membership-requests.md) explains invites, join requests, de-member requests, request expiry, and request history.
-- [Ownership and permissions](docs/ownership-and-permissions.md) explains asset ownership, role permissions, ownership transfers, and deletion behaviour.
+- [Backend data flow](docs/backend-data-flow.md) explains how requests move
+  through authentication, services, PostgreSQL, the reconcilers, Alliance, and
+  S3.
+- [Job orchestration](docs/job-orchestration.md) explains job statuses, the
+  three reconcilers, cluster dispatch, retries, and recovery.
+- [Ownership and permissions](docs/ownership-and-permissions.md) explains asset
+  ownership, roles, transfers, cancellation, and file access.
+- [Membership requests](docs/membership-requests.md) explains invites, join
+  requests, de-member requests, expiry, and history.
 - Swagger UI documents the available API endpoints and their request and response fields. After starting the backend, open
   [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -16,6 +23,8 @@ calculation results.
 - Python 3.11
 - PostgreSQL 14
 - The environment values listed in `.env.example`
+- For production calculation processing, a compatible reviewed
+  `Cluster-API-QC` dispatch deployment on Alliance
 
 ## Local Setup
 
@@ -86,6 +95,13 @@ psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f molmaker.sql
 
 Set the matching database values in `.env`.
 
+`.env.example` is the complete backend settings reference. AWS credentials are
+loaded through boto3's standard credential provider chain rather than stored in
+backend-specific settings.
+
+Settings are loaded once and cached separately by the API and each reconciler
+process. Restart those processes after changing `.env`.
+
 ### 4. Start the API and reconcilers
 
 Start the API in one terminal:
@@ -95,6 +111,34 @@ python -m uvicorn main:app --reload
 ```
 
 The API is available at `http://localhost:8000` by default.
+
+#### Deploy the Alliance dispatch script
+
+Before enabling the reconcilers, deploy a compatible, reviewed
+`Cluster-API-QC/runner/dispatch.py` to:
+
+```text
+/home/thachuk/ubchemica/dispatch.py
+```
+
+Set `CLUSTER_WORK_DIR=/home/thachuk/ubchemica` in the backend environment. The
+supported operations and security boundary are described in
+[Restricted Alliance Dispatch](docs/job-orchestration.md#restricted-alliance-dispatch).
+
+Deployment requires explicit approval:
+
+1. Review and commit the matching `Cluster-API-QC` source, then record its
+   commit and SHA-256 checksum.
+2. From an authorized Alliance login, back up the deployed file, replace it
+   with the reviewed source, and verify that the checksum still matches. The
+   restricted backend key cannot run arbitrary checksum commands.
+3. Through the restricted backend connection, smoke-test submission, both
+   recovery lookups, batched status checks, cancellation, artifact upload, and
+   error handling.
+4. If any check fails, restore the backup. Remove only the smoke-test jobs and
+   directories created during these checks.
+
+#### Install the reconciler services
 
 On the server, ensure the environment file is available at `/home/backend/.env`.
 Then install and start the `systemd` services for the first time from the
@@ -132,6 +176,23 @@ in `.env`.
 > Add `--once` to run one round and exit. This does not start the other two
 > reconcilers.
 
+### Reconciler operations
+
+Check the services or follow a reconciler's logs with:
+
+```zsh
+sudo systemctl status molmaker-reconcilers.target
+sudo systemctl status 'molmaker-reconciler@*.service'
+sudo journalctl -u molmaker-reconciler@status.service -f
+```
+
+When diagnosing one job, inspect its saved status, attempt count, failure
+fields, and Slurm ID. If many jobs pause together, first check for a shared
+PostgreSQL, SSH, Slurm, or S3 outage.
+
+Restarting a reconciler is safe because PostgreSQL, deterministic paths, and
+deterministic object keys preserve the work needed by the next round.
+
 ## Tests
 
 Install the development dependencies and run the full test suite:
@@ -155,15 +216,17 @@ database user can import it:
 pg_dump --format=plain --no-owner --no-acl --file=molmaker.sql "${DB_NAME}"
 ```
 
-To update a database created from `main`, back it up and run the PR 14
-migration:
+To update a database created from `main`, back it up and run both migrations in
+order:
 
 ```zsh
 psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/001_pr14_database_changes.sql
+psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/002_jobs_orchestration_redesign.sql
 ```
 
-Running the migration more than once is safe. Do not run it after importing
-the current `molmaker.sql`; that dump already contains the changes.
+If migration `001` was already applied, run only migration `002`. Both scripts
+are safe to run again after they succeed. Do not run them after importing the
+current `molmaker.sql`; that dump already contains both sets of changes.
 
 In production, confirm which database role runs migrations. If a separate
 migration role owns the tables, grant the backend role the permissions it

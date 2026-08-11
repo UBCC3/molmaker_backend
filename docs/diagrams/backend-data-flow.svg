@@ -1,0 +1,237 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="diagram-title diagram-description">
+  <title id="diagram-title">Backend request and data flow</title>
+  <desc id="diagram-description">
+    Public requests pass through FastAPI, authentication, permissions, and services to PostgreSQL.
+    Calculation inputs are staged on backend storage, then three database-backed reconcilers use a restricted
+    Alliance dispatch interface to submit and monitor Slurm jobs and upload artifacts to S3.
+  </desc>
+
+  <defs>
+    <filter id="card-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea7a20"/>
+    </marker>
+    <marker id="arrow-indigo" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6ee1"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#159a68"/>
+    </marker>
+    <marker id="arrow-slate" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 9 4.5 L 0 9 z" fill="#64748b"/>
+    </marker>
+
+    <style>
+      text {
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        fill: #0f172a;
+      }
+      .title { font-size: 27px; font-weight: 700; letter-spacing: -0.3px; }
+      .subtitle { font-size: 13px; font-weight: 400; fill: #475569; }
+      .panel-label { font-size: 13px; font-weight: 700; fill: #334155; }
+      .node-title { font-size: 15px; font-weight: 700; }
+      .node-body { font-size: 12.5px; font-weight: 400; fill: #475569; }
+      .small-title { font-size: 13px; font-weight: 700; }
+      .small-body { font-size: 11.5px; font-weight: 400; fill: #475569; }
+      .arrow-label { font-size: 11.5px; font-weight: 600; fill: #334155; }
+      .arrow-command { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; font-weight: 400; fill: #64748b; }
+      .footer-text { font-size: 11.5px; font-weight: 500; fill: #475569; }
+      .flow-blue { fill: none; stroke: #2563eb; stroke-width: 3; marker-end: url(#arrow-blue); }
+      .flow-blue-both { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-dasharray: 7 6; marker-start: url(#arrow-blue); marker-end: url(#arrow-blue); }
+      .flow-orange { fill: none; stroke: #ea7a20; stroke-width: 2.8; marker-end: url(#arrow-orange); }
+      .flow-indigo { fill: none; stroke: #5b6ee1; stroke-width: 2.8; marker-end: url(#arrow-indigo); }
+      .flow-green { fill: none; stroke: #159a68; stroke-width: 2.8; marker-end: url(#arrow-green); }
+      .flow-slate { fill: none; stroke: #64748b; stroke-width: 2.2; marker-end: url(#arrow-slate); }
+      .flow-auth { fill: none; stroke: #7c3aed; stroke-width: 2; stroke-dasharray: 6 5; marker-end: url(#arrow-slate); }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" fill="#ffffff"/>
+
+  <text x="700" y="35" text-anchor="middle" class="title">Backend request and data flow</text>
+  <text x="700" y="58" text-anchor="middle" class="subtitle">Short API requests, durable database state, and supervised calculation processing</text>
+
+  <!-- Public request path -->
+  <rect x="40" y="82" width="1320" height="176" rx="17" fill="#f3f8ff" stroke="#b9d5f5" stroke-width="1.5"/>
+  <text x="61" y="106" class="panel-label">Public request path</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="72" y="129" width="205" height="74" rx="10" fill="#ffffff" stroke="#8ab9ef" stroke-width="1.5"/>
+  </g>
+  <text x="174.5" y="158" text-anchor="middle" class="node-title">Client</text>
+  <text x="174.5" y="181" text-anchor="middle" class="node-body">frontend or API consumer</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="336" y="121" width="230" height="90" rx="10" fill="#ffffff" stroke="#8da1b8" stroke-width="1.5"/>
+  </g>
+  <text x="451" y="153" text-anchor="middle" class="node-title">FastAPI service</text>
+  <text x="451" y="177" text-anchor="middle" class="node-body">validate request</text>
+  <text x="451" y="195" text-anchor="middle" class="node-body">shape the response</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="628" y="121" width="254" height="90" rx="10" fill="#ffffff" stroke="#8da1b8" stroke-width="1.5"/>
+  </g>
+  <text x="755" y="153" text-anchor="middle" class="node-title">Permissions and services</text>
+  <text x="755" y="177" text-anchor="middle" class="node-body">identity, ownership,</text>
+  <text x="755" y="195" text-anchor="middle" class="node-body">and business rules</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="1037" y="113" width="278" height="106" rx="11" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  </g>
+  <text x="1176" y="145" text-anchor="middle" class="node-title">PostgreSQL</text>
+  <text x="1176" y="170" text-anchor="middle" class="node-body">users, groups, jobs, structures, tags</text>
+  <text x="1176" y="190" text-anchor="middle" class="node-body">and durable orchestration state</text>
+
+  <rect x="661" y="220" width="188" height="31" rx="8" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="1"/>
+  <text x="755" y="240" text-anchor="middle">
+    <tspan class="small-title">Auth0</tspan>
+    <tspan class="small-body"> · identity and signing keys</tspan>
+  </text>
+
+  <path d="M 277 166 L 336 166" class="flow-blue"/>
+  <rect x="286" y="139" width="42" height="19" rx="5" fill="#f3f8ff"/>
+  <text x="307" y="153" text-anchor="middle" class="arrow-label">HTTP</text>
+
+  <path d="M 566 166 L 628 166" class="flow-blue"/>
+  <rect x="573" y="139" width="49" height="19" rx="5" fill="#f3f8ff"/>
+  <text x="597.5" y="153" text-anchor="middle" class="arrow-label">validated request</text>
+
+  <path d="M 882 166 L 1037 166" class="flow-blue"/>
+  <rect x="904" y="139" width="112" height="19" rx="5" fill="#f3f8ff"/>
+  <text x="960" y="153" text-anchor="middle" class="arrow-label">short transaction</text>
+
+  <path d="M 755 220 L 755 211" fill="none" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4 3"/>
+
+  <!-- Background work -->
+  <rect x="40" y="286" width="1320" height="402" rx="17" fill="#fbfcfe" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="61" y="311" class="panel-label">Data and background work</text>
+
+  <!-- Backend staging -->
+  <g filter="url(#card-shadow)">
+    <rect x="72" y="401" width="228" height="120" rx="11" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+  </g>
+  <text x="186" y="433" text-anchor="middle" class="node-title">Backend job staging</text>
+  <text x="186" y="456" text-anchor="middle" class="node-body">input.xyz — molecule coordinates</text>
+  <text x="186" y="476" text-anchor="middle" class="node-body">keywords.json — optional settings</text>
+  <text x="186" y="496" text-anchor="middle" class="small-body">stored on backend disk</text>
+  <text x="186" y="513" text-anchor="middle" class="small-body">removed after the Slurm ID is saved</text>
+
+  <!-- Orchestration card -->
+  <g filter="url(#card-shadow)">
+    <rect x="350" y="328" width="310" height="298" rx="13" fill="#ffffff" stroke="#8da1b8" stroke-width="1.5"/>
+  </g>
+  <text x="505" y="356" text-anchor="middle" class="node-title">Job orchestration</text>
+  <text x="505" y="375" text-anchor="middle" class="small-body">three independent supervised processes</text>
+
+  <rect x="374" y="393" width="262" height="62" rx="9" fill="#fff7ed" stroke="#ea7a20" stroke-width="1.7"/>
+  <rect x="374" y="393" width="6" height="62" rx="3" fill="#ea7a20"/>
+  <text x="397" y="418" class="small-title">Submission reconciler</text>
+  <text x="397" y="437" class="small-body">copy staged files, then submit</text>
+  <text x="397" y="451" class="small-body">lost response → find the accepted job first</text>
+
+  <rect x="374" y="474" width="262" height="62" rx="9" fill="#eef2ff" stroke="#5b6ee1" stroke-width="1.7"/>
+  <rect x="374" y="474" width="6" height="62" rx="3" fill="#5b6ee1"/>
+  <text x="397" y="499" class="small-title">Status reconciler</text>
+  <text x="397" y="515" class="small-body">poll Slurm states in batches</text>
+  <text x="397" y="530" class="small-body">cancel only after the latest state check</text>
+
+  <rect x="374" y="555" width="262" height="62" rx="9" fill="#ecfdf5" stroke="#159a68" stroke-width="1.7"/>
+  <rect x="374" y="555" width="6" height="62" rx="3" fill="#159a68"/>
+  <text x="397" y="580" class="small-title">Finalisation reconciler</text>
+  <text x="397" y="600" class="small-body">upload files; then publish the outcome</text>
+
+  <!-- Restricted Alliance boundary -->
+  <rect x="790" y="328" width="345" height="298" rx="13" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="962.5" y="355" text-anchor="middle" class="node-title">Alliance cluster</text>
+  <text x="962.5" y="374" text-anchor="middle" class="small-body">restricted SSH command boundary</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="814" y="393" width="178" height="210" rx="10" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+  </g>
+  <text x="903" y="421" text-anchor="middle" class="small-title">dispatch.py</text>
+  <text x="903" y="441" text-anchor="middle" class="small-body">allow-listed commands only</text>
+  <line x1="830" y1="456" x2="976" y2="456" stroke="#e2e8f0" stroke-width="1"/>
+  <circle cx="834" cy="482" r="4" fill="#ea7a20"/>
+  <text x="846" y="486" class="small-body">submit · exact lookups</text>
+  <circle cx="834" cy="519" r="4" fill="#5b6ee1"/>
+  <text x="846" y="523" class="small-body">batch status · cancel</text>
+  <circle cx="834" cy="556" r="4" fill="#159a68"/>
+  <text x="846" y="560" class="small-body">upload artifacts</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="995" y="408" width="125" height="81" rx="9" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4"/>
+  </g>
+  <text x="1057.5" y="437" text-anchor="middle" class="small-title">Slurm</text>
+  <text x="1057.5" y="458" text-anchor="middle" class="small-body">submit · account</text>
+  <text x="1057.5" y="475" text-anchor="middle" class="small-body">and cancel jobs</text>
+
+  <g filter="url(#card-shadow)">
+    <rect x="995" y="518" width="125" height="81" rx="9" fill="#ffffff" stroke="#94a3b8" stroke-width="1.4"/>
+  </g>
+  <text x="1057.5" y="540" text-anchor="middle" class="small-title">Job directory</text>
+  <text x="1057.5" y="558" text-anchor="middle" class="small-body">on Alliance</text>
+  <text x="1057.5" y="577" text-anchor="middle" class="small-body">input + logs + results</text>
+
+  <!-- S3 -->
+  <g filter="url(#card-shadow)">
+    <rect x="1182" y="474" width="153" height="108" rx="11" fill="#ecfdf5" stroke="#159a68" stroke-width="2"/>
+  </g>
+  <text x="1258.5" y="505" text-anchor="middle" class="node-title">S3 storage</text>
+  <text x="1258.5" y="530" text-anchor="middle" class="node-body">structures</text>
+  <text x="1258.5" y="550" text-anchor="middle" class="node-body">artifacts · archives</text>
+
+  <!-- Durable hand-offs and file movement -->
+  <path d="M 451 211 C 451 285, 186 306, 186 401" class="flow-blue"/>
+  <rect x="247" y="276" width="118" height="21" rx="5" fill="#ffffff"/>
+  <text x="306" y="291" text-anchor="middle" class="arrow-label">stage calculation input</text>
+
+  <path d="M 300 451 C 329 451, 340 424, 374 424" class="flow-blue"/>
+  <rect x="304" y="402" width="66" height="35" rx="5" fill="#fbfcfe"/>
+  <text x="337" y="416" text-anchor="middle" class="arrow-label">read staged</text>
+  <text x="337" y="431" text-anchor="middle" class="arrow-label">job directory</text>
+
+  <path d="M 1067 219 C 1010 266, 727 264, 660 351" class="flow-blue-both"/>
+  <rect x="777" y="253" width="159" height="21" rx="5" fill="#ffffff"/>
+  <text x="856.5" y="268" text-anchor="middle" class="arrow-label">select work · commit state</text>
+
+  <path d="M 636 424 C 705 424, 739 450, 814 464" class="flow-orange"/>
+  <rect x="650" y="397" width="153" height="47" rx="6" fill="#fbfcfe"/>
+  <text x="726.5" y="413" text-anchor="middle" class="arrow-label">Submit after the file copy</text>
+  <text x="726.5" y="429" text-anchor="middle" class="arrow-label">find prior acceptance on retry</text>
+  <text x="726.5" y="443" text-anchor="middle" class="arrow-command">submit · find-active · find-accounting</text>
+
+  <path d="M 636 505 C 709 505, 741 519, 814 519" class="flow-indigo"/>
+  <rect x="674" y="477" width="116" height="35" rx="5" fill="#fbfcfe"/>
+  <text x="732" y="491" text-anchor="middle" class="arrow-label">Poll; cancel if needed</text>
+  <text x="732" y="506" text-anchor="middle" class="arrow-command">sacct · scancel --quiet</text>
+
+  <path d="M 636 586 C 708 586, 742 558, 814 556" class="flow-green"/>
+  <rect x="674" y="561" width="119" height="35" rx="5" fill="#fbfcfe"/>
+  <text x="733.5" y="575" text-anchor="middle" class="arrow-label">Start artifact uploader</text>
+  <text x="733.5" y="590" text-anchor="middle" class="arrow-command">upload-artifacts</text>
+
+  <path d="M 992 482 C 1000 482, 998 449, 995 449" class="flow-slate"/>
+  <path d="M 992 556 L 995 558" class="flow-slate"/>
+
+  <path d="M 1120 558 L 1182 538" class="flow-green"/>
+  <text x="1151" y="518" text-anchor="middle" class="arrow-label">upload results + archive</text>
+
+  <path d="M 186 521 V 660 H 1057.5 V 599" class="flow-orange"/>
+  <rect x="466" y="632" width="368" height="45" rx="6" fill="#fbfcfe"/>
+  <text x="650" y="648" text-anchor="middle" class="arrow-label">Copy calculation files: backend staging → Alliance job directory</text>
+  <text x="650" y="674" text-anchor="middle" class="arrow-command">scp -r …/jobs/{job_id} cluster:…/jobs/</text>
+
+  <path d="M 825 121 C 825 99, 1342 99, 1342 441 C 1342 461, 1321 474, 1284 474" fill="none" stroke="#159a68" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrow-green)"/>
+  <rect x="1053" y="89" width="155" height="20" rx="5" fill="#f3f8ff"/>
+  <text x="1130.5" y="103" text-anchor="middle" class="arrow-label">authorized files and URLs</text>
+
+  <!-- Footer invariant -->
+  <rect x="244" y="709" width="912" height="31" rx="10" fill="#e9eff6"/>
+  <text x="700" y="729" text-anchor="middle" class="footer-text">PostgreSQL holds durable state; backend and Alliance job directories are temporary working storage.</text>
+</svg>

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 500" role="img" aria-labelledby="title description">
+  <title id="title">Ambiguous submission recovery</title>
+  <desc id="description">When a submission attempt was recorded but no Slurm ID was saved, the reconciler checks active Slurm jobs with squeue, then recent accounting with sacct. It attaches a found ID and resubmits only when both successful lookups are empty.</desc>
+
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#159a62"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#e87522"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#c2413b"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.09"/>
+    </filter>
+  </defs>
+
+  <style>
+    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+    .title { font-size: 27px; font-weight: 700; }
+    .subtitle { font-size: 14px; fill: #5b6472; }
+    .node-title { font-size: 16px; font-weight: 700; }
+    .node-body { font-size: 13px; fill: #4b5565; }
+    .edge-label { font-size: 12px; font-weight: 650; }
+    .footer { font-size: 13px; font-weight: 600; fill: #8f312e; }
+  </style>
+
+  <text class="title" x="700" y="36" text-anchor="middle">Ambiguous submission recovery</text>
+  <text class="subtitle" x="700" y="60" text-anchor="middle">This path runs only after an attempt was recorded but no Slurm ID was saved</text>
+
+  <rect x="25" y="82" width="1350" height="330" rx="16" fill="#ffffff" stroke="#c8d0dc" stroke-width="1.5"/>
+
+  <g filter="url(#shadow)">
+    <rect x="55" y="165" width="250" height="90" rx="11" fill="#fff4e8" stroke="#e87522" stroke-width="2.2"/>
+    <text class="node-title" x="180" y="195" text-anchor="middle">Uncertain previous attempt</text>
+    <text class="node-body" x="180" y="220" text-anchor="middle">attempt_count &gt; 0</text>
+    <text class="node-body" x="180" y="241" text-anchor="middle">no saved Slurm ID</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="365" y="165" width="225" height="90" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2"/>
+    <text class="node-title" x="477" y="195" text-anchor="middle">1. Search squeue</text>
+    <text class="node-body" x="477" y="220" text-anchor="middle">active jobs only</text>
+    <text class="node-body" x="477" y="241" text-anchor="middle">exact application job name</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="665" y="270" width="225" height="90" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2"/>
+    <text class="node-title" x="777" y="300" text-anchor="middle">2. Search sacct</text>
+    <text class="node-body" x="777" y="325" text-anchor="middle">jobs from the last 24 hours</text>
+    <text class="node-body" x="777" y="346" text-anchor="middle">exact application job name</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="700" y="105" width="285" height="90" rx="11" fill="#eaf8f0" stroke="#159a62" stroke-width="2.2"/>
+    <text class="node-title" x="842" y="136" text-anchor="middle">Existing Slurm job found</text>
+    <text class="node-body" x="842" y="161" text-anchor="middle">save its Slurm ID and mark submitted</text>
+    <text class="node-body" x="842" y="182" text-anchor="middle">do not submit another job</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path d="M1040 270 L1125 315 L1040 360 L955 315 Z" fill="#fff8ed" stroke="#e87522" stroke-width="2.2"/>
+    <text class="node-title" x="1040" y="310" text-anchor="middle">Cancellation</text>
+    <text class="node-title" x="1040" y="330" text-anchor="middle">requested?</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1180" y="222" width="170" height="72" rx="10" fill="#f3f5f8" stroke="#8793a3" stroke-width="1.7"/>
+    <text class="node-title" x="1265" y="250" text-anchor="middle">Cancel locally</text>
+    <text class="node-body" x="1265" y="275" text-anchor="middle">no Slurm job exists</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1180" y="326" width="170" height="72" rx="10" fill="#fff4e8" stroke="#e87522" stroke-width="2"/>
+    <text class="node-title" x="1265" y="354" text-anchor="middle">Submit once</text>
+    <text class="node-body" x="1265" y="379" text-anchor="middle">run sbatch</text>
+  </g>
+
+  <path d="M305 210 H365" fill="none" stroke="#2563eb" stroke-width="3.6" marker-end="url(#arrow-blue)"/>
+  <path d="M590 190 C630 190 650 150 700 150" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
+  <text class="edge-label" x="638" y="164" text-anchor="middle" fill="#117b50">found</text>
+  <path d="M477 255 V315 H665" fill="none" stroke="#2563eb" stroke-width="3.4" marker-end="url(#arrow-blue)"/>
+  <text class="edge-label" x="555" y="302" text-anchor="middle" fill="#2563eb">not found</text>
+  <path d="M777 270 V220 C777 207 790 195 808 195" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
+  <text class="edge-label" x="807" y="235" fill="#117b50">found</text>
+  <path d="M890 315 H955" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
+  <text class="edge-label" x="923" y="302" text-anchor="middle" fill="#c65f16">both empty</text>
+  <path d="M1117 293 C1145 278 1150 258 1180 258" fill="none" stroke="#526173" stroke-width="3" marker-end="url(#arrow-blue)"/>
+  <text class="edge-label" x="1146" y="265" text-anchor="middle" fill="#526173">yes</text>
+  <path d="M1117 337 C1145 347 1150 362 1180 362" fill="none" stroke="#e87522" stroke-width="3.2" marker-end="url(#arrow-orange)"/>
+  <text class="edge-label" x="1146" y="353" text-anchor="middle" fill="#c65f16">no</text>
+
+  <path d="M477 255 V390" fill="none" stroke="#c2413b" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#arrow-red)"/>
+  <path d="M777 360 V390" fill="none" stroke="#c2413b" stroke-width="2.2" stroke-dasharray="6 5" marker-end="url(#arrow-red)"/>
+  <text class="edge-label" x="505" y="381" fill="#8f312e">lookup error</text>
+
+  <rect x="115" y="430" width="1170" height="42" rx="12" fill="#fff0ef" stroke="#ecc0bd"/>
+  <text class="footer" x="700" y="456" text-anchor="middle">Any lookup error stops the round and triggers shared-outage backoff. An error is never treated as “not found.”</text>
+</svg>
