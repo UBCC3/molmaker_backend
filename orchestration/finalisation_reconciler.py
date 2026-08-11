@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable, Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -136,29 +133,17 @@ class FinalisationReconciler(BaseReconciler):
         terminal_status: JobStatus,
         upload_urls: dict[str, str],
     ) -> None:
-        try:
-            with tempfile.TemporaryDirectory(prefix="molmaker-upload-") as temp_dir:
-                manifest_path = Path(temp_dir) / "upload-urls.json"
-                manifest_path.write_text(
-                    json.dumps(upload_urls, separators=(",", ":")),
-                    encoding="utf-8",
-                )
-                manifest_path.chmod(0o600)
-                self.cluster_client.stage_upload_manifest(job.job_id, manifest_path)
-                self.cluster_client.upload_artifacts(
-                    job_id=job.job_id,
-                    calculation_type=calculation_type,
-                    terminal_status=terminal_status,
-                    allow_missing_error=(
-                        terminal_status in {JobStatus.failed, JobStatus.cancelled}
-                        and job.failure_reason
-                        != JobFailureReason.calculation_failed.value
-                    ),
-                )
-        except OSError as error:
-            raise StorageServiceError(
-                "Could not prepare the artifact upload manifest"
-            ) from error
+        self.cluster_client.upload_artifacts(
+            job_id=job.job_id,
+            calculation_type=calculation_type,
+            terminal_status=terminal_status,
+            upload_urls=upload_urls,
+            allow_missing_error=(
+                terminal_status in {JobStatus.failed, JobStatus.cancelled}
+                and job.failure_reason
+                != JobFailureReason.calculation_failed.value
+            ),
+        )
 
     def _record_job_failure(self, db: Session, job: Job, message: str) -> None:
         job.attempt_count += 1

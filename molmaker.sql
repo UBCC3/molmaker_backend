@@ -67,6 +67,17 @@ CREATE TABLE public.jobs (
 
 
 --
+-- Name: job_inputs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.job_inputs (
+    job_id uuid NOT NULL,
+    input_xyz text NOT NULL,
+    keywords jsonb
+);
+
+
+--
 -- Name: jobs_structures; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -196,6 +207,14 @@ a39b4f4d-2a81-48a3-ac85-dd87e75b07cd	water-4-vib.xyz	cancelled	energy	scf	sto-3g
 
 
 --
+-- Data for Name: job_inputs; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.job_inputs (job_id, input_xyz, keywords) FROM stdin;
+\.
+
+
+--
 -- Data for Name: jobs_structures; Type: TABLE DATA; Schema: public; Owner: -
 --
 
@@ -312,6 +331,14 @@ ALTER TABLE ONLY public.groups
 
 ALTER TABLE ONLY public.jobs
     ADD CONSTRAINT jobs_pkey PRIMARY KEY (job_id);
+
+
+--
+-- Name: job_inputs job_inputs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_inputs
+    ADD CONSTRAINT job_inputs_pkey PRIMARY KEY (job_id);
 
 
 --
@@ -498,6 +525,14 @@ ALTER TABLE ONLY public.jobs
 
 ALTER TABLE ONLY public.jobs
     ADD CONSTRAINT fk_jobs_user_sub FOREIGN KEY (user_sub) REFERENCES public.users(user_sub);
+
+
+--
+-- Name: job_inputs job_inputs_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_inputs
+    ADD CONSTRAINT job_inputs_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(job_id) ON DELETE CASCADE;
 
 
 --

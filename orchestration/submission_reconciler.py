@@ -1,19 +1,14 @@
-"""Submit staged jobs to Slurm and recover uncertain submissions."""
+"""Submit database-backed jobs and recover uncertain submissions."""
 
 from __future__ import annotations
 
-import logging
-import shutil
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable, Sequence
-from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from database import get_session_local
 from enum_types import CalculationType, JobFailureReason, JobStatus
@@ -26,9 +21,6 @@ from orchestration.cluster_client import (
     SubmissionOutcomeUnknownError,
 )
 from settings import OrchestrationSettings, get_settings
-
-
-GIGABYTE = 1_000_000_000
 
 
 @dataclass
@@ -48,52 +40,18 @@ class SubmissionReconciler(BaseReconciler):
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
-    backend_jobs_directory: Path
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
-
-    def __post_init__(self) -> None:
-        self.backend_jobs_directory = Path(self.backend_jobs_directory).expanduser()
-        super().__post_init__()
 
     @classmethod
     def from_env(cls) -> "SubmissionReconciler":
         backend_settings = get_settings()
         settings = backend_settings.orchestration
-        reconciler = cls(
+        return cls(
             session_factory=get_session_local(),
             cluster_client=ClusterDispatchClient.from_settings(backend_settings),
             settings=settings,
-            backend_jobs_directory=(
-                backend_settings.require_backend_work_dir() / "jobs"
-            ),
         )
-        reconciler.check_job_staging_readiness()
-        return reconciler
-
-    def check_job_staging_readiness(self) -> None:
-        """Check that local job inputs can be staged before submission starts."""
-
-        try:
-            self.backend_jobs_directory.mkdir(parents=True, exist_ok=True)
-            if not self.backend_jobs_directory.is_dir():
-                raise NotADirectoryError(self.backend_jobs_directory)
-            with tempfile.TemporaryFile(dir=self.backend_jobs_directory):
-                pass
-            free_bytes = shutil.disk_usage(self.backend_jobs_directory).free
-        except OSError as error:
-            raise RuntimeError(
-                f"Job staging directory is not ready: {self.backend_jobs_directory}"
-            ) from error
-
-        minimum_space_gb = self.settings.backend_job_staging_min_space_gb
-        required_bytes = minimum_space_gb * GIGABYTE
-        if free_bytes < required_bytes:
-            free_gb = free_bytes / GIGABYTE
-            raise RuntimeError(
-                f"Job staging directory has only {free_gb:.1f} GB free; "
-                f"at least {minimum_space_gb} GB is required"
-            )
 
     @property
     def poll_interval_seconds(self) -> float:
@@ -104,13 +62,14 @@ class SubmissionReconciler(BaseReconciler):
 
         jobs = (
             db.query(Job)
+            .options(joinedload(Job.job_input))
             .filter(Job.status == JobStatus.submitting.value)
             .order_by(Job.submitted_at.asc(), Job.job_id.asc())
             .limit(self.settings.submission_query_limit)
             .all()
         )
-        # End the selection transaction before any file transfer or SSH call.
-        # Keeping loaded scalar values avoids reopening it during the round.
+        # End the selection transaction before any SSH call. Inputs were
+        # loaded with the jobs and remain available after this commit.
         self._commit(db)
         for job in jobs:
             self._process_job(db, job)
@@ -125,7 +84,10 @@ class SubmissionReconciler(BaseReconciler):
             self._mark_cancelled(db, job)
             return
 
-        if job.attempt_count:
+        if job.attempt_count and (
+            job.cancel_requested
+            or job.attempt_count >= self.settings.max_attempts
+        ):
             recovered_slurm_id = self._find_existing_submission(job)
             if recovered_slurm_id:
                 self._mark_submitted(db, job, recovered_slurm_id)
@@ -147,14 +109,12 @@ class SubmissionReconciler(BaseReconciler):
             self._mark_failed(db, job, "Calculation type is invalid")
             return
 
-        local_job_directory = self.backend_jobs_directory / str(job.job_id)
-        has_keywords = (local_job_directory / "keywords.json").is_file()
-        try:
-            self.cluster_client.stage_job_inputs(job.job_id, local_job_directory)
-        except JobDispatchError as error:
-            self._mark_failed(db, job, str(error))
+        job_input = job.job_input
+        if job_input is None or not job_input.input_xyz.strip():
+            self._mark_failed(db, job, "Calculation input is unavailable")
             return
 
+        recover_existing = bool(job.attempt_count)
         job.attempt_count += 1
         self._commit(db)
 
@@ -167,7 +127,9 @@ class SubmissionReconciler(BaseReconciler):
                 charge=job.charge,
                 multiplicity=job.multiplicity,
                 optimization_type=job.optimization_type,
-                has_keywords=has_keywords,
+                input_xyz=job_input.input_xyz,
+                keywords=job_input.keywords,
+                recover_existing=recover_existing,
             )
         except JobDispatchError as error:
             if job.attempt_count >= self.settings.max_attempts:
@@ -183,10 +145,7 @@ class SubmissionReconciler(BaseReconciler):
         self._mark_submitted(db, job, slurm_id)
 
     def _find_existing_submission(self, job: Job) -> str | None:
-        slurm_id = self.cluster_client.find_active_slurm_id(job.job_id)
-        if slurm_id:
-            return slurm_id
-        return self.cluster_client.find_accounting_slurm_id(job.job_id)
+        return self.cluster_client.find_submission(job.job_id)
 
     def _mark_submitted(self, db: Session, job: Job, slurm_id: str) -> None:
         job.slurm_id = slurm_id
@@ -195,7 +154,6 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_reason = None
         job.failure_message = None
         self._commit(db)
-        self._delete_staged_inputs(job.job_id)
 
     def _mark_cancelled(self, db: Session, job: Job) -> None:
         job.status = JobStatus.cancelled.value
@@ -205,7 +163,6 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_message = None
         job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
-        self._delete_staged_inputs(job.job_id)
 
     def _mark_failed(self, db: Session, job: Job, message: str) -> None:
         job.status = JobStatus.failed.value
@@ -213,21 +170,6 @@ class SubmissionReconciler(BaseReconciler):
         job.failure_message = message
         job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
-        self._delete_staged_inputs(job.job_id)
-
-    def _delete_staged_inputs(self, job_id: UUID | str) -> None:
-        job_directory = self.backend_jobs_directory / str(job_id)
-        try:
-            shutil.rmtree(job_directory)
-        except FileNotFoundError:
-            return
-        except OSError as error:
-            logging.getLogger(__name__).warning(
-                "staged_input_cleanup_failed job_id=%s path=%s error=%s",
-                job_id,
-                job_directory,
-                error,
-            )
 
 
 def main(argv: Sequence[str] | None = None) -> None:

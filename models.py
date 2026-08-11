@@ -8,13 +8,14 @@ from sqlalchemy import (
     Index,
     Integer,
     Interval,
+    JSON,
     String,
     Table,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declared_attr, relationship, synonym, validates
 
 from database import Base
@@ -190,12 +191,40 @@ class Job(Asset):
     failure_message = Column(Text, nullable=True)
     optimization_type = Column(String, nullable=True)
 
+    job_input = relationship(
+        "JobInput",
+        back_populates="job",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     structures = relationship(
         'Structure',
         secondary=jobs_structures,
         back_populates='jobs',
         cascade="all, delete"
     )
+
+
+class JobInput(Base):
+    """Immutable calculation inputs retained with one job."""
+
+    __tablename__ = "job_inputs"
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    input_xyz = Column(Text, nullable=False)
+    keywords = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
+
+    job = relationship("Job", back_populates="job_input")
+
 
 class Structure(Asset):
     __tablename__ = "structures"

@@ -1,4 +1,4 @@
--- Add durable state for the jobs API and three-reconciler orchestration design.
+-- Add the jobs API, orchestration state, and retained calculation inputs.
 -- Run this after migrations/001_pr14_database_changes.sql.
 -- It is safe to run this file again after it succeeds.
 
@@ -11,6 +11,13 @@ ALTER TABLE public.jobs
     ADD COLUMN IF NOT EXISTS failure_reason character varying,
     ADD COLUMN IF NOT EXISTS failure_message text,
     ADD COLUMN IF NOT EXISTS optimization_type character varying;
+
+CREATE TABLE IF NOT EXISTS public.job_inputs (
+    job_id uuid PRIMARY KEY
+        REFERENCES public.jobs(job_id) ON DELETE CASCADE,
+    input_xyz text NOT NULL,
+    keywords jsonb
+);
 
 -- Slurm IDs are internal identifiers, not numbers used for arithmetic. Keep
 -- them as strings so the backend can preserve scheduler output exactly.

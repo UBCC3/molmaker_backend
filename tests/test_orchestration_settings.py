@@ -67,7 +67,6 @@ def test_orchestration_settings_read_environment_overrides(monkeypatch):
     assert settings.outage_max_backoff_seconds == 9
     assert settings.slurm_command_timeout_seconds == 10
     assert settings.storage_operation_timeout_seconds == 11
-    assert settings.backend_job_staging_min_space_gb == 12
 
 
 @pytest.mark.parametrize("invalid_value", ["not-a-number", "1.5"])

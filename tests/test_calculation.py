@@ -6,7 +6,7 @@ import pytest
 import calculation.service as calculation_service
 import storage
 from conftest import make_auth0_payload
-from models import Job, Tags
+from models import Job, JobInput, Tags
 
 
 def _custom_data(**overrides):
@@ -30,13 +30,6 @@ def _standard_data(**overrides):
     }
     values.update(overrides)
     return values
-
-
-@pytest.fixture
-def calculation_work_dir(monkeypatch, tmp_path):
-    work_dir = tmp_path / "backend-work"
-    monkeypatch.setenv("BACKEND_WORK_DIR", str(work_dir))
-    return work_dir
 
 
 def _forbid_cluster_and_upload_url_calls(monkeypatch):
@@ -100,11 +93,10 @@ def test_calculation_endpoints_reject_unsupported_multiplicity(
     assert response.status_code == 422
 
 
-def test_custom_submission_persists_and_stages_without_external_orchestration(
+def test_custom_submission_persists_inputs_without_external_orchestration(
     client,
     db,
     monkeypatch,
-    calculation_work_dir,
     group_factory,
     user_factory,
     tag_factory,
@@ -167,12 +159,6 @@ def test_custom_submission_persists_and_stages_without_external_orchestration(
         "is_deleted",
     }.isdisjoint(result)
 
-    job_directory = calculation_work_dir / "jobs" / str(job_id)
-    assert (job_directory / "input.xyz").read_bytes() == b"custom xyz input"
-    assert (job_directory / "keywords.json").read_bytes() == b'{"scf": "tight"}'
-    assert not (job_directory / "urls.json").exists()
-    assert not (job_directory / "unsafe-name.xyz").exists()
-
     job = db.query(Job).filter_by(job_id=job_id).one()
     assert job.status == "submitting"
     assert job.slurm_id is None
@@ -185,6 +171,8 @@ def test_custom_submission_persists_and_stages_without_external_orchestration(
     assert job.group_id == group.group_id
     assert sorted(tag.name for tag in job.tags) == ["existing", "new"]
     assert existing_tag in job.tags
+    assert job.job_input.input_xyz == "custom xyz input"
+    assert job.job_input.keywords == {"scf": "tight"}
     assert (
         db.query(Tags)
         .filter_by(user_sub=user.user_sub, name="new")
@@ -197,7 +185,6 @@ def test_standard_submission_uses_workflow_defaults(
     client,
     db,
     monkeypatch,
-    calculation_work_dir,
     user_factory,
 ):
     """The standard workflow should persist its fixed method and basis set."""
@@ -229,16 +216,14 @@ def test_standard_submission_uses_workflow_defaults(
 
     job = db.query(Job).filter_by(job_id=job_id).one()
     assert job.optimization_type == "ground"
-    assert (
-        calculation_work_dir / "jobs" / str(job_id) / "input.xyz"
-    ).read_bytes() == b"standard xyz input"
+    assert job.job_input.input_xyz == "standard xyz input"
+    assert job.job_input.keywords is None
 
 
-def test_submission_can_stage_a_readable_stored_structure(
+def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     client,
     db,
     monkeypatch,
-    calculation_work_dir,
     group_factory,
     user_factory,
     structure_factory,
@@ -256,9 +241,9 @@ def test_submission_can_stage_a_readable_stored_structure(
     )
     download_calls = []
 
-    def fake_download(location, destination):
-        download_calls.append((location, destination))
-        destination.write_bytes(b"downloaded structure")
+    def fake_download(location):
+        download_calls.append(location)
+        return "downloaded structure"
 
     monkeypatch.setattr(
         calculation_service,
@@ -285,11 +270,10 @@ def test_submission_can_stage_a_readable_stored_structure(
     assert result["structures"][0]["structure_id"] == str(
         structure.structure_id
     )
-    input_path = calculation_work_dir / "jobs" / str(job_id) / "input.xyz"
-    assert input_path.read_bytes() == b"downloaded structure"
-    assert download_calls == [(structure.location, input_path)]
+    assert download_calls == [structure.location]
 
     job = db.query(Job).filter_by(job_id=job_id).one()
+    assert job.job_input.input_xyz == "downloaded structure"
     assert [linked.structure_id for linked in job.structures] == [
         structure.structure_id
     ]
@@ -305,7 +289,6 @@ def test_submission_can_stage_a_readable_stored_structure(
 def test_submission_requires_exactly_one_molecule_source(
     client,
     db,
-    calculation_work_dir,
     user_factory,
     structure_factory,
     include_file,
@@ -332,14 +315,12 @@ def test_submission_requires_exactly_one_molecule_source(
         "Provide exactly one molecule source: file or structure_id"
     )
     assert db.query(Job).count() == 0
-    jobs_directory = calculation_work_dir / "jobs"
-    assert not jobs_directory.exists() or list(jobs_directory.iterdir()) == []
+    assert db.query(JobInput).count() == 0
 
 
 def test_submission_hides_an_inaccessible_structure(
     client,
     db,
-    calculation_work_dir,
     set_auth_user,
     user_factory,
     structure_factory,
@@ -363,7 +344,7 @@ def test_submission_hides_an_inaccessible_structure(
         "Structure not found or not accessible"
     )
     assert db.query(Job).count() == 0
-    assert not (calculation_work_dir / "jobs").exists()
+    assert db.query(JobInput).count() == 0
 
 
 @pytest.mark.parametrize(
@@ -385,12 +366,11 @@ def test_submission_hides_an_inaccessible_structure(
 def test_custom_submission_rejects_unsupported_input_files(
     client,
     db,
-    calculation_work_dir,
     user_factory,
     files,
     expected_detail,
 ):
-    """Unsupported source and keyword files should fail before staging."""
+    """Unsupported source and keyword files should fail before persistence."""
     user_factory(user_sub="auth0|testuser")
 
     response = client.post(
@@ -402,13 +382,12 @@ def test_custom_submission_rejects_unsupported_input_files(
     assert response.status_code == 400
     assert response.json()["detail"] == expected_detail
     assert db.query(Job).count() == 0
-    assert not (calculation_work_dir / "jobs").exists()
+    assert db.query(JobInput).count() == 0
 
 
 def test_custom_submission_rejects_standard_workflow_type(
     client,
     db,
-    calculation_work_dir,
     user_factory,
 ):
     """Standard analysis should use its dedicated workflow endpoint."""
@@ -425,17 +404,16 @@ def test_custom_submission_rejects_standard_workflow_type(
         "Use /calculation/workflow/standard_analysis for standard analysis"
     )
     assert db.query(Job).count() == 0
-    assert not (calculation_work_dir / "jobs").exists()
+    assert db.query(JobInput).count() == 0
 
 
-def test_database_failure_removes_staged_calculation_files(
+def test_database_failure_rolls_back_job_and_inputs(
     client,
     db,
     monkeypatch,
-    calculation_work_dir,
     user_factory,
 ):
-    """A failed database commit must not leave an untracked staged input."""
+    """A failed database commit must not leave an untracked input row."""
     user_factory(user_sub="auth0|testuser")
 
     def fail_commit():
@@ -452,36 +430,38 @@ def test_database_failure_removes_staged_calculation_files(
     assert response.status_code == 500
     assert response.json()["detail"] == "Failed to create calculation job"
     assert db.query(Job).count() == 0
-    jobs_directory = calculation_work_dir / "jobs"
-    assert jobs_directory.exists()
-    assert list(jobs_directory.iterdir()) == []
+    assert db.query(JobInput).count() == 0
 
 
-def test_staging_failure_removes_partial_calculation_files(
+@pytest.mark.parametrize(
+    "keyword_contents",
+    [b"not-json", b"[]", b'{"value": NaN}', b'{"value": 1e999}'],
+)
+def test_custom_submission_rejects_invalid_keyword_json(
     client,
     db,
-    monkeypatch,
-    calculation_work_dir,
     user_factory,
+    keyword_contents,
 ):
-    """A failed file copy must not leave a partial job directory."""
+    """Keywords are validated before the job and input are persisted."""
     user_factory(user_sub="auth0|testuser")
-
-    def fail_copy(_upload, destination):
-        destination.write_bytes(b"partial")
-        raise OSError("disk unavailable")
-
-    monkeypatch.setattr(calculation_service, "_copy_upload", fail_copy)
 
     response = client.post(
         "/calculation/custom",
         data=_custom_data(),
-        files={"file": ("input.xyz", b"xyz", "chemical/x-xyz")},
+        files={
+            "file": ("input.xyz", b"xyz", "chemical/x-xyz"),
+            "keywords": (
+                "keywords.json",
+                keyword_contents,
+                "application/json",
+            ),
+        },
     )
 
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Failed to stage calculation input"
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Keywords file must contain a valid JSON object"
+    )
     assert db.query(Job).count() == 0
-    jobs_directory = calculation_work_dir / "jobs"
-    assert jobs_directory.exists()
-    assert list(jobs_directory.iterdir()) == []
+    assert db.query(JobInput).count() == 0

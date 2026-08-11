@@ -13,7 +13,7 @@ from database import Base
 from dependencies import get_db
 from enum_types import JobStatus
 from main import create_app
-from models import Group, Job, Request, Structure, Tags, User
+from models import Group, Job, JobInput, Request, Structure, Tags, User
 from settings import get_settings
 
 
@@ -235,7 +235,15 @@ def job_factory(db):
     """
     Factory for persisted Job rows, with optional structure and tag relationships.
     """
-    def create_job(structures=None, tags=None, **overrides):
+    def create_job(
+        structures=None,
+        tags=None,
+        *,
+        input_xyz="1\n\nH 0 0 0\n",
+        keywords=None,
+        with_input=True,
+        **overrides,
+    ):
         values = {
             "job_id": uuid.uuid4(),
             "job_name": f"Job {uuid.uuid4().hex[:8]}",
@@ -256,6 +264,12 @@ def job_factory(db):
         }
         values.update(overrides)
         job = Job(**values)
+        if with_input:
+            job.job_input = JobInput(
+                job_id=job.job_id,
+                input_xyz=input_xyz,
+                keywords=keywords,
+            )
         if structures:
             job.structures.extend(structures)
         if tags:

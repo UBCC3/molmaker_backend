@@ -1,8 +1,8 @@
-import shutil
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile, status
@@ -10,17 +10,19 @@ from sqlalchemy.orm import Session
 
 from asset_service import get_asset_or_404, set_asset_tags
 from enum_types import CalculationType, JobStatus
-from models import Job, Structure, User
+from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
-from settings import get_settings
 from storage import create_s3_client
 from utils import commit_or_rollback
 
 
 INPUT_FILENAME = "input.xyz"
-KEYWORDS_FILENAME = "keywords.json"
 STANDARD_ANALYSIS_METHOD = "mp2"
 STANDARD_ANALYSIS_BASIS_SET = "6-311+G(2d,p)"
+MAX_INPUT_XYZ_BYTES = 4 * 1024 * 1024
+MAX_KEYWORDS_BYTES = 256 * 1024
+
+
 def _normalized_required_text(value: str, field_name: str) -> str:
     normalized_value = value.strip()
     if not normalized_value:
@@ -83,67 +85,121 @@ def _resolve_source_structure(
     return structure
 
 
-def _backend_jobs_directory() -> Path:
+def _read_upload(upload: UploadFile, maximum_bytes: int, field_name: str) -> bytes:
     try:
-        backend_work_dir = get_settings().require_backend_work_dir()
-    except EnvironmentError:
+        upload.file.seek(0)
+        contents = upload.file.read(maximum_bytes + 1)
+    except OSError as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Calculation submission storage is not configured",
-        ) from None
-    return backend_work_dir / "jobs"
+            detail=f"Failed to read {field_name}",
+        ) from error
+    if len(contents) > maximum_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} is too large",
+        )
+    return contents
 
 
-def _copy_upload(upload: UploadFile, destination: Path) -> None:
-    upload.file.seek(0)
-    with destination.open("wb") as output:
-        shutil.copyfileobj(upload.file, output)
+def _decode_xyz(contents: bytes) -> str:
+    try:
+        input_xyz = contents.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("XYZ input must be UTF-8 text") from error
+    if not input_xyz.strip() or "\x00" in input_xyz:
+        raise ValueError("XYZ input is empty or invalid")
+    return input_xyz
 
 
-def download_structure_source(location: str, destination: Path) -> None:
-    """Download an S3-backed structure into the deterministic job input path."""
+def _read_uploaded_xyz(upload: UploadFile) -> str:
+    contents = _read_upload(upload, MAX_INPUT_XYZ_BYTES, "molecule file")
+    try:
+        return _decode_xyz(contents)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Molecule file must contain valid UTF-8 XYZ text",
+        ) from error
+
+
+def _read_keywords(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
+    if upload is None:
+        return None
+    contents = _read_upload(upload, MAX_KEYWORDS_BYTES, "keywords file")
+    try:
+        keywords = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Keywords file must contain a valid JSON object",
+        ) from error
+    if not isinstance(keywords, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Keywords file must contain a valid JSON object",
+        )
+    try:
+        encoded_keywords = json.dumps(
+            keywords,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Keywords file must contain a valid JSON object",
+        ) from error
+    if len(encoded_keywords) > MAX_KEYWORDS_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="keywords file is too large",
+        )
+    return keywords
+
+
+def download_structure_source(location: str) -> str:
+    """Return the bounded UTF-8 contents of an S3-backed structure."""
+
     parsed_location = urlparse(location)
     object_key = parsed_location.path.lstrip("/")
     if parsed_location.scheme != "s3" or not parsed_location.netloc or not object_key:
         raise ValueError("Structure location must be an S3 URI")
 
-    s3 = create_s3_client()
-    s3.download_file(
-        parsed_location.netloc,
-        object_key,
-        str(destination),
+    response = create_s3_client().get_object(
+        Bucket=parsed_location.netloc,
+        Key=object_key,
     )
+    body = response.get("Body")
+    if body is None:
+        raise ValueError("Stored structure has no contents")
+    try:
+        contents = body.read(MAX_INPUT_XYZ_BYTES + 1)
+    finally:
+        body.close()
+    if len(contents) > MAX_INPUT_XYZ_BYTES:
+        raise ValueError("Stored structure is too large")
+    return _decode_xyz(contents)
 
 
-def _stage_job_files(
-    job_directory: Path,
+def _load_input_xyz(
     *,
     source_file: Optional[UploadFile],
     structure_location: Optional[str],
-    keywords: Optional[UploadFile],
-) -> None:
-    """Stage deterministic job files and remove partial output on failure."""
-    job_directory_created = False
-    try:
-        job_directory.mkdir(parents=True, exist_ok=False)
-        job_directory_created = True
-        input_path = job_directory / INPUT_FILENAME
-
-        if source_file is not None:
-            _copy_upload(source_file, input_path)
-        elif structure_location is not None:
-            download_structure_source(structure_location, input_path)
-        else:
-            raise ValueError("A molecule source is required")
-
-        if keywords is not None:
-            _copy_upload(keywords, job_directory / KEYWORDS_FILENAME)
-    except Exception as error:
-        if job_directory_created:
-            shutil.rmtree(job_directory, ignore_errors=True)
+) -> str:
+    if source_file is not None:
+        return _read_uploaded_xyz(source_file)
+    if structure_location is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to stage calculation input",
+            detail="Calculation input is unavailable",
+        )
+    try:
+        return download_structure_source(structure_location)
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load the stored molecule",
         ) from error
 
 
@@ -165,7 +221,7 @@ def create_calculation_job(
     optimization_type: Optional[str] = None,
 ) -> Job:
     """
-    Stage deterministic calculation inputs and commit a durable submitting job.
+    Save immutable calculation inputs and a submitting job together.
     No cluster submission or result-upload URL generation occurs here.
     """
     # Validate and normalize the request.
@@ -196,32 +252,27 @@ def create_calculation_job(
         structure.location if structure is not None else None
     )
 
-    # End the read transaction before copying an upload or downloading from S3.
-    # A fresh, short transaction starts only when the staged job is persisted.
+    # End the permission-check transaction before reading an upload or S3 object.
     db.rollback()
 
-    # Stage files without holding a database transaction open.
-    job_id = uuid.uuid4()
-    job_directory = _backend_jobs_directory() / str(job_id)
-    _stage_job_files(
-        job_directory,
+    input_xyz = _load_input_xyz(
         source_file=source_file,
         structure_location=source_structure_location,
-        keywords=keywords,
     )
+    keyword_values = _read_keywords(keywords)
 
-    # Persist the job and its relationships in a short transaction.
+    # Persist the job, its exact inputs, and its relationships together.
     linked_structure = None
     if source_structure_id is not None:
         linked_structure = db.get(Structure, source_structure_id)
         if linked_structure is None or linked_structure.is_deleted:
             db.rollback()
-            shutil.rmtree(job_directory, ignore_errors=True)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Structure not found or not accessible",
             )
 
+    job_id = uuid.uuid4()
     job = Job(
         job_id=job_id,
         job_name=normalized_job_name,
@@ -243,6 +294,11 @@ def create_calculation_job(
         attempt_count=0,
         cancel_requested=False,
     )
+    job.job_input = JobInput(
+        job_id=job_id,
+        input_xyz=input_xyz,
+        keywords=keyword_values,
+    )
 
     try:
         db.add(job)
@@ -251,7 +307,6 @@ def create_calculation_job(
             job.structures.append(linked_structure)
     except Exception as error:
         db.rollback()
-        shutil.rmtree(job_directory, ignore_errors=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create calculation job",
@@ -261,6 +316,5 @@ def create_calculation_job(
         db,
         refresh=job,
         error_detail="Failed to create calculation job",
-        on_error=lambda: shutil.rmtree(job_directory, ignore_errors=True),
     )
     return job

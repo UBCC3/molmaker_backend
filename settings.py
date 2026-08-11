@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
@@ -26,7 +26,6 @@ ORCHESTRATION_DEFAULTS = {
     "RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS": 300,
     "SLURM_COMMAND_TIMEOUT_SECONDS": 120,
     "STORAGE_OPERATION_TIMEOUT_SECONDS": 120,
-    "BACKEND_JOB_STAGING_MIN_SPACE_GB": 1,
 }
 
 APPLICATION_DEFAULTS = {
@@ -47,7 +46,6 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
         "API_AUDIENCE",
         "AUTH0_CLIENT_ID",
         "AUTH0_CLIENT_SECRET",
-        "BACKEND_WORK_DIR",
         "CLUSTER_WORK_DIR",
         *APPLICATION_DEFAULTS,
         *ORCHESTRATION_DEFAULTS,
@@ -110,7 +108,6 @@ class OrchestrationSettings:
     outage_max_backoff_seconds: int
     slurm_command_timeout_seconds: int
     storage_operation_timeout_seconds: int
-    backend_job_staging_min_space_gb: int = 1
 
 
 @dataclass(frozen=True)
@@ -125,7 +122,6 @@ class BackendSettings:
     algorithms: tuple[str, ...]
     auth0_client_id: str | None
     auth0_client_secret: str | None
-    backend_work_dir: Path | None
     cluster_work_dir: PurePosixPath | None
     s3_bucket_name: str
     s3_region: str
@@ -142,7 +138,6 @@ class BackendSettings:
         if not algorithms:
             raise ValueError("ALGORITHMS must include at least one algorithm")
 
-        backend_work_dir = _optional_text("BACKEND_WORK_DIR")
         cluster_work_dir = _optional_text("CLUSTER_WORK_DIR")
         s3_bucket_root = _text_with_default("S3_BUCKET_ROOT").strip("/")
         if not s3_bucket_root:
@@ -197,10 +192,6 @@ class BackendSettings:
                 "STORAGE_OPERATION_TIMEOUT_SECONDS",
                 ORCHESTRATION_DEFAULTS["STORAGE_OPERATION_TIMEOUT_SECONDS"],
             ),
-            backend_job_staging_min_space_gb=_positive_integer(
-                "BACKEND_JOB_STAGING_MIN_SPACE_GB",
-                ORCHESTRATION_DEFAULTS["BACKEND_JOB_STAGING_MIN_SPACE_GB"],
-            ),
         )
         if (
             orchestration.outage_initial_backoff_seconds
@@ -226,9 +217,6 @@ class BackendSettings:
             algorithms=algorithms,
             auth0_client_id=_optional_text("AUTH0_CLIENT_ID"),
             auth0_client_secret=_optional_secret("AUTH0_CLIENT_SECRET"),
-            backend_work_dir=(
-                Path(backend_work_dir).expanduser() if backend_work_dir else None
-            ),
             cluster_work_dir=(
                 PurePosixPath(cluster_work_dir) if cluster_work_dir else None
             ),
@@ -276,10 +264,6 @@ class BackendSettings:
     def require_auth0_domain(self) -> str:
         _required({"AUTH0_DOMAIN": self.auth0_domain})
         return self.auth0_domain
-
-    def require_backend_work_dir(self) -> Path:
-        _required({"BACKEND_WORK_DIR": self.backend_work_dir})
-        return self.backend_work_dir
 
     def require_cluster_work_dir(self) -> PurePosixPath:
         _required({"CLUSTER_WORK_DIR": self.cluster_work_dir})

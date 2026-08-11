@@ -143,17 +143,17 @@ def _index_names(session):
 def _database_state():
     session = TestingSessionLocal()
     try:
-        tables = (
-            "groups",
-            "users",
-            "jobs",
-            "structures",
-            "requests",
-            "tags",
-            "jobs_structures",
-            "jobs_tags",
-            "structures_tags",
-        )
+        tables = session.execute(
+            text(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+                """
+            )
+        ).scalars().all()
         data = {
             table_name: session.execute(
                 text(
@@ -531,6 +531,57 @@ def test_jobs_orchestration_migration_can_run_twice(db):
     assert _database_state() == state_after_first_run
 
 
+def test_jobs_orchestration_migration_adds_retained_job_inputs(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+
+    session = TestingSessionLocal()
+    try:
+        columns = {
+            row.column_name: row
+            for row in session.execute(
+                text(
+                    """
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'job_inputs'
+                    """
+                )
+            )
+        }
+        assert set(columns) == {"job_id", "input_xyz", "keywords"}
+        assert columns["job_id"].data_type == "uuid"
+        assert columns["job_id"].is_nullable == "NO"
+        assert columns["input_xyz"].data_type == "text"
+        assert columns["input_xyz"].is_nullable == "NO"
+        assert columns["keywords"].data_type == "jsonb"
+        assert columns["keywords"].is_nullable == "YES"
+
+        constraints = {
+            row.conname: row.definition
+            for row in session.execute(
+                text(
+                    """
+                    SELECT
+                        conname,
+                        pg_get_constraintdef(oid) AS definition
+                    FROM pg_constraint
+                    WHERE conrelid = 'public.job_inputs'::regclass
+                    """
+                )
+            )
+        }
+        assert constraints["job_inputs_pkey"] == "PRIMARY KEY (job_id)"
+        assert "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE" in (
+            constraints["job_inputs_job_id_fkey"]
+        )
+    finally:
+        session.close()
+
+
 def test_migration_does_not_restore_removed_group_ownership(db):
     _reset_public_schema(db)
     _run_sql_file(LEGACY_SCHEMA_PATH)
@@ -613,6 +664,7 @@ def test_molmaker_dump_restores_schema_and_data(db):
                     SELECT 'groups', count(*) FROM public.groups
                     UNION ALL SELECT 'users', count(*) FROM public.users
                     UNION ALL SELECT 'jobs', count(*) FROM public.jobs
+                    UNION ALL SELECT 'job_inputs', count(*) FROM public.job_inputs
                     UNION ALL SELECT 'structures', count(*) FROM public.structures
                     UNION ALL SELECT 'requests', count(*) FROM public.requests
                     UNION ALL SELECT 'tags', count(*) FROM public.tags
@@ -624,6 +676,7 @@ def test_molmaker_dump_restores_schema_and_data(db):
             "groups": 3,
             "users": 6,
             "jobs": 13,
+            "job_inputs": 0,
             "structures": 9,
             "requests": 3,
             "tags": 11,
@@ -647,6 +700,15 @@ def test_molmaker_dump_restores_schema_and_data(db):
             "cancel_requested_at",
             "artifact_manifest",
         }.isdisjoint(job_columns)
+        assert _column_names(session, "job_inputs") == {
+            "job_id",
+            "input_xyz",
+            "keywords",
+        }
+        assert {
+            "job_inputs_pkey",
+            "job_inputs_job_id_fkey",
+        } <= _constraint_names(session)
         assert {"group_id", "is_public"} <= _column_names(session, "structures")
         assert "role_or_group_updated_at" in _column_names(session, "users")
         assert "member_since" not in _column_names(session, "users")

@@ -1,4 +1,3 @@
-import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import Mock, call
@@ -118,7 +117,8 @@ def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
     assert refresh(db, newest).status == JobStatus.finalising.value
     assert refresh(db, ignored).status == JobStatus.running.value
     assert [
-        staged.args[0] for staged in client.stage_upload_manifest.call_args_list
+        uploaded.kwargs["job_id"]
+        for uploaded in client.upload_artifacts.call_args_list
     ] == [oldest.job_id, second.job_id]
 
 
@@ -179,11 +179,12 @@ def test_success_publishes_each_terminal_status(
         job_id=job.job_id,
         calculation_type=CalculationType.energy,
         terminal_status=terminal_status,
+        upload_urls={"zip": "https://upload.test/archive"},
         allow_missing_error=allow_missing_error,
     )
 
 
-def test_each_retry_uses_a_fresh_temporary_manifest_and_stays_publicly_running(
+def test_each_retry_uses_fresh_upload_urls_and_stays_publicly_running(
     db,
     job_factory,
     make_reconciler,
@@ -199,14 +200,6 @@ def test_each_retry_uses_a_fresh_temporary_manifest_and_stays_publicly_running(
     ]
     generate = Mock(side_effect=generated_urls)
     verify = Mock(return_value=False)
-    manifests = []
-    local_paths = []
-
-    def stage(_job_id, path):
-        local_paths.append(path)
-        manifests.append(json.loads(path.read_text(encoding="utf-8")))
-
-    client.stage_upload_manifest.side_effect = stage
     reconciler = make_reconciler(
         client=client,
         generate_upload_urls=generate,
@@ -228,12 +221,14 @@ def test_each_retry_uses_a_fresh_temporary_manifest_and_stays_publicly_running(
     published = refresh(db, job)
     assert published.status == JobStatus.completed.value
     assert published.attempt_count == 0
-    assert manifests == generated_urls
-    assert all(not path.exists() for path in local_paths)
     assert generate.call_args_list == [
         call(str(job.job_id), "energy", "completed"),
         call(str(job.job_id), "energy", "completed"),
     ]
+    assert [
+        uploaded.kwargs["upload_urls"]
+        for uploaded in client.upload_artifacts.call_args_list
+    ] == generated_urls
     assert verify.call_count == 2
 
 
@@ -265,7 +260,6 @@ def test_existing_artifacts_finish_a_job_without_reusing_cluster_scratch(
         None,
     )
     generate.assert_not_called()
-    client.stage_upload_manifest.assert_not_called()
     client.upload_artifacts.assert_not_called()
 
 
@@ -299,7 +293,7 @@ def test_finalisation_failure_at_the_attempt_limit_publishes_upload_failure(
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["url_generation", "manifest_transfer", "cluster_upload", "object_check"],
+    ["url_generation", "cluster_upload", "object_check"],
 )
 def test_shared_outage_stops_the_round_without_incrementing_jobs(
     db,
@@ -313,11 +307,6 @@ def test_shared_outage_stops_the_round_without_incrementing_jobs(
     error_type = StorageServiceError
     if failure_point == "url_generation":
         generate.side_effect = StorageServiceError("S3 unavailable")
-    elif failure_point == "manifest_transfer":
-        client.stage_upload_manifest.side_effect = ClusterServiceError(
-            "cluster unavailable"
-        )
-        error_type = ClusterServiceError
     elif failure_point == "cluster_upload":
         client.upload_artifacts.side_effect = ClusterServiceError(
             "cluster unavailable"
@@ -367,12 +356,12 @@ def test_external_calls_run_without_an_open_database_transaction(
         return {"zip": "https://upload.test/archive"}
 
     generate = Mock(side_effect=generate_outside_transaction)
+
     def verify_outside_transaction(*_args):
         outside_transaction()
         return False
 
     verify = Mock(side_effect=verify_outside_transaction)
-    client.stage_upload_manifest.side_effect = outside_transaction
     client.upload_artifacts.side_effect = outside_transaction
     reconciler = make_reconciler(
         client=client,

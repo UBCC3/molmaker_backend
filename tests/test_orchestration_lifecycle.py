@@ -2,8 +2,8 @@ from unittest.mock import Mock
 from uuid import UUID
 
 from conftest import TestingSessionLocal
-from enum_types import JobStatus
-from models import Job
+from enum_types import CalculationType, JobStatus
+from models import Job, JobInput
 from orchestration.cluster_client import ClusterDispatchClient, SlurmJobStatus
 from orchestration.finalisation_reconciler import FinalisationReconciler
 from settings import OrchestrationSettings
@@ -24,7 +24,6 @@ def _settings():
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        backend_job_staging_min_space_gb=1,
     )
 
 
@@ -36,12 +35,8 @@ def _saved_job(db, job_id):
 def test_api_job_moves_through_all_three_reconcilers(
     client,
     db,
-    tmp_path,
-    monkeypatch,
     user_factory,
 ):
-    work_directory = tmp_path / "backend-work"
-    monkeypatch.setenv("BACKEND_WORK_DIR", str(work_directory))
     user_factory(user_sub="auth0|testuser")
     response = client.post(
         "/calculation/custom",
@@ -58,6 +53,9 @@ def test_api_job_moves_through_all_three_reconcilers(
     assert response.status_code == 201
     job_id = UUID(response.json()["job_id"])
     assert _saved_job(db, job_id).status == JobStatus.submitting.value
+    saved_input = db.get(JobInput, job_id)
+    assert saved_input.input_xyz == "1\n\nH 0 0 0\n"
+    assert saved_input.keywords is None
 
     settings = _settings()
     cluster_client = Mock(spec=ClusterDispatchClient)
@@ -66,14 +64,13 @@ def test_api_job_moves_through_all_three_reconcilers(
         session_factory=TestingSessionLocal,
         cluster_client=cluster_client,
         settings=settings,
-        backend_jobs_directory=work_directory / "jobs",
         sleep=Mock(),
         clock=Mock(return_value=0.0),
     ).run_round()
     submitted = _saved_job(db, job_id)
     assert submitted.status == JobStatus.submitted.value
     assert submitted.slurm_id == "7001"
-    assert not (work_directory / "jobs" / str(job_id)).exists()
+    assert db.get(JobInput, job_id) is not None
 
     cluster_client.get_slurm_job_statuses.side_effect = [
         {
@@ -127,7 +124,25 @@ def test_api_job_moves_through_all_three_reconcilers(
     assert completed.status == JobStatus.completed.value
     assert completed.is_uploaded is True
     assert completed.runtime.total_seconds() == 42
-    cluster_client.stage_job_inputs.assert_called_once()
-    cluster_client.submit_job.assert_called_once()
-    cluster_client.stage_upload_manifest.assert_called_once()
-    cluster_client.upload_artifacts.assert_called_once()
+    cluster_client.submit_job.assert_called_once_with(
+        job_id=job_id,
+        calculation_type=CalculationType.energy,
+        method="b3lyp",
+        basis_set="6-31g",
+        charge=0,
+        multiplicity=1,
+        optimization_type=None,
+        input_xyz="1\n\nH 0 0 0\n",
+        keywords=None,
+        recover_existing=False,
+    )
+    cluster_client.upload_artifacts.assert_called_once_with(
+        job_id=job_id,
+        calculation_type=CalculationType.energy,
+        terminal_status=JobStatus.completed,
+        upload_urls={
+            "zip": "https://upload.test/archive",
+            "result": "https://upload.test/result",
+        },
+        allow_missing_error=False,
+    )

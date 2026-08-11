@@ -148,10 +148,8 @@ def test_s3_consumers_share_one_bucket_and_region(monkeypatch):
 
 def test_api_and_reconcilers_use_the_same_settings(
     monkeypatch,
-    tmp_path,
     mocker,
 ):
-    monkeypatch.setenv("BACKEND_WORK_DIR", str(tmp_path / "backend"))
     monkeypatch.setenv("CLUSTER_WORK_DIR", "/cluster/molmaker")
     get_settings.cache_clear()
     settings = get_settings()
@@ -172,11 +170,6 @@ def test_api_and_reconcilers_use_the_same_settings(
         "from_settings",
         return_value=cluster_client,
     )
-    mocker.patch.object(
-        SubmissionReconciler,
-        "check_job_staging_readiness",
-    )
-
     app = create_app()
     reconcilers = (
         SubmissionReconciler.from_env(),

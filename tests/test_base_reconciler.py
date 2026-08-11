@@ -20,7 +20,6 @@ def _settings() -> OrchestrationSettings:
         outage_max_backoff_seconds=300,
         slurm_command_timeout_seconds=120,
         storage_operation_timeout_seconds=120,
-        backend_job_staging_min_space_gb=1,
     )
 
 
