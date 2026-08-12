@@ -112,31 +112,39 @@ python -m uvicorn main:app --reload
 
 The API is available at `http://localhost:8000` by default.
 
-#### Deploy the Alliance dispatch script
+#### Deploy the Alliance dispatch interface
 
 Before enabling the reconcilers, deploy a compatible, reviewed
-`Cluster-API-QC/runner/dispatch.py` to:
+`Cluster-API-QC` dispatch pair to the same Alliance directory:
 
 ```text
 /home/thachuk/ubchemica/dispatch.py
+/home/thachuk/ubchemica/dispatch_protocol.py
 ```
 
 Set `CLUSTER_WORK_DIR=/home/thachuk/ubchemica` in the backend environment. The
-supported operations and security boundary are described in
+backend sends one versioned JSON request to `dispatch.py` over SSH stdin for
+each cluster operation. The supported operations and security boundary are
+described in
 [Restricted Alliance Dispatch](docs/job-orchestration.md#restricted-alliance-dispatch).
 
 Deployment requires explicit approval:
 
-1. Review and commit the matching `Cluster-API-QC` source, then record its
-   commit and SHA-256 checksum.
-2. From an authorized Alliance login, back up the deployed file, replace it
-   with the reviewed source, and verify that the checksum still matches. The
-   restricted backend key cannot run arbitrary checksum commands.
-3. Through the restricted backend connection, smoke-test submission, both
-   recovery lookups, batched status checks, cancellation, artifact upload, and
-   error handling.
-4. If any check fails, restore the backup. Remove only the smoke-test jobs and
-   directories created during these checks.
+1. Review and commit both matching files, then record the commit and their
+   SHA-256 checksums.
+2. From an authorized Alliance login, back up both deployed files, stage both
+   reviewed replacements, verify their checksums, and replace them together.
+3. Restrict the backend SSH key to the exact no-argument command
+   `python3 /home/thachuk/ubchemica/dispatch.py`.
+4. Through that restricted connection, smoke-test submission and recovery,
+   batched status checks, cancellation, artifact upload, invalid JSON, and a
+   shared-service failure.
+5. If any check fails, restore both backups and the previous allow-list rule.
+   Remove only the smoke-test jobs and directories created during these checks.
+
+The complete JSON contract, smoke-test examples, and rollback procedure live
+in `Cluster-API-QC/runner/README.md` and must be reviewed with the matching
+cluster release.
 
 #### Install the reconciler services
 
@@ -160,11 +168,6 @@ sudo systemctl restart molmaker-reconcilers.target
 
 The service definitions are in `deploy/systemd`. Logs are available through
 the system journal.
-
-Before starting, the submission reconciler checks that `BACKEND_WORK_DIR/jobs`
-is writable and that the volume has at least
-`BACKEND_JOB_STAGING_MIN_SPACE_GB` free. The default is 1 GB and can be changed
-in `.env`.
 
 > For local debugging, run one reconciler directly by choosing `submission`,
 > `status`, or `finalisation` in the module name. For example:
@@ -190,8 +193,9 @@ When diagnosing one job, inspect its saved status, attempt count, failure
 fields, and Slurm ID. If many jobs pause together, first check for a shared
 PostgreSQL, SSH, Slurm, or S3 outage.
 
-Restarting a reconciler is safe because PostgreSQL, deterministic paths, and
-deterministic object keys preserve the work needed by the next round.
+Restarting a reconciler is safe because PostgreSQL retains the job state and
+calculation inputs, while cluster job directories and S3 artifacts use stable
+job-specific names.
 
 ## Tests
 
@@ -216,17 +220,20 @@ database user can import it:
 pg_dump --format=plain --no-owner --no-acl --file=molmaker.sql "${DB_NAME}"
 ```
 
-To update a database created from `main`, back it up and run both migrations in
-order:
+To update a database created from `main`, stop the API and reconcilers, back up
+the database, and run both migrations in order:
 
 ```zsh
 psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/001_pr14_database_changes.sql
 psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/002_jobs_orchestration_redesign.sql
 ```
 
-If migration `001` was already applied, run only migration `002`. Both scripts
-are safe to run again after they succeed. Do not run them after importing the
-current `molmaker.sql`; that dump already contains both sets of changes.
+Migration `002` adds the orchestration fields and the retained `job_inputs`
+table used by new submissions. If migration `001` was already applied, run
+only migration `002`. Both scripts are safe to run again after they succeed.
+Do not run them after importing the current `molmaker.sql`; that dump already
+contains both sets of changes. Start the API and reconcilers only after the
+migration completes successfully.
 
 In production, confirm which database role runs migrations. If a separate
 migration role owns the tables, grant the backend role the permissions it

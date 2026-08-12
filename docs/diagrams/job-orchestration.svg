@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 940" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 880" role="img" aria-labelledby="title description">
   <title id="title">Database-backed job orchestration</title>
-  <desc id="description">The API writes calculation input files on the backend and records a submitting job in PostgreSQL. The submission reconciler separately copies those files to Alliance and submits the calculation to Slurm. Status checks are batched, and finalisation uploads artifacts before publishing the terminal state.</desc>
+  <desc id="description">The API stores a submitting job and its exact calculation inputs in PostgreSQL. Three independent reconcilers send versioned JSON requests through a restricted cluster dispatch command to submit and monitor Slurm jobs and upload artifacts to S3.</desc>
 
   <defs>
     <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto">
@@ -30,18 +30,16 @@
     .node-body { font-size: 12.5px; fill: #4b5565; }
     .node-small { font-size: 11.2px; fill: #5b6472; }
     .action { font-size: 11.7px; font-weight: 700; }
-    .command { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.4px; fill: #64748b; }
+    .command { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.3px; fill: #64748b; }
+    .blue { fill: #2563eb; }
     .orange { fill: #c65f16; }
     .indigo { fill: #445fc6; }
     .green { fill: #117b50; }
-    .blue { fill: #2563eb; }
-    .state { font-size: 12.5px; }
-    .state-key { font-size: 12px; font-weight: 700; }
     .footer { font-size: 12.5px; font-weight: 600; fill: #526173; }
   </style>
 
   <text class="title" x="700" y="34" text-anchor="middle">Database-backed job orchestration</text>
-  <text class="subtitle" x="700" y="58" text-anchor="middle">The API stages calculation files; supervised workers copy, submit, monitor, and finalise the job</text>
+  <text class="subtitle" x="700" y="58" text-anchor="middle">The API saves job state and input; supervised workers advance the calculation through a restricted JSON interface</text>
 
   <!-- Public request path. -->
   <rect x="25" y="78" width="1350" height="142" rx="16" fill="#f4f8ff" stroke="#b7d3f2" stroke-width="1.5"/>
@@ -56,208 +54,152 @@
   <g filter="url(#shadow)">
     <rect x="350" y="114" width="300" height="88" rx="10" fill="#ffffff" stroke="#8da1ba" stroke-width="1.5"/>
     <text class="node-title" x="500" y="143" text-anchor="middle">FastAPI service</text>
-    <text class="node-body" x="500" y="166" text-anchor="middle">validate request and create the job</text>
-    <text class="node-body" x="500" y="188" text-anchor="middle">write files to backend staging; save submitting</text>
+    <text class="node-body" x="500" y="166" text-anchor="middle">validate metadata, XYZ, and keywords</text>
+    <text class="node-body" x="500" y="188" text-anchor="middle">save the job and return 201</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="930" y="108" width="395" height="100" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2.4"/>
-    <text class="node-title" x="1127" y="137" text-anchor="middle">Jobs database = durable queue</text>
-    <text class="node-body" x="1127" y="161" text-anchor="middle">submitting · submitted · running · finalising</text>
-    <text class="node-body" x="1127" y="183" text-anchor="middle">completed · failed · cancelled · cancel_requested</text>
+    <rect x="880" y="108" width="445" height="100" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2.4"/>
+    <text class="node-title" x="1102" y="137" text-anchor="middle">PostgreSQL = durable hand-off</text>
+    <text class="node-body" x="1102" y="161" text-anchor="middle">jobs: state · attempts · scheduler ID · outcome</text>
+    <text class="node-body" x="1102" y="183" text-anchor="middle">job_inputs: input_xyz · optional keywords</text>
   </g>
 
   <path d="M270 158 H350" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
   <text class="action blue" x="310" y="145" text-anchor="middle">call job API</text>
-  <path d="M650 158 H930" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
-  <text class="action blue" x="790" y="145" text-anchor="middle">commit job; later read saved state</text>
+  <path d="M650 158 H880" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <text class="action blue" x="765" y="143" text-anchor="middle">commit job + inputs together</text>
+  <text class="command" x="765" y="178" text-anchor="middle">status = submitting</text>
 
-  <!-- Independent worker processes. -->
-  <rect x="25" y="245" width="1350" height="630" rx="16" fill="#ffffff" stroke="#c8d0dc" stroke-width="1.5"/>
-  <text class="panel-title" x="50" y="272">INDEPENDENT SUPERVISED PROCESSES</text>
-  <text class="column-title" x="180" y="296" text-anchor="middle">RECONCILER PROCESS</text>
-  <text class="column-title" x="460" y="296" text-anchor="middle">BACKEND FILES</text>
-  <text class="column-title" x="800" y="296" text-anchor="middle">ALLIANCE JOB DIRECTORY + RESTRICTED DISPATCH</text>
-  <text class="column-title" x="1237" y="296" text-anchor="middle">DURABLE DATABASE STATE</text>
+  <!-- Worker panel. -->
+  <rect x="25" y="245" width="1350" height="620" rx="16" fill="#ffffff" stroke="#c8d0dc" stroke-width="1.5"/>
+  <text class="panel-title" x="50" y="272">THREE INDEPENDENT SUPERVISED PROCESSES</text>
+  <text class="column-title" x="180" y="298" text-anchor="middle">RECONCILER</text>
+  <text class="column-title" x="475" y="298" text-anchor="middle">VERSIONED JSON REQUEST</text>
+  <text class="column-title" x="820" y="298" text-anchor="middle">RESTRICTED ALLIANCE DISPATCH</text>
+  <text class="column-title" x="1190" y="298" text-anchor="middle">SLURM OR S3</text>
 
-  <!-- Database selection bus. -->
-  <path d="M1015 208 V232 H40 V746" fill="none" stroke="#4f78c8" stroke-width="2.3" stroke-dasharray="7 6"/>
-  <path d="M40 310 H180 V320" fill="none" stroke="#4f78c8" stroke-width="2.3" stroke-dasharray="7 6"/>
-  <path d="M40 493 H180 V503" fill="none" stroke="#4f78c8" stroke-width="2.3" stroke-dasharray="7 6"/>
-  <path d="M40 675 H180 V685" fill="none" stroke="#4f78c8" stroke-width="2.3" stroke-dasharray="7 6"/>
-  <rect x="648" y="220" width="176" height="23" rx="6" fill="#ffffff"/>
-  <text class="action blue" x="736" y="236" text-anchor="middle">select jobs by current status</text>
+  <!-- Database state bus. -->
+  <path d="M1102 208 V230 H42 V771" fill="none" stroke="#4f78c8" stroke-width="2.3" stroke-dasharray="7 6"/>
+  <path d="M42 320 H55" fill="none" stroke="#4f78c8" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+  <path d="M42 504 H55" fill="none" stroke="#4f78c8" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+  <path d="M42 688 H55" fill="none" stroke="#4f78c8" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+  <rect x="580" y="219" width="250" height="24" rx="6" fill="#ffffff"/>
+  <text class="action blue" x="705" y="236" text-anchor="middle">select by status · commit the next state</text>
 
-  <!-- Submission lane nodes. -->
+  <!-- Submission lane. -->
   <g filter="url(#shadow)">
-    <rect x="55" y="320" width="250" height="110" rx="11" fill="#fff4e8" stroke="#e87522" stroke-width="2.3"/>
-    <text class="node-title" x="180" y="350" text-anchor="middle">1. Submission reconciler</text>
-    <text class="node-body" x="180" y="375" text-anchor="middle">new job: copy files, then submit</text>
-    <text class="node-body" x="180" y="397" text-anchor="middle">lost response: find the accepted job</text>
-    <text class="node-small" x="180" y="417" text-anchor="middle">before considering another submission</text>
+    <rect x="55" y="320" width="250" height="116" rx="11" fill="#fff4e8" stroke="#e87522" stroke-width="2.3"/>
+    <text class="node-title" x="180" y="349" text-anchor="middle">1. Submission reconciler</text>
+    <text class="node-body" x="180" y="380" text-anchor="middle">load input and record the attempt</text>
+    <text class="node-body" x="180" y="405" text-anchor="middle">send the submission request</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="365" y="320" width="190" height="110" rx="10" fill="#fffaf4" stroke="#d6955d" stroke-width="1.7"/>
-    <text class="node-title" x="460" y="348" text-anchor="middle">Backend job staging</text>
-    <text class="node-small" x="460" y="366" text-anchor="middle">input.xyz — molecule coordinates</text>
-    <text class="node-small" x="460" y="384" text-anchor="middle">keywords.json — optional settings</text>
-    <text class="node-small" x="460" y="402" text-anchor="middle">stored on backend disk</text>
-    <text class="node-small" x="460" y="420" text-anchor="middle">removed after the Slurm ID is saved</text>
+    <rect x="355" y="320" width="240" height="116" rx="10" fill="#fffaf4" stroke="#d6955d" stroke-width="1.7"/>
+    <text class="node-title" x="475" y="349" text-anchor="middle">submit</text>
+    <text class="node-small" x="475" y="379" text-anchor="middle">settings + job UUID + inputs</text>
+    <text class="node-small" x="475" y="404" text-anchor="middle">recover_existing on retries</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="635" y="320" width="190" height="110" rx="10" fill="#ffffff" stroke="#8c99aa" stroke-width="1.7"/>
-    <text class="node-title" x="730" y="348" text-anchor="middle">Alliance job directory</text>
-    <text class="node-small" x="730" y="366" text-anchor="middle">input files, Slurm logs, and results</text>
-    <text class="node-small" x="730" y="384" text-anchor="middle">kept while the calculation runs</text>
-    <text class="node-small" x="730" y="402" text-anchor="middle">removed after result and archive</text>
-    <text class="node-small" x="730" y="420" text-anchor="middle">files reach S3</text>
+    <rect x="660" y="310" width="320" height="136" rx="10" fill="#ffffff" stroke="#d6955d" stroke-width="1.8"/>
+    <text class="node-title" x="820" y="343" text-anchor="middle">Recover and prepare on Alliance</text>
+    <text class="node-small" x="820" y="371" text-anchor="middle">retry lookup: squeue, then recent sacct</text>
+    <text class="node-small" x="820" y="395" text-anchor="middle">create jobs/{job_id}</text>
+    <text class="node-small" x="820" y="419" text-anchor="middle">write input.xyz · keywords.json · slurm.sh</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="905" y="320" width="160" height="110" rx="10" fill="#f8fafc" stroke="#8c99aa" stroke-width="1.7"/>
-    <text class="node-title" x="985" y="348" text-anchor="middle">Slurm submission</text>
-    <text class="node-small" x="985" y="373" text-anchor="middle">dispatch writes slurm.sh</text>
-    <text class="node-small" x="985" y="393" text-anchor="middle">Slurm accepts the job</text>
-    <text class="node-small" x="985" y="413" text-anchor="middle">and returns its ID</text>
+    <rect x="1060" y="320" width="260" height="116" rx="10" fill="#fffaf4" stroke="#d6955d" stroke-width="1.8"/>
+    <text class="node-title" x="1190" y="349" text-anchor="middle">Slurm job</text>
+    <text class="node-small" x="1190" y="382" text-anchor="middle">queue the calculation script</text>
+    <text class="node-small" x="1190" y="407" text-anchor="middle">return the Slurm ID</text>
   </g>
 
-  <!-- Submission lane arrows: copy and submit are deliberately separate. -->
-  <path d="M305 375 H365" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
-  <text class="action orange" x="335" y="361" text-anchor="middle">read staged files</text>
-
-  <path d="M460 430 V460 H700 V430" fill="none" stroke="#e87522" stroke-width="3.2" marker-end="url(#arrow-orange)"/>
-  <text class="action orange" x="580" y="452" text-anchor="middle">1  Copy the job directory to Alliance</text>
-  <text class="command" x="580" y="482" text-anchor="middle">scp -r</text>
-
-  <path d="M760 430 V460 H985 V430" fill="none" stroke="#e87522" stroke-width="3.2" marker-end="url(#arrow-orange)"/>
-  <text class="action orange" x="873" y="452" text-anchor="middle">2  Submit the staged calculation</text>
-  <text class="command" x="873" y="482" text-anchor="middle">dispatch submit → sbatch --parsable</text>
+  <path d="M305 378 H355" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
+  <text class="action orange" x="330" y="363" text-anchor="middle">build request</text>
+  <path d="M595 378 H660" fill="none" stroke="#e87522" stroke-width="3.5" marker-end="url(#arrow-orange)"/>
+  <text class="action orange" x="627" y="345" text-anchor="middle">send once</text>
+  <text class="command" x="627" y="415" text-anchor="middle">SSH stdin</text>
+  <path d="M980 378 H1060" fill="none" stroke="#e87522" stroke-width="3.5" marker-end="url(#arrow-orange)"/>
+  <text class="action orange" x="1020" y="346" text-anchor="middle">submit script</text>
+  <text class="command" x="1020" y="415" text-anchor="middle">sbatch --parsable</text>
 
   <!-- Status lane. -->
   <g filter="url(#shadow)">
-    <rect x="55" y="503" width="250" height="112" rx="11" fill="#eef2ff" stroke="#526fe8" stroke-width="2.3"/>
+    <rect x="55" y="504" width="250" height="116" rx="11" fill="#eef2ff" stroke="#526fe8" stroke-width="2.3"/>
     <text class="node-title" x="180" y="533" text-anchor="middle">2. Status reconciler</text>
-    <text class="node-body" x="180" y="558" text-anchor="middle">poll submitted/running jobs in batches</text>
-    <text class="node-body" x="180" y="580" text-anchor="middle">act on cancel_requested only after</text>
-    <text class="node-body" x="180" y="601" text-anchor="middle">reading the latest Slurm state</text>
+    <text class="node-body" x="180" y="564" text-anchor="middle">batch submitted and running jobs</text>
+    <text class="node-body" x="180" y="589" text-anchor="middle">save scheduler state and runtime</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="715" y="503" width="250" height="112" rx="10" fill="#f8fafc" stroke="#8595e8" stroke-width="1.7"/>
-    <text class="node-title" x="840" y="533" text-anchor="middle">Slurm status and cancellation</text>
-    <text class="node-body" x="840" y="559" text-anchor="middle">state · exit code · elapsed time</text>
-    <text class="node-small" x="840" y="581" text-anchor="middle">cancel only when the latest state</text>
-    <text class="node-small" x="840" y="601" text-anchor="middle">is not already terminal</text>
+    <rect x="355" y="504" width="240" height="116" rx="10" fill="#f7f8ff" stroke="#8595e8" stroke-width="1.7"/>
+    <text class="node-title" x="475" y="533" text-anchor="middle">status-batch</text>
+    <text class="node-small" x="475" y="565" text-anchor="middle">up to STATUS_BATCH_SIZE IDs</text>
+    <text class="node-small" x="475" y="590" text-anchor="middle">cancel request when needed</text>
   </g>
 
-  <path d="M305 536 H715" fill="none" stroke="#526fe8" stroke-width="3.5" marker-end="url(#arrow-indigo)"/>
-  <text class="action indigo" x="510" y="523" text-anchor="middle">Read state, exit code, and runtime for a batch</text>
-  <text class="command" x="510" y="555" text-anchor="middle">dispatch status-batch → sacct --allocations --jobs=id1,id2,…</text>
+  <g filter="url(#shadow)">
+    <rect x="660" y="504" width="320" height="116" rx="10" fill="#f7f8ff" stroke="#8595e8" stroke-width="1.8"/>
+    <text class="node-title" x="820" y="533" text-anchor="middle">Read scheduler state</text>
+    <text class="node-small" x="820" y="565" text-anchor="middle">state · exit code · elapsed seconds</text>
+    <text class="node-small" x="820" y="590" text-anchor="middle">request cancellation when needed</text>
+  </g>
 
-  <path d="M305 588 H715" fill="none" stroke="#526fe8" stroke-width="2.6" stroke-dasharray="7 5" marker-end="url(#arrow-indigo)"/>
-  <text class="action indigo" x="510" y="578" text-anchor="middle">If cancellation is requested and the job is not terminal</text>
-  <text class="command" x="510" y="607" text-anchor="middle">dispatch cancel-slurm-job → scancel --quiet</text>
+  <g filter="url(#shadow)">
+    <rect x="1060" y="504" width="260" height="116" rx="10" fill="#f7f8ff" stroke="#8595e8" stroke-width="1.8"/>
+    <text class="node-title" x="1190" y="533" text-anchor="middle">Slurm accounting</text>
+    <text class="node-small" x="1190" y="565" text-anchor="middle">one sacct query per batch</text>
+    <text class="node-small" x="1190" y="590" text-anchor="middle">terminal outcome → finalising</text>
+  </g>
+
+  <path d="M305 562 H355" fill="none" stroke="#526fe8" stroke-width="3.4" marker-end="url(#arrow-indigo)"/>
+  <text class="action indigo" x="330" y="547" text-anchor="middle">build request</text>
+  <path d="M595 562 H660" fill="none" stroke="#526fe8" stroke-width="3.5" marker-end="url(#arrow-indigo)"/>
+  <text class="action indigo" x="627" y="530" text-anchor="middle">send batch</text>
+  <text class="command" x="627" y="599" text-anchor="middle">SSH stdin</text>
+  <path d="M980 562 H1060" fill="none" stroke="#526fe8" stroke-width="3.5" marker-end="url(#arrow-indigo)"/>
+  <text class="action indigo" x="1020" y="530" text-anchor="middle">query / cancel</text>
+  <text class="command" x="1020" y="599" text-anchor="middle">sacct / scancel</text>
 
   <!-- Finalisation lane. -->
   <g filter="url(#shadow)">
-    <rect x="55" y="685" width="250" height="118" rx="11" fill="#eaf8f0" stroke="#159a62" stroke-width="2.3"/>
-    <text class="node-title" x="180" y="715" text-anchor="middle">3. Finalisation reconciler</text>
-    <text class="node-body" x="180" y="740" text-anchor="middle">runs after Slurm reaches a terminal state</text>
-    <text class="node-body" x="180" y="762" text-anchor="middle">check S3 first; otherwise upload files</text>
-    <text class="node-small" x="180" y="784" text-anchor="middle">publish only when required artifacts exist</text>
+    <rect x="55" y="688" width="250" height="122" rx="11" fill="#eaf8f0" stroke="#159a62" stroke-width="2.3"/>
+    <text class="node-title" x="180" y="717" text-anchor="middle">3. Finalisation reconciler</text>
+    <text class="node-body" x="180" y="749" text-anchor="middle">check existing artifact keys</text>
+    <text class="node-body" x="180" y="774" text-anchor="middle">create fresh PUT URLs</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="365" y="685" width="190" height="118" rx="10" fill="#f4fbf7" stroke="#62b88f" stroke-width="1.7"/>
-    <text class="node-title" x="460" y="715" text-anchor="middle">Fresh upload manifest</text>
-    <text class="node-small" x="460" y="740" text-anchor="middle">temporary upload-urls.json</text>
-    <text class="node-small" x="460" y="761" text-anchor="middle">short-lived presigned PUT URLs</text>
-    <text class="node-small" x="460" y="782" text-anchor="middle">never stored in PostgreSQL</text>
+    <rect x="355" y="688" width="240" height="122" rx="10" fill="#f4fbf7" stroke="#62b88f" stroke-width="1.7"/>
+    <text class="node-title" x="475" y="717" text-anchor="middle">upload-artifacts</text>
+    <text class="node-small" x="475" y="749" text-anchor="middle">job outcome + calculation type</text>
+    <text class="node-small" x="475" y="774" text-anchor="middle">fresh presigned URLs</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="635" y="685" width="190" height="118" rx="10" fill="#f4fbf7" stroke="#62b88f" stroke-width="1.7"/>
-    <text class="node-title" x="730" y="715" text-anchor="middle">Alliance artifact uploader</text>
-    <text class="node-small" x="730" y="740" text-anchor="middle">reads the same job directory</text>
-    <text class="node-small" x="730" y="761" text-anchor="middle">creates the archive</text>
-    <text class="node-small" x="730" y="782" text-anchor="middle">uploads available result files</text>
+    <rect x="660" y="688" width="320" height="122" rx="10" fill="#f4fbf7" stroke="#62b88f" stroke-width="1.8"/>
+    <text class="node-title" x="820" y="717" text-anchor="middle">Alliance artifact uploader</text>
+    <text class="node-small" x="820" y="749" text-anchor="middle">archive and upload available files</text>
+    <text class="node-small" x="820" y="774" text-anchor="middle">remove the job directory on success</text>
   </g>
 
   <g filter="url(#shadow)">
-    <rect x="905" y="685" width="160" height="118" rx="10" fill="#eaf8f0" stroke="#159a62" stroke-width="1.9"/>
-    <text class="node-title" x="985" y="715" text-anchor="middle">S3 object storage</text>
-    <text class="node-small" x="985" y="742" text-anchor="middle">result and error files</text>
-    <text class="node-small" x="985" y="763" text-anchor="middle">job archive</text>
-    <text class="node-small" x="985" y="784" text-anchor="middle">deterministic object keys</text>
+    <rect x="1060" y="688" width="260" height="122" rx="10" fill="#eaf8f0" stroke="#159a62" stroke-width="1.9"/>
+    <text class="node-title" x="1190" y="717" text-anchor="middle">S3 object storage</text>
+    <text class="node-small" x="1190" y="749" text-anchor="middle">job archive + result artifacts</text>
+    <text class="node-small" x="1190" y="774" text-anchor="middle">deterministic object keys</text>
   </g>
 
-  <path d="M305 744 H365" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
-  <text class="action green" x="335" y="730" text-anchor="middle">create fresh URLs</text>
+  <path d="M305 749 H355" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
+  <text class="action green" x="330" y="734" text-anchor="middle">build request</text>
+  <path d="M595 749 H660" fill="none" stroke="#159a62" stroke-width="3.5" marker-end="url(#arrow-green)"/>
+  <text class="action green" x="627" y="717" text-anchor="middle">send URLs</text>
+  <text class="command" x="627" y="786" text-anchor="middle">SSH stdin</text>
+  <path d="M980 749 H1060" fill="none" stroke="#159a62" stroke-width="3.5" marker-end="url(#arrow-green)"/>
+  <text class="action green" x="1020" y="717" text-anchor="middle">upload files</text>
+  <text class="command" x="1020" y="786" text-anchor="middle">presigned HTTPS PUT</text>
 
-  <path d="M555 744 H635" fill="none" stroke="#159a62" stroke-width="3.5" marker-end="url(#arrow-green)"/>
-  <text class="action green" x="595" y="674" text-anchor="middle">Copy URL manifest to the Alliance job directory</text>
-  <text class="command" x="595" y="822" text-anchor="middle">scp upload-urls.json</text>
-
-  <path d="M825 744 H905" fill="none" stroke="#159a62" stroke-width="3.5" marker-end="url(#arrow-green)"/>
-  <text class="action green" x="865" y="674" text-anchor="middle">Upload available result files and archive</text>
-  <text class="command" x="865" y="822" text-anchor="middle">dispatch upload-artifacts → upload_result.py → presigned HTTPS PUT</text>
-
-  <!-- Durable state panel and commit arrows. -->
-  <g filter="url(#shadow)">
-    <rect x="1125" y="320" width="225" height="483" rx="11" fill="#f8fafc" stroke="#8c99aa" stroke-width="1.7"/>
-    <text class="node-title" x="1237" y="350" text-anchor="middle">Durable state transitions</text>
-    <line x1="1148" y1="367" x2="1327" y2="367" stroke="#d7dde6"/>
-
-    <rect x="1148" y="389" width="26" height="26" rx="6" fill="#fff0df"/>
-    <text class="state-key orange" x="1161" y="408" text-anchor="middle">A</text>
-    <text class="state" x="1187" y="407">submitting → submitted</text>
-
-    <rect x="1148" y="438" width="26" height="26" rx="6" fill="#e8edff"/>
-    <text class="state-key indigo" x="1161" y="457" text-anchor="middle">B</text>
-    <text class="state" x="1187" y="456">submitted → running</text>
-
-    <rect x="1148" y="487" width="26" height="26" rx="6" fill="#e8edff"/>
-    <text class="state-key indigo" x="1161" y="506" text-anchor="middle">C</text>
-    <text class="state" x="1187" y="500">terminal Slurm state</text>
-    <text class="state" x="1187" y="520">→ finalising</text>
-
-    <rect x="1148" y="546" width="26" height="26" rx="6" fill="#e5f7ed"/>
-    <text class="state-key green" x="1161" y="565" text-anchor="middle">D</text>
-    <text class="state" x="1187" y="559">finalising → completed</text>
-    <text class="state" x="1187" y="579">/ failed / cancelled</text>
-
-    <line x1="1148" y1="607" x2="1327" y2="607" stroke="#d7dde6"/>
-    <text class="node-small" x="1237" y="635" text-anchor="middle">Every hand-off is committed.</text>
-    <text class="node-small" x="1237" y="657" text-anchor="middle">A restarted process resumes</text>
-    <text class="node-small" x="1237" y="677" text-anchor="middle">from the saved database state.</text>
-    <text class="node-small" x="1237" y="712" text-anchor="middle">Soft-deleted active jobs</text>
-    <text class="node-small" x="1237" y="732" text-anchor="middle">continue through all stages.</text>
-  </g>
-
-  <path d="M1065 375 H1125" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
-  <text class="action orange" x="1095" y="360" text-anchor="middle">save Slurm ID</text>
-
-  <path d="M965 559 H1125" fill="none" stroke="#526fe8" stroke-width="3.4" marker-end="url(#arrow-indigo)"/>
-  <text class="action indigo" x="1045" y="544" text-anchor="middle">commit latest state + runtime</text>
-  <text class="command" x="1045" y="579" text-anchor="middle">running or finalising</text>
-
-  <path d="M1065 744 H1125" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
-  <text class="action green" x="1095" y="721" text-anchor="middle">publish outcome</text>
-  <text class="command" x="1095" y="774" text-anchor="middle">finalising → terminal</text>
-
-  <path d="M500 202 V265 C500 286 460 293 460 320" fill="none" stroke="#2563eb" stroke-width="2.8" marker-end="url(#arrow-blue)"/>
-  <text class="action blue" x="520" y="260">write calculation files to backend staging</text>
-  <text class="command" x="520" y="280">input.xyz + optional keywords.json</text>
-
-  <path d="M1237 320 V260 C1237 238 1215 228 1184 228 V208" fill="none" stroke="#2563eb" stroke-width="3.3" marker-end="url(#arrow-blue)"/>
-  <text class="action blue" x="1260" y="251">commit job state</text>
-
-  <path d="M202 308 H222 L212 320 Z" fill="#2563eb"/>
-  <path d="M202 491 H222 L212 503 Z" fill="#2563eb"/>
-  <path d="M202 673 H222 L212 685 Z" fill="#2563eb"/>
-
-  <rect x="75" y="894" width="1250" height="38" rx="12" fill="#eef2f7"/>
-  <text class="footer" x="700" y="918" text-anchor="middle">File copy, Slurm submission, status polling, cancellation, and artifact upload are separate repeat-safe operations.</text>
 </svg>
