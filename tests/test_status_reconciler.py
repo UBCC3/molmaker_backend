@@ -49,7 +49,7 @@ EXPECTED_ACTIVE_STATES = {
 EXPECTED_FAILURE_REASONS = {
     "BOOT_FAIL": JobFailureReason.cluster_failed,
     "DEADLINE": JobFailureReason.cluster_failed,
-    "FAILED": JobFailureReason.calculation_failed,
+    "FAILED": JobFailureReason.cluster_failed,
     "LAUNCH_FAILED": JobFailureReason.cluster_failed,
     "NODE_FAIL": JobFailureReason.node_failure,
     "OUT_OF_MEMORY": JobFailureReason.out_of_memory,
@@ -98,12 +98,20 @@ def refresh(db, job):
     return db.get(Job, job.job_id)
 
 
-def slurm_job_status(slurm_id, state, *, elapsed=10, exit_code="0:0"):
+def slurm_job_status(
+    slurm_id,
+    state,
+    *,
+    elapsed=10,
+    exit_code="0:0",
+    has_result_error=False,
+):
     return SlurmJobStatus(
         slurm_id=str(slurm_id),
         state=state,
         exit_code=exit_code,
         elapsed_seconds=elapsed,
+        has_result_error=has_result_error,
     )
 
 
@@ -128,6 +136,14 @@ def test_state_mapping_explicitly_covers_every_supported_slurm_state():
             JobStatus.failed,
             reason,
         )
+    assert _transition_for_state(
+        "FAILED",
+        has_result_error=True,
+    ) == StatusTransition(
+        JobStatus.finalising,
+        JobStatus.failed,
+        JobFailureReason.calculation_failed,
+    )
     assert _transition_for_state("COMPLETED") == StatusTransition(
         JobStatus.finalising,
         JobStatus.completed,
@@ -289,6 +305,43 @@ def test_batch_saves_runtime_and_hands_terminal_jobs_to_finalisation(
         record.message == "Slurm job reached a terminal state"
         for record in caplog.records
     ) == 3
+
+
+def test_failed_job_uses_result_error_to_identify_a_calculation_failure(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    reconciler = make_reconciler(client=client)
+    calculation_failure = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="206",
+    )
+    cluster_failure = job_factory(
+        status=JobStatus.running.value,
+        slurm_id="207",
+    )
+    client.get_slurm_job_statuses.return_value = {
+        "206": slurm_job_status(
+            "206",
+            "FAILED",
+            exit_code="1:0",
+            has_result_error=True,
+        ),
+        "207": slurm_job_status("207", "FAILED", exit_code="1:0"),
+    }
+
+    reconciler.run_round()
+
+    assert (
+        refresh(db, calculation_failure).failure_reason
+        == JobFailureReason.calculation_failed.value
+    )
+    assert (
+        refresh(db, cluster_failure).failure_reason
+        == JobFailureReason.cluster_failed.value
+    )
 
 
 def test_cancel_requests_include_soft_deleted_jobs_and_keep_polling_them(

@@ -20,7 +20,9 @@ from settings import BackendSettings
 
 JOB_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 WORK_DIR = PurePosixPath("/home/test/molmaker")
-REMOTE_COMMAND = "python3 /home/test/molmaker/dispatch.py"
+REMOTE_COMMAND = (
+    "python3 /home/test/molmaker/Cluster-API-QC/runner/dispatch.py"
+)
 
 
 def success(result):
@@ -180,6 +182,7 @@ def test_status_batch_returns_typed_rows_and_allows_missing_jobs(
                         "state": "CANCELLED+",
                         "exit_code": "0:15",
                         "elapsed_seconds": 62,
+                        "has_result_error": False,
                     }
                 ]
             }
@@ -189,7 +192,7 @@ def test_status_batch_returns_typed_rows_and_allows_missing_jobs(
     result = client.get_slurm_job_statuses(["12345", "67890"])
 
     assert result == {
-        "12345": SlurmJobStatus("12345", "CANCELLED+", "0:15", 62)
+        "12345": SlurmJobStatus("12345", "CANCELLED+", "0:15", 62, False)
     }
     assert sent_request(calls) == {
         "protocol_version": 1,
@@ -363,6 +366,7 @@ def test_status_batch_rejects_unrequested_or_duplicate_rows(client, run_dispatch
         "state": "RUNNING",
         "exit_code": None,
         "elapsed_seconds": 2,
+        "has_result_error": False,
     }
     run_dispatch(stdout=success({"jobs": [row]}))
     with pytest.raises(ClusterServiceError):
@@ -370,6 +374,27 @@ def test_status_batch_rejects_unrequested_or_duplicate_rows(client, run_dispatch
 
     row["slurm_id"] = "12345"
     run_dispatch(stdout=success({"jobs": [row, row]}))
+    with pytest.raises(ClusterServiceError):
+        client.get_slurm_job_statuses(["12345"])
+
+
+def test_status_batch_rejects_an_invalid_result_error_signal(client, run_dispatch):
+    run_dispatch(
+        stdout=success(
+            {
+                "jobs": [
+                    {
+                        "slurm_id": "12345",
+                        "state": "FAILED",
+                        "exit_code": "1:0",
+                        "elapsed_seconds": 2,
+                        "has_result_error": "false",
+                    }
+                ]
+            }
+        )
+    )
+
     with pytest.raises(ClusterServiceError):
         client.get_slurm_job_statuses(["12345"])
 

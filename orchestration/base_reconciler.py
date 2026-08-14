@@ -61,7 +61,10 @@ class BaseReconciler(ABC):
                 cls.reconciler_name,
                 mode,
             )
-            reconciler.run_forever(rounds=1 if arguments.once else None)
+            if arguments.once:
+                reconciler.run_once()
+            else:
+                reconciler.run_forever()
             logger.info("reconciler_stopped reconciler=%s", cls.reconciler_name)
         except Exception:
             logger.exception(
@@ -114,6 +117,11 @@ class BaseReconciler(ABC):
             completed_rounds += 1
             if rounds is None or completed_rounds < rounds:
                 self.sleep(delay)
+
+    def run_once(self) -> None:
+        """Run one round and let failures reach the caller."""
+
+        self._run_round_and_get_poll_delay()
 
     def _run_round_and_get_poll_delay(self) -> float:
         started_at = self.clock()

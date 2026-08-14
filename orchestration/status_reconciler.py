@@ -57,7 +57,7 @@ ACTIVE_SLURM_STATES = frozenset(
 FAILURE_REASON_BY_SLURM_STATE = {
     "BOOT_FAIL": JobFailureReason.cluster_failed,
     "DEADLINE": JobFailureReason.cluster_failed,
-    "FAILED": JobFailureReason.calculation_failed,
+    "FAILED": JobFailureReason.cluster_failed,
     "LAUNCH_FAILED": JobFailureReason.cluster_failed,
     "NODE_FAIL": JobFailureReason.node_failure,
     "OUT_OF_MEMORY": JobFailureReason.out_of_memory,
@@ -88,7 +88,11 @@ def _normalize_slurm_state(raw_state: str) -> str:
     return state
 
 
-def _transition_for_state(raw_state: str) -> StatusTransition | None:
+def _transition_for_state(
+    raw_state: str,
+    *,
+    has_result_error: bool = False,
+) -> StatusTransition | None:
     state = _normalize_slurm_state(raw_state)
     if state in QUEUED_SLURM_STATES:
         return StatusTransition(JobStatus.submitted)
@@ -98,6 +102,12 @@ def _transition_for_state(raw_state: str) -> StatusTransition | None:
         return StatusTransition(JobStatus.finalising, JobStatus.completed)
     if state == "CANCELLED":
         return StatusTransition(JobStatus.finalising, JobStatus.cancelled)
+    if state == "FAILED" and has_result_error:
+        return StatusTransition(
+            JobStatus.finalising,
+            JobStatus.failed,
+            JobFailureReason.calculation_failed,
+        )
     if state in FAILURE_REASON_BY_SLURM_STATE:
         return StatusTransition(
             JobStatus.finalising,
@@ -185,7 +195,10 @@ class StatusReconciler(BaseReconciler):
 
             slurm_job_status = slurm_job_status_by_id.get(str(job.slurm_id))
             transition = (
-                _transition_for_state(slurm_job_status.state)
+                _transition_for_state(
+                    slurm_job_status.state,
+                    has_result_error=slurm_job_status.has_result_error,
+                )
                 if slurm_job_status
                 else None
             )
@@ -216,7 +229,10 @@ class StatusReconciler(BaseReconciler):
         ):
             return self._status_error_update(job, now)
 
-        transition = _transition_for_state(slurm_job_status.state)
+        transition = _transition_for_state(
+            slurm_job_status.state,
+            has_result_error=slurm_job_status.has_result_error,
+        )
         if transition is None:
             logger.warning(
                 "Slurm returned an unknown job state",

@@ -62,6 +62,7 @@ class SlurmJobStatus:
     state: str
     exit_code: str | None
     elapsed_seconds: int | None
+    has_result_error: bool = False
 
 
 def _job_id(value: UUID | str) -> str:
@@ -120,6 +121,7 @@ def _status_from_row(row: Any) -> SlurmJobStatus:
             row["state"],
             row["exit_code"],
             row["elapsed_seconds"],
+            row["has_result_error"],
         )
     except (KeyError, TypeError, ValueError):
         raise ClusterServiceError(INVALID_STATUS_RESPONSE) from None
@@ -132,6 +134,7 @@ def _status_from_row(row: Any) -> SlurmJobStatus:
             status.elapsed_seconds is not None
             and type(status.elapsed_seconds) is not int
         )
+        or type(status.has_result_error) is not bool
     ):
         raise ClusterServiceError(INVALID_STATUS_RESPONSE)
     return status
@@ -294,7 +297,9 @@ class ClusterDispatchClient:
                 ) from None
             raise ValueError(f"Cluster {operation} request is invalid") from None
 
-        dispatch_path = self.cluster_work_dir / "dispatch.py"
+        dispatch_path = (
+            self.cluster_work_dir / "Cluster-API-QC" / "runner" / "dispatch.py"
+        )
         remote_command = shlex.join(["python3", str(dispatch_path)])
         try:
             completed = subprocess.run(

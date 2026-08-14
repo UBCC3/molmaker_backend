@@ -47,11 +47,28 @@ class FakeReconciler(BaseReconciler):
 
 def test_once_runs_one_round(monkeypatch):
     fake_reconciler = FakeReconciler()
+    fake_reconciler._run_round_and_get_poll_delay = Mock(return_value=0)
     monkeypatch.setattr(FakeReconciler, "instance", fake_reconciler)
 
     FakeReconciler.run_cli(["--once"])
 
-    fake_reconciler.run_forever.assert_called_once_with(rounds=1)
+    fake_reconciler._run_round_and_get_poll_delay.assert_called_once_with()
+    fake_reconciler.run_forever.assert_not_called()
+
+
+def test_once_propagates_a_shared_service_failure(monkeypatch, caplog):
+    fake_reconciler = FakeReconciler()
+    fake_reconciler._run_round_and_get_poll_delay = Mock(
+        side_effect=RuntimeError("shared outage")
+    )
+    monkeypatch.setattr(FakeReconciler, "instance", fake_reconciler)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError, match="shared outage"):
+            FakeReconciler.run_cli(["--once"])
+
+    assert "reconciler_stopped_with_error reconciler=fake" in caplog.text
+    fake_reconciler.run_forever.assert_not_called()
 
 
 def test_construction_failure_is_logged(monkeypatch, caplog):

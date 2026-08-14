@@ -114,33 +114,34 @@ The API is available at `http://localhost:8000` by default.
 
 #### Deploy the Alliance dispatch interface
 
-Before enabling the reconcilers, deploy a compatible, reviewed
-`Cluster-API-QC` dispatch pair to the same Alliance directory:
+Before enabling the reconcilers, deploy the complete, reviewed
+`Cluster-API-QC` repository at one exact commit:
 
 ```text
-/home/thachuk/ubchemica/dispatch.py
-/home/thachuk/ubchemica/dispatch_protocol.py
+/home/thachuk/ubchemica/Cluster-API-QC
 ```
 
 Set `CLUSTER_WORK_DIR=/home/thachuk/ubchemica` in the backend environment. The
-backend sends one versioned JSON request to `dispatch.py` over SSH stdin for
-each cluster operation. The supported operations and security boundary are
-described in
+backend sends one versioned JSON request to
+`Cluster-API-QC/runner/dispatch.py` over SSH stdin for each cluster operation.
+The supported operations and security boundary are described in
 [Restricted Alliance Dispatch](docs/job-orchestration.md#restricted-alliance-dispatch).
 
 Deployment requires explicit approval:
 
-1. Review and commit both matching files, then record the commit and their
-   SHA-256 checksums.
-2. From an authorized Alliance login, back up both deployed files, stage both
-   reviewed replacements, verify their checksums, and replace them together.
-3. Restrict the backend SSH key to the exact no-argument command
-   `python3 /home/thachuk/ubchemica/dispatch.py`.
+1. Review and commit the complete cluster change, including the runner,
+   protocol, calculation code, and uploader.
+2. Stop the reconcilers. From an authorized Alliance login, confirm the cluster
+   checkout is clean, record its current commit for rollback, and check out the
+   reviewed commit.
+3. Restrict the backend SSH key to this exact no-argument command:
+   `python3 /home/thachuk/ubchemica/Cluster-API-QC/runner/dispatch.py`.
 4. Through that restricted connection, smoke-test submission and recovery,
    batched status checks, cancellation, artifact upload, invalid JSON, and a
    shared-service failure.
-5. If any check fails, restore both backups and the previous allow-list rule.
-   Remove only the smoke-test jobs and directories created during these checks.
+5. If any check fails, check out the recorded previous cluster commit and
+   restore the previous allow-list rule. Remove only the smoke-test jobs and
+   directories created during these checks.
 
 The complete JSON contract, smoke-test examples, and rollback procedure live
 in `Cluster-API-QC/runner/README.md` and must be reviewed with the matching
@@ -176,8 +177,8 @@ the system journal.
 > python -m orchestration.submission_reconciler
 > ```
 >
-> Add `--once` to run one round and exit. This does not start the other two
-> reconcilers.
+> Add `--once` to run one round and exit. It returns a failure if that round
+> cannot complete, and it does not start the other two reconcilers.
 
 ### Reconciler operations
 

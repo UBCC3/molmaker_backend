@@ -81,6 +81,11 @@ The status reconciler includes soft-deleted `submitted` and `running` jobs. One
 - completed, cancelled, and recognized failure states become `finalising` with
   the appropriate `terminal_status`.
 
+For Slurm's generic `FAILED` state, the cluster response also reports whether
+the calculation produced `result.err`. The backend records
+`calculation_failed` only when that file exists; otherwise it records the more
+general `cluster_failed` reason. Exit code alone cannot make this distinction.
+
 Missing, malformed, or unknown job results consume one job attempt. At
 `MAX_ATTEMPTS`, the backend requests cancellation, records
 `status_check_failed`, and logs an orphan-job alert if cancellation cannot be
@@ -154,8 +159,8 @@ Installation, migration, deployment, and operational commands are in the
 The backend connects through the `cluster` SSH alias. Its key can invoke only
 the fixed no-argument `dispatch.py` command; the requested operation is inside
 validated JSON, not in the remote shell command. The canonical cluster sources
-are `Cluster-API-QC/runner/dispatch.py` and its sibling
-`dispatch_protocol.py`.
+are the files in the reviewed `Cluster-API-QC` repository checkout, including
+the dispatch runner, protocol, calculation code, and artifact uploader.
 
 | JSON command | Cluster action |
 |---|---|
@@ -165,7 +170,8 @@ are `Cluster-API-QC/runner/dispatch.py` and its sibling
 | `cancel` | Run repeat-safe `scancel --quiet`. |
 | `upload-artifacts` | Pass fresh URLs to the job-scoped uploader through stdin. |
 
-The matching pair must be deployed before the reconcilers are enabled. See the
+The matching repository commit must be deployed before the reconcilers are
+enabled. See the
 [README](../README.md#deploy-the-alliance-dispatch-interface) for the release
 checklist and `Cluster-API-QC/runner/README.md` for the complete JSON contract,
 verification examples, and rollback procedure.
