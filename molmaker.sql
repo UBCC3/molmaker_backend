@@ -78,6 +78,18 @@ CREATE TABLE public.job_inputs (
 
 
 --
+-- Name: job_results; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.job_results (
+    job_id uuid NOT NULL,
+    result jsonb,
+    error jsonb,
+    artifacts jsonb DEFAULT '{}'::jsonb NOT NULL
+);
+
+
+--
 -- Name: jobs_structures; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -129,13 +141,16 @@ CREATE TABLE public.structures (
     structure_id uuid NOT NULL,
     user_sub text,
     name text NOT NULL,
-    location text NOT NULL,
+    location text,
     notes text,
     uploaded_at timestamp without time zone NOT NULL,
     is_deleted boolean DEFAULT false NOT NULL,
     formula text NOT NULL,
     group_id uuid,
     is_public boolean DEFAULT false NOT NULL,
+    content text,
+    thumbnail bytea,
+    thumbnail_media_type text,
     CONSTRAINT ck_structures_owner_present CHECK ((is_deleted OR (user_sub IS NOT NULL) OR (group_id IS NOT NULL)))
 );
 
@@ -211,6 +226,14 @@ a39b4f4d-2a81-48a3-ac85-dd87e75b07cd	water-4-vib.xyz	cancelled	energy	scf	sto-3g
 --
 
 COPY public.job_inputs (job_id, input_xyz, keywords) FROM stdin;
+\.
+
+
+--
+-- Data for Name: job_results; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.job_results (job_id, result, error, artifacts) FROM stdin;
 \.
 
 
@@ -339,6 +362,14 @@ ALTER TABLE ONLY public.jobs
 
 ALTER TABLE ONLY public.job_inputs
     ADD CONSTRAINT job_inputs_pkey PRIMARY KEY (job_id);
+
+
+--
+-- Name: job_results job_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_results
+    ADD CONSTRAINT job_results_pkey PRIMARY KEY (job_id);
 
 
 --
@@ -533,6 +564,14 @@ ALTER TABLE ONLY public.jobs
 
 ALTER TABLE ONLY public.job_inputs
     ADD CONSTRAINT job_inputs_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(job_id) ON DELETE CASCADE;
+
+
+--
+-- Name: job_results job_results_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_results
+    ADD CONSTRAINT job_results_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(job_id) ON DELETE CASCADE;
 
 
 --

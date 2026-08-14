@@ -11,9 +11,12 @@ from fastapi import (
 )
 from sqlalchemy.orm import Session
 from asset_service import (
+    get_available_job_artifacts,
     get_asset_or_404,
+    get_job_artifact_content,
     list_user_assets,
     require_asset_permission,
+    require_job_result_ready,
     serialize_job,
     set_asset_tags,
     soft_delete_asset,
@@ -35,7 +38,7 @@ from utils import (
     get_user_sub,
 )
 from enum_types import JobStatus
-from jobs.schemas import JobResponse
+from jobs.schemas import JobArtifactListResponse, JobResponse, JobResultResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -65,6 +68,64 @@ def get_all_jobs(
     user_sub = get_user_sub(current_user)
     jobs = list_user_assets(db, Job, user_sub, limit=limit, offset=offset)
     return [serialize_job(job) for job in jobs]
+
+
+@router.get("/{job_id}/result", response_model=JobResultResponse)
+def get_job_result(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return the parsed result and error stored for an accessible job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    return JobResultResponse(
+        job_id=job.job_id,
+        result=job.job_result.result,
+        error=job.job_result.error,
+    )
+
+
+@router.get("/{job_id}/artifacts", response_model=JobArtifactListResponse)
+def get_job_artifacts(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return the artifact kinds available for an accessible finished job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    return JobArtifactListResponse(
+        job_id=job.job_id,
+        artifacts=get_available_job_artifacts(job),
+    )
+
+
+@router.get("/{job_id}/artifacts/{kind}")
+def get_job_artifact(
+    job_id: str,
+    kind: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return one frontend-facing text artifact stored for a finished job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    content, filename, media_type = get_job_artifact_content(job, kind)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.get("/{job_id}", response_model=JobResponse)

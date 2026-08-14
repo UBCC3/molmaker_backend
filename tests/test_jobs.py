@@ -96,6 +96,9 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
         "$ref"
     ].endswith("/JobResponse")
     assert "409" in cancel_responses
+    assert "/jobs/{job_id}/result" in paths
+    assert "/jobs/{job_id}/artifacts" in paths
+    assert "/jobs/{job_id}/artifacts/{kind}" in paths
 
 
 class TestJobsAPI:

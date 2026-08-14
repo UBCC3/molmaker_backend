@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     Interval,
     JSON,
+    LargeBinary,
     String,
     Table,
     Text,
@@ -16,7 +17,13 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import declared_attr, relationship, synonym, validates
+from sqlalchemy.orm import (
+    declared_attr,
+    deferred,
+    relationship,
+    synonym,
+    validates,
+)
 
 from database import Base
 import uuid
@@ -199,6 +206,14 @@ class Job(Asset):
         passive_deletes=True,
     )
 
+    job_result = relationship(
+        "JobResult",
+        back_populates="job",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     structures = relationship(
         'Structure',
         secondary=jobs_structures,
@@ -226,6 +241,34 @@ class JobInput(Base):
     job = relationship("Job", back_populates="job_input")
 
 
+class JobResult(Base):
+    """Calculation result and frontend-facing artifacts retained for one job."""
+
+    __tablename__ = "job_results"
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    result = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
+    error = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
+    artifacts = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+
+    job = relationship("Job", back_populates="job_result")
+
+
 class Structure(Asset):
     __tablename__ = "structures"
     __asset_id_column__ = "structure_id"
@@ -250,8 +293,17 @@ class Structure(Asset):
     uploaded_at = synonym("created_at")
     name = Column(Text, nullable=False)
     formula = Column(Text, nullable=False)
-    location = Column(Text, nullable=False)
+    location = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+    content = deferred(Column(Text, nullable=True), group="structure_data")
+    thumbnail = deferred(
+        Column(LargeBinary, nullable=True),
+        group="structure_data",
+    )
+    thumbnail_media_type = deferred(
+        Column(Text, nullable=True),
+        group="structure_data",
+    )
 
     jobs = relationship(
         'Job',

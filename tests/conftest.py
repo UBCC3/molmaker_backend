@@ -13,7 +13,7 @@ from database import Base
 from dependencies import get_db
 from enum_types import JobStatus
 from main import create_app
-from models import Group, Job, JobInput, Request, Structure, Tags, User
+from models import Group, Job, JobInput, JobResult, Request, Structure, Tags, User
 from settings import get_settings
 
 
@@ -218,6 +218,9 @@ def structure_factory(db):
             "formula": "H2O",
             "location": "s3://test-bucket/structures/test.xyz",
             "notes": None,
+            "content": "3\nwater\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+            "thumbnail": b"thumbnail-bytes",
+            "thumbnail_media_type": "image/png",
             "uploaded_at": datetime.now(timezone.utc),
             "is_deleted": False,
         }
@@ -277,6 +280,27 @@ def job_factory(db):
         return _save(db, job)
 
     return create_job
+
+
+@pytest.fixture
+def job_result_factory(db, job_factory):
+    """Factory for the one-to-one result row of a persisted job."""
+
+    def create_job_result(job=None, **overrides):
+        job = job or job_factory(
+            status=JobStatus.completed.value,
+            is_uploaded=True,
+        )
+        values = {
+            "job_id": job.job_id,
+            "result": {"success": True},
+            "error": None,
+            "artifacts": {},
+        }
+        values.update(overrides)
+        return _save(db, JobResult(**values))
+
+    return create_job_result
 
 
 @pytest.fixture

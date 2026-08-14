@@ -18,6 +18,9 @@ MIGRATION_PATH = PROJECT_ROOT / "migrations" / "001_pr14_database_changes.sql"
 ORCHESTRATION_MIGRATION_PATH = (
     PROJECT_ROOT / "migrations" / "002_jobs_orchestration_redesign.sql"
 )
+RESULT_STORAGE_MIGRATION_PATH = (
+    PROJECT_ROOT / "migrations" / "003_s3_results_structures_to_database.sql"
+)
 LEGACY_SCHEMA_PATH = PROJECT_ROOT / "tests" / "fixtures" / "pre_pr14_schema.sql"
 DUMP_PATH = PROJECT_ROOT / "molmaker.sql"
 
@@ -582,6 +585,103 @@ def test_jobs_orchestration_migration_adds_retained_job_inputs(db):
         session.close()
 
 
+def test_result_storage_migration_can_run_twice(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+    _run_sql_file(RESULT_STORAGE_MIGRATION_PATH)
+    state_after_first_run = _database_state()
+
+    _run_sql_file(RESULT_STORAGE_MIGRATION_PATH)
+
+    assert _database_state() == state_after_first_run
+
+
+def test_result_storage_migration_adds_structure_data_and_job_results(db):
+    _reset_public_schema(db)
+    _run_sql_file(LEGACY_SCHEMA_PATH)
+    _run_sql_file(MIGRATION_PATH)
+    _run_sql_file(ORCHESTRATION_MIGRATION_PATH)
+    _run_sql_file(RESULT_STORAGE_MIGRATION_PATH)
+
+    session = TestingSessionLocal()
+    try:
+        structure_columns = {
+            row.column_name: row
+            for row in session.execute(
+                text(
+                    """
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'structures'
+                      AND column_name IN (
+                          'location', 'content', 'thumbnail',
+                          'thumbnail_media_type'
+                      )
+                    """
+                )
+            )
+        }
+        assert set(structure_columns) == {
+            "location",
+            "content",
+            "thumbnail",
+            "thumbnail_media_type",
+        }
+        assert structure_columns["location"].is_nullable == "YES"
+        assert structure_columns["content"].data_type == "text"
+        assert structure_columns["content"].is_nullable == "YES"
+        assert structure_columns["thumbnail"].data_type == "bytea"
+        assert structure_columns["thumbnail"].is_nullable == "YES"
+        assert structure_columns["thumbnail_media_type"].data_type == "text"
+        assert structure_columns["thumbnail_media_type"].is_nullable == "YES"
+
+        result_columns = {
+            row.column_name: row
+            for row in session.execute(
+                text(
+                    """
+                    SELECT column_name, data_type, is_nullable, column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'job_results'
+                    """
+                )
+            )
+        }
+        assert set(result_columns) == {"job_id", "result", "error", "artifacts"}
+        assert result_columns["job_id"].data_type == "uuid"
+        assert result_columns["job_id"].is_nullable == "NO"
+        assert result_columns["result"].data_type == "jsonb"
+        assert result_columns["result"].is_nullable == "YES"
+        assert result_columns["error"].data_type == "jsonb"
+        assert result_columns["error"].is_nullable == "YES"
+        assert result_columns["artifacts"].data_type == "jsonb"
+        assert result_columns["artifacts"].is_nullable == "NO"
+        assert result_columns["artifacts"].column_default == "'{}'::jsonb"
+
+        constraints = {
+            row.conname: row.definition
+            for row in session.execute(
+                text(
+                    """
+                    SELECT conname, pg_get_constraintdef(oid) AS definition
+                    FROM pg_constraint
+                    WHERE conrelid = 'public.job_results'::regclass
+                    """
+                )
+            )
+        }
+        assert constraints["job_results_pkey"] == "PRIMARY KEY (job_id)"
+        assert "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE" in (
+            constraints["job_results_job_id_fkey"]
+        )
+    finally:
+        session.close()
+
+
 def test_migration_does_not_restore_removed_group_ownership(db):
     _reset_public_schema(db)
     _run_sql_file(LEGACY_SCHEMA_PATH)
@@ -665,6 +765,7 @@ def test_molmaker_dump_restores_schema_and_data(db):
                     UNION ALL SELECT 'users', count(*) FROM public.users
                     UNION ALL SELECT 'jobs', count(*) FROM public.jobs
                     UNION ALL SELECT 'job_inputs', count(*) FROM public.job_inputs
+                    UNION ALL SELECT 'job_results', count(*) FROM public.job_results
                     UNION ALL SELECT 'structures', count(*) FROM public.structures
                     UNION ALL SELECT 'requests', count(*) FROM public.requests
                     UNION ALL SELECT 'tags', count(*) FROM public.tags
@@ -677,6 +778,7 @@ def test_molmaker_dump_restores_schema_and_data(db):
             "users": 6,
             "jobs": 13,
             "job_inputs": 0,
+            "job_results": 0,
             "structures": 9,
             "requests": 3,
             "tags": 11,
@@ -705,11 +807,25 @@ def test_molmaker_dump_restores_schema_and_data(db):
             "input_xyz",
             "keywords",
         }
+        assert _column_names(session, "job_results") == {
+            "job_id",
+            "result",
+            "error",
+            "artifacts",
+        }
         assert {
             "job_inputs_pkey",
             "job_inputs_job_id_fkey",
+            "job_results_pkey",
+            "job_results_job_id_fkey",
         } <= _constraint_names(session)
-        assert {"group_id", "is_public"} <= _column_names(session, "structures")
+        assert {
+            "group_id",
+            "is_public",
+            "content",
+            "thumbnail",
+            "thumbnail_media_type",
+        } <= _column_names(session, "structures")
         assert "role_or_group_updated_at" in _column_names(session, "users")
         assert "member_since" not in _column_names(session, "users")
         assert session.execute(

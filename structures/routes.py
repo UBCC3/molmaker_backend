@@ -20,8 +20,7 @@ from models import Structure, Tags
 from dependencies import get_db
 from auth import verify_token
 from user_service import get_user_or_404
-import os, uuid, shutil
-from pathlib import Path
+import os, uuid
 from utils import (
     DEFAULT_STRUCTURE_LIST_LIMIT,
     MAX_STRUCTURE_LIST_LIMIT,
@@ -36,7 +35,6 @@ from settings import get_settings
 from storage import create_s3_client
 
 router = APIRouter(prefix="/structures", tags=["structures"])
-JOB_DIR = "./results"
 
 @router.get("/")
 def get_all_structures(
@@ -51,8 +49,8 @@ def get_all_structures(
 ):
     """
     List non-deleted structures directly owned by the authenticated user.
-    Results are ordered by upload time, most recent first. Each response item
-    includes tags and a presigned image URL.
+    Results are ordered by upload time, most recent first. The response contains
+    metadata only; structure text and thumbnails are returned by the detail API.
     :param limit: Maximum number of structures to return, up to 100.
     :param offset: Number of sorted structures to skip.
     :param user: Current user dependency, verified via token.
@@ -68,23 +66,7 @@ def get_all_structures(
             limit=limit,
             offset=offset,
         )
-        settings = get_settings()
-        s3 = create_s3_client()
-
-        return [
-            {
-                **serialize_structure(s),
-                "imageS3URL": s3.generate_presigned_url(
-                    "get_object",
-                    Params={
-                        "Bucket": settings.s3_bucket_name,
-                        "Key": f"structures/{s.id}.png"
-                    },
-                    ExpiresIn=3600
-                )
-            }
-            for s in structures
-        ]
+        return [serialize_structure(structure) for structure in structures]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -195,6 +177,7 @@ def get_structure_by_id(
             **serialize_structure(
                 structure,
                 include_user_sub=can_view_asset_user_owner(db_user, structure),
+                include_content=True,
             )
         }
     except HTTPException: 
@@ -327,7 +310,7 @@ def create_and_upload_structure(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new structure by uploading a structure file and image.
+    Create a new structure with its structure file and thumbnail in PostgreSQL.
     Ownership is derived from the authenticated user's database record. Users in a
     group always create co-owned structures with user_sub and group_id set.
     :param formula: Chemical formula of the structure.
@@ -340,56 +323,43 @@ def create_and_upload_structure(
     :param db: Database session dependency.
     :return: The created structure object.
     """
-    structure_path = None
     try:
-        settings = get_settings()
-        s3 = create_s3_client()
         db_user = get_user_or_404(db, get_user_sub(user))
         user_id = db_user.user_sub
-
-        # Create directory for the structure
-        structure_id = uuid.uuid4()
-        structure_id_str = str(structure_id)
-        structure_path = os.path.join(JOB_DIR, structure_id_str)
-        os.makedirs(structure_path, exist_ok=True)
-
-        # Save the uploaded file
-        safe_name = Path(file.filename or "").name
-        file_path = os.path.join(structure_path, safe_name)
-        with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        s3_link = upload_structure_to_s3(
-            file_path,
-            structure_id_str,
-            s3,
-            settings.s3_bucket_name,
-        )
-        uploaded_at = datetime.now(timezone.utc)
-
-        print("FORMULA", formula)
         try:
-            image_key = f"structures/{structure_id_str}.png"
-            s3.upload_fileobj(
-                image.file,
-                settings.s3_bucket_name,
-                image_key,
-            )
-        except Exception as e:
-            print("Upload to s3 failed:", e)
-            raise
+            structure_content = file.file.read().decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure file must be valid UTF-8 text",
+            ) from error
 
-        # Create and save the structure in the database
+        if not structure_content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure file must not be empty",
+            )
+
+        thumbnail = image.file.read()
+        if not thumbnail:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must not be empty",
+            )
+
         structure = Structure(
-            structure_id=structure_id,
+            structure_id=uuid.uuid4(),
             user_sub=user_id,
             group_id=db_user.group_id,
             name=name,
             formula=formula,
-            location=s3_link,
+            location=None,
             notes=notes,
-            uploaded_at=uploaded_at,
-            is_deleted=False
+            content=structure_content,
+            thumbnail=thumbnail,
+            thumbnail_media_type=image.content_type or "application/octet-stream",
+            uploaded_at=datetime.now(timezone.utc),
+            is_deleted=False,
         )
         db.add(structure)
 
@@ -400,34 +370,16 @@ def create_and_upload_structure(
             refresh=structure,
             integrity_error_detail="Structure with this name already exists.",
             error_detail="Could not create structure",
-            on_error=lambda: shutil.rmtree(structure_path, ignore_errors=True),
         )
 
         return {
             **serialize_structure(
                 structure,
                 include_user_sub=can_view_asset_user_owner(db_user, structure),
+                include_content=True,
             )
         }
     except HTTPException:
         raise
     except Exception as e:
-        if structure_path:
-            shutil.rmtree(structure_path, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-def upload_structure_to_s3(
-    local_file_path: str,
-    structure_id: str,
-    s3,
-    bucket_name: str,
-):
-    key = f"structures/{structure_id}.xyz"
-
-    try:
-        s3.upload_file(local_file_path, bucket_name, key)
-        print(f"Uploaded to s3://{bucket_name}/{key}")
-        return f"s3://{bucket_name}/{key}"
-    except Exception as e:
-        print("Upload to s3 failed:", e)
-        raise

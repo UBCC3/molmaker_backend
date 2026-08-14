@@ -1,3 +1,4 @@
+import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import uuid
@@ -79,6 +80,7 @@ class TestStructuresAPI:
         self,
         client,
         monkeypatch,
+        sql_statements,
         group_factory,
         user_factory,
         tag_factory,
@@ -115,6 +117,7 @@ class TestStructuresAPI:
             uploaded_at=datetime(2026, 1, 4, tzinfo=timezone.utc),
         )
 
+        sql_statements.clear()
         response = client.get("/structures/")
 
         assert response.status_code == 200
@@ -127,31 +130,19 @@ class TestStructuresAPI:
             "Newer water",
             "Older water",
         ]
-        assert result[0]["imageS3URL"] == f"presigned:structures/{newer_structure.structure_id}.png"
-        assert result[1]["imageS3URL"] == f"presigned:structures/{older_structure.structure_id}.png"
         assert result[1]["tags"] == ["favorite"]
-        assert fake_s3.calls == [
-            (
-                ("get_object",),
-                {
-                    "Params": {
-                        "Bucket": "test-bucket",
-                        "Key": f"structures/{newer_structure.structure_id}.png",
-                    },
-                    "ExpiresIn": 3600,
-                },
-            ),
-            (
-                ("get_object",),
-                {
-                    "Params": {
-                        "Bucket": "test-bucket",
-                        "Key": f"structures/{older_structure.structure_id}.png",
-                    },
-                    "ExpiresIn": 3600,
-                },
-            ),
-        ]
+        assert "content" not in result[0]
+        assert "thumbnail" not in result[0]
+        assert "imageS3URL" not in result[0]
+        assert fake_s3.calls == []
+        structure_query = next(
+            statement
+            for statement in sql_statements
+            if "FROM structures" in statement
+            and "structures.user_sub" in statement
+        )
+        assert "structures.content" not in structure_query
+        assert "structures.thumbnail" not in structure_query
 
     def test_get_structure_by_id_returns_owned_structure(
         self, client, user_factory, tag_factory, structure_factory
@@ -177,6 +168,11 @@ class TestStructuresAPI:
         assert result["name"] == "Water"
         assert result["formula"] == "H2O"
         assert result["location"] == structure.location
+        assert result["content"] == structure.content
+        assert result["thumbnail"] == {
+            "media_type": "image/png",
+            "base64": base64.b64encode(structure.thumbnail).decode("ascii"),
+        }
         assert result["notes"] == "owned structure"
         assert result["uploaded_at"] == structure.uploaded_at.isoformat()
         assert result["group_id"] is None
@@ -810,23 +806,19 @@ class TestStructuresAPI:
         assert response.json()["detail"].startswith("Could not calculate formula:")
         assert not list(tmp_path.glob("temp_*.xyz"))
 
-    def test_create_structure_saves_uploads_persists_and_links_tags(
+    def test_create_structure_stores_content_thumbnail_and_links_tags(
         self,
         client,
         db,
         monkeypatch,
-        tmp_path,
         group_factory,
         user_factory,
         tag_factory,
     ):
         """
-        POST /structures/ should save files, upload to S3, persist the row, and link tags.
+        POST /structures/ should persist structure data and tags without using S3.
         """
-        import structures.routes as structures_routes
-
         fake_s3 = _mock_structure_s3(monkeypatch)
-        monkeypatch.setattr(structures_routes, "JOB_DIR", str(tmp_path))
         group = group_factory()
         user = user_factory(group=group, user_sub="auth0|testuser")
         existing_tag = tag_factory(user_sub=user.user_sub, name="existing")
@@ -852,37 +844,30 @@ class TestStructuresAPI:
         assert result["name"] == "Water"
         assert result["formula"] == "H2O"
         assert result["notes"] == "created structure"
-        assert result["location"] == f"s3://test-bucket/structures/{structure_id}.xyz"
+        assert result["location"] is None
+        assert result["content"] == "saved structure content"
+        assert result["thumbnail"] == {
+            "media_type": "image/png",
+            "base64": base64.b64encode(b"saved image content").decode("ascii"),
+        }
         assert result["user_sub"] == user.user_sub
         assert result["group_id"] == str(group.group_id)
         assert result["is_public"] is False
         assert sorted(result["tags"]) == ["existing", "new"]
 
-        saved_file = tmp_path / str(structure_id) / "input.xyz"
-        assert saved_file.read_bytes() == b"saved structure content"
-        assert not (tmp_path / str(structure_id) / "unsafe").exists()
-        assert fake_s3.upload_file_calls == [
-            (
-                str(saved_file),
-                "test-bucket",
-                f"structures/{structure_id}.xyz",
-            )
-        ]
-        assert fake_s3.upload_fileobj_calls == [
-            (
-                b"saved image content",
-                "test-bucket",
-                f"structures/{structure_id}.png",
-            )
-        ]
+        assert fake_s3.upload_file_calls == []
+        assert fake_s3.upload_fileobj_calls == []
 
         structure = db.query(Structure).filter_by(structure_id=structure_id).one()
         assert structure.user_sub == user.user_sub
         assert structure.group_id == group.group_id
         assert structure.name == "Water"
         assert structure.formula == "H2O"
-        assert structure.location == f"s3://test-bucket/structures/{structure_id}.xyz"
+        assert structure.location is None
         assert structure.notes == "created structure"
+        assert structure.content == "saved structure content"
+        assert structure.thumbnail == b"saved image content"
+        assert structure.thumbnail_media_type == "image/png"
         assert structure.is_deleted is False
         assert sorted(tag.name for tag in structure.tags) == ["existing", "new"]
 
@@ -890,14 +875,13 @@ class TestStructuresAPI:
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
         assert db.query(Tags).filter_by(user_sub=user.user_sub, name="new").one()
 
-    def test_create_structure_rolls_back_and_removes_files_when_commit_fails(
-        self, client, db, monkeypatch, tmp_path, user_factory
+    def test_create_structure_rolls_back_when_commit_fails(
+        self, client, db, monkeypatch, user_factory
     ):
         """
-        POST /structures/ should not leave DB rows or local files if the DB commit fails.
+        POST /structures/ should not leave database rows if the commit fails.
         """
         _mock_structure_s3(monkeypatch)
-        monkeypatch.setattr("structures.routes.JOB_DIR", str(tmp_path))
         user_factory(user_sub="auth0|testuser")
 
         def fail_commit():
@@ -920,4 +904,39 @@ class TestStructuresAPI:
         assert "Could not create structure" in response.json()["detail"]
         assert db.query(Structure).count() == 0
         assert db.query(Tags).filter_by(user_sub="auth0|testuser", name="new").first() is None
-        assert list(tmp_path.iterdir()) == []
+
+    def test_create_structure_rejects_non_utf8_content(
+        self,
+        client,
+        user_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        response = client.post(
+            "/structures/",
+            data={"name": "Invalid", "formula": "?"},
+            files=_structure_upload_files(content=b"\xff\xfe"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Structure file must be valid UTF-8 text"
+        )
+
+    def test_create_structure_rejects_empty_thumbnail(
+        self,
+        client,
+        user_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        response = client.post(
+            "/structures/",
+            data={"name": "No thumbnail", "formula": "H"},
+            files=_structure_upload_files(image_content=b""),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Structure thumbnail must not be empty"
+        )

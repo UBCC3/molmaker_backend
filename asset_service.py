@@ -1,3 +1,4 @@
+import base64
 from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar
 from uuid import UUID
 
@@ -5,7 +6,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from enum_types import AssetOwnership
+from enum_types import AssetOwnership, JobStatus
 from permissions import (
     can_change_asset_visibility,
     can_delete_asset,
@@ -73,6 +74,7 @@ def serialize_structure(
     structure: Structure,
     include_tags: bool = True,
     include_user_sub: bool = False,
+    include_content: bool = False,
 ) -> Dict[str, Any]:
     result = {
         **serialize_asset(structure, include_user_sub=include_user_sub),
@@ -83,7 +85,80 @@ def serialize_structure(
     }
     if include_tags:
         result["tags"] = serialize_tag_names(structure.tags)
+    if include_content:
+        result["content"] = structure.content
+        result["thumbnail"] = (
+            {
+                "media_type": (
+                    structure.thumbnail_media_type or "application/octet-stream"
+                ),
+                "base64": base64.b64encode(structure.thumbnail).decode("ascii"),
+            }
+            if structure.thumbnail is not None
+            else None
+        )
     return result
+
+
+TERMINAL_JOB_STATUSES = {
+    JobStatus.completed.value,
+    JobStatus.failed.value,
+    JobStatus.cancelled.value,
+}
+ARTIFACT_FILES = {
+    "input": ("input.xyz", "chemical/x-xyz"),
+    "trajectory": ("trajectory.xyz", "chemical/x-xyz"),
+    "vib": ("vib.xyz", "chemical/x-xyz"),
+    "molden": ("orbitals.molden", "text/plain"),
+    "esp": ("ESP.cube", "text/plain"),
+}
+
+
+def require_job_result_ready(job: Job) -> None:
+    if (
+        job.status not in TERMINAL_JOB_STATUSES
+        or not job.is_uploaded
+        or job.job_result is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job result is not ready",
+        )
+
+
+def get_available_job_artifacts(job: Job) -> List[str]:
+    available = []
+    if job.job_input is not None:
+        available.append("input")
+    available.extend(
+        kind
+        for kind in ARTIFACT_FILES
+        if kind != "input"
+        and isinstance(job.job_result.artifacts.get(kind), str)
+    )
+    return available
+
+
+def get_job_artifact_content(job: Job, kind: str) -> tuple[str, str, str]:
+    artifact = ARTIFACT_FILES.get(kind)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job artifact not found",
+        )
+
+    if kind == "input":
+        content = job.job_input.input_xyz if job.job_input is not None else None
+    else:
+        content = job.job_result.artifacts.get(kind)
+    if not isinstance(content, str):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job artifact not found",
+        )
+
+    filename, media_type = artifact
+    return content, filename, media_type
 
 
 _JOB_RESPONSE_STATUS_BY_INTERNAL_STATUS = {

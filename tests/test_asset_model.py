@@ -1,6 +1,6 @@
 from sqlalchemy import inspect
 
-from models import Asset, Job, Request, Structure, Tags
+from models import Asset, Job, JobResult, Request, Structure, Tags
 
 
 class TestAssetModel:
@@ -94,3 +94,26 @@ class TestAssetModel:
             "cancel_requested_at",
             "artifact_manifest",
         }.isdisjoint(Job.__table__.columns.keys())
+
+    def test_structure_database_content_is_nullable_during_backfill(self):
+        assert Structure.__table__.columns["location"].nullable is True
+        assert Structure.__table__.columns["content"].nullable is True
+        assert Structure.__table__.columns["thumbnail"].nullable is True
+        assert Structure.__table__.columns["thumbnail_media_type"].nullable is True
+
+    def test_job_result_is_one_to_one_with_safe_artifact_default(
+        self,
+        user_factory,
+        job_factory,
+        job_result_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(status="completed", is_uploaded=True)
+        result = job_result_factory(job=job, artifacts={"trajectory": "xyz"})
+
+        assert result.job_id == job.job_id
+        assert result.job is job
+        assert job.job_result is result
+        assert result.artifacts == {"trajectory": "xyz"}
+        assert Job.job_result.property.uselist is False
+        assert JobResult.__table__.columns["artifacts"].nullable is False
