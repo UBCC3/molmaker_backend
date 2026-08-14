@@ -25,6 +25,35 @@ def mock_get_urls(monkeypatch):
     return calls
 
 class TestFinalisationStorage:
+    def test_archive_upload_url_uses_one_deterministic_key(self, monkeypatch):
+        calls = []
+
+        def generate(key):
+            calls.append(key)
+            return f"attempt-{len(calls)}:{key}"
+
+        monkeypatch.setattr(storage, "generate_presigned_put_url", generate)
+
+        first = storage.generate_archive_upload_url("job-123")
+        second = storage.generate_archive_upload_url("job-123")
+
+        archive_key = "ubchemica/archive/job-123.zip"
+        assert first == f"attempt-1:{archive_key}"
+        assert second == f"attempt-2:{archive_key}"
+        assert calls == [archive_key, archive_key]
+
+    def test_archive_upload_presigning_failure_is_a_storage_error(
+        self,
+        monkeypatch,
+    ):
+        def fail(_key):
+            raise EndpointConnectionError(endpoint_url="https://s3.example")
+
+        monkeypatch.setattr(storage, "generate_presigned_put_url", fail)
+
+        with pytest.raises(storage.StorageServiceError, match="archive upload URL"):
+            storage.generate_archive_upload_url("job-123")
+
     @pytest.mark.parametrize(
         ("terminal_status", "expected_names"),
         [

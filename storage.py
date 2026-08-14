@@ -69,10 +69,25 @@ def generate_presigned_get_url(key: str) -> str:
     return url
 
 
+def job_archive_key(job_id: str) -> str:
+    """Return the deterministic S3 key for one job's complete ZIP archive."""
+
+    bucket_root = get_settings().s3_bucket_root
+    return f"{bucket_root}/archive/{job_id}.zip"
+
+
+def generate_archive_upload_url(job_id: str) -> str:
+    """Generate a fresh PUT URL for only the deterministic job archive."""
+
+    try:
+        return generate_presigned_put_url(job_archive_key(job_id))
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create archive upload URL") from error
+
+
 def presign_zip_download_url(job_id: str) -> str:
     try:
-        bucket_root = get_settings().s3_bucket_root
-        return generate_presigned_get_url(f"{bucket_root}/archive/{job_id}.zip")
+        return generate_presigned_get_url(job_archive_key(job_id))
     except (BotoCoreError, ClientError) as error:
         raise StorageServiceError("Could not create archive download URL") from error
 
@@ -89,7 +104,7 @@ def finalisation_artifact_keys(
 
     bucket_root = get_settings().s3_bucket_root
     job_dir = f"{bucket_root}/jobs/{job_id}/"
-    keys = {"zip": f"{bucket_root}/archive/{job_id}.zip"}
+    keys = {"zip": job_archive_key(job_id)}
     if terminal_status == "completed":
         keys["result"] = job_dir + "result.json"
         keys.update(
