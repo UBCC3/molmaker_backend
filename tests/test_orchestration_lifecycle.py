@@ -3,8 +3,12 @@ from uuid import UUID
 
 from conftest import TestingSessionLocal
 from enum_types import CalculationType, JobStatus
-from models import Job, JobInput
-from orchestration.cluster_client import ClusterDispatchClient, SlurmJobStatus
+from models import Job, JobInput, JobResult
+from orchestration.cluster_client import (
+    ClusterDispatchClient,
+    FinalisationResult,
+    SlurmJobStatus,
+)
 from orchestration.finalisation_reconciler import FinalisationReconciler
 from settings import OrchestrationSettings
 from orchestration.status_reconciler import StatusReconciler
@@ -105,17 +109,17 @@ def test_api_job_moves_through_all_three_reconcilers(
     assert finalising.status == JobStatus.finalising.value
     assert finalising.terminal_status == JobStatus.completed.value
 
+    cluster_client.upload_artifacts.return_value = FinalisationResult(
+        calculation_result={"energy": -75.2},
+        calculation_error=None,
+        artifacts={},
+    )
+
     FinalisationReconciler(
         session_factory=TestingSessionLocal,
         cluster_client=cluster_client,
         settings=settings,
-        generate_upload_urls=Mock(
-            return_value={
-                "zip": "https://upload.test/archive",
-                "result": "https://upload.test/result",
-            }
-        ),
-        required_artifacts_exist=Mock(return_value=False),
+        generate_upload_url=Mock(return_value="https://upload.test/archive"),
         sleep=Mock(),
         clock=Mock(return_value=0.0),
     ).run_round()
@@ -124,6 +128,7 @@ def test_api_job_moves_through_all_three_reconcilers(
     assert completed.status == JobStatus.completed.value
     assert completed.is_uploaded is True
     assert completed.runtime.total_seconds() == 42
+    assert db.get(JobResult, job_id).result == {"energy": -75.2}
     cluster_client.submit_job.assert_called_once_with(
         job_id=job_id,
         calculation_type=CalculationType.energy,
@@ -140,9 +145,7 @@ def test_api_job_moves_through_all_three_reconcilers(
         job_id=job_id,
         calculation_type=CalculationType.energy,
         terminal_status=JobStatus.completed,
-        upload_urls={
-            "zip": "https://upload.test/archive",
-            "result": "https://upload.test/result",
-        },
+        archive_upload_url="https://upload.test/archive",
         allow_missing_error=False,
     )
+    cluster_client.acknowledge_finalisation.assert_called_once_with(job_id)

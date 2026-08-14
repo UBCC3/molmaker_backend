@@ -225,10 +225,16 @@ def validate_job_result_data(
     for kind, content in artifacts.items():
         if not isinstance(kind, str) or kind not in permitted_artifacts:
             raise JobResultValidationError(f"Artifact kind is not permitted: {kind}")
-        if not isinstance(content, str) or not content:
+        if not isinstance(content, str) or not content or "\x00" in content:
             raise JobResultValidationError(
                 f"Artifact content must be non-empty text: {kind}"
             )
+        try:
+            content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise JobResultValidationError(
+                f"Artifact content must be non-empty text: {kind}"
+            ) from None
         validated_artifacts[kind] = content
 
     if terminal == JobStatus.completed:

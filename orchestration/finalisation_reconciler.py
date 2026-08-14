@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from typing import Callable, Sequence
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+from asset_service import JobResultValidationError, upsert_job_result
 from database import get_session_local
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
@@ -17,13 +18,13 @@ from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
     ClusterDispatchClient,
     ClusterServiceError,
+    FinalisationResult,
     JobDispatchError,
 )
 from settings import OrchestrationSettings, get_settings
 from storage import (
     StorageServiceError,
-    generate_finalisation_upload_urls,
-    required_finalisation_artifacts_exist,
+    generate_archive_upload_url,
 )
 
 
@@ -49,12 +50,7 @@ class FinalisationReconciler(BaseReconciler):
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
-    generate_upload_urls: Callable[[str, str, str], dict[str, str]] = (
-        generate_finalisation_upload_urls
-    )
-    required_artifacts_exist: Callable[[str, str, str, str | None], bool] = (
-        required_finalisation_artifacts_exist
-    )
+    generate_upload_url: Callable[[str], str] = generate_archive_upload_url
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
 
@@ -77,6 +73,7 @@ class FinalisationReconciler(BaseReconciler):
 
         jobs = (
             db.query(Job)
+            .options(selectinload(Job.job_result))
             .filter(Job.status == JobStatus.finalising.value)
             .order_by(Job.submitted_at.asc(), Job.job_id.asc())
             .limit(self.settings.finalisation_query_limit)
@@ -97,29 +94,30 @@ class FinalisationReconciler(BaseReconciler):
             self._record_job_failure(db, job, "Final job information is invalid")
             return
 
-        job_id = str(job.job_id)
-        # Recover an upload that finished before its database update committed.
-        if self.required_artifacts_exist(
-            job_id,
-            calculation_type.value,
-            terminal_status.value,
-            job.failure_reason,
-        ):
-            self._publish_terminal_status(db, job, terminal_status)
-            return
+        if job.job_result is None:
+            archive_upload_url = self.generate_upload_url(str(job.job_id))
+            try:
+                result = self._upload_artifacts(
+                    job,
+                    calculation_type,
+                    terminal_status,
+                    archive_upload_url,
+                )
+                upsert_job_result(
+                    db,
+                    job,
+                    result=result.calculation_result,
+                    error=result.calculation_error,
+                    artifacts=result.artifacts,
+                )
+            except (JobDispatchError, JobResultValidationError) as error:
+                self._record_job_failure(db, job, str(error))
+                return
+            # Keep the job private while making the result recoverable on retry.
+            self._commit(db)
 
-        upload_urls = self.generate_upload_urls(
-            job_id,
-            calculation_type.value,
-            terminal_status.value,
-        )
         try:
-            self._upload_artifacts(
-                job,
-                calculation_type,
-                terminal_status,
-                upload_urls,
-            )
+            self.cluster_client.acknowledge_finalisation(job.job_id)
         except JobDispatchError as error:
             self._record_job_failure(db, job, str(error))
             return
@@ -131,13 +129,13 @@ class FinalisationReconciler(BaseReconciler):
         job: Job,
         calculation_type: CalculationType,
         terminal_status: JobStatus,
-        upload_urls: dict[str, str],
-    ) -> None:
-        self.cluster_client.upload_artifacts(
+        archive_upload_url: str,
+    ) -> FinalisationResult:
+        return self.cluster_client.upload_artifacts(
             job_id=job.job_id,
             calculation_type=calculation_type,
             terminal_status=terminal_status,
-            upload_urls=upload_urls,
+            archive_upload_url=archive_upload_url,
             allow_missing_error=(
                 terminal_status in {JobStatus.failed, JobStatus.cancelled}
                 and job.failure_reason

@@ -7,7 +7,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Iterable, Literal
 from uuid import UUID
 
 from enum_types import CalculationType, JobStatus
@@ -16,8 +16,12 @@ from settings import BackendSettings
 
 SSH_HOST = "cluster"
 PROTOCOL_VERSION = 1
+MAX_CLUSTER_RESPONSE_BYTES = 5 * 1024 * 1024
 COMMAND_REJECTION = "Command rejected by allowed_commands.sh"
 INVALID_STATUS_RESPONSE = "Invalid status lookup response from cluster"
+INVALID_FINALISATION_RESPONSE = (
+    "Invalid artifact finalisation response from cluster"
+)
 JOB_ERROR_EXIT_CODE = 10
 SUBMISSION_OUTCOME_UNKNOWN_EXIT_CODE = 11
 SERVICE_ERROR_EXIT_CODE = 12
@@ -35,9 +39,21 @@ RESULT_FIELDS_BY_COMMAND = {
     "find-submission": {"slurm_id"},
     "status-batch": {"jobs"},
     "cancel": {"slurm_id", "cancel_requested"},
-    "upload-artifacts": {"job_id", "uploaded"},
+    "upload-artifacts": {
+        "job_id",
+        "archive_uploaded",
+        "calculation_result",
+        "calculation_error",
+        "artifacts",
+    },
+    "ack-finalisation": {"job_id", "cleaned"},
 }
-JOB_SPECIFIC_COMMANDS = {"submit", "cancel", "upload-artifacts"}
+JOB_SPECIFIC_COMMANDS = {
+    "submit",
+    "cancel",
+    "upload-artifacts",
+    "ack-finalisation",
+}
 
 
 class ClusterClientError(RuntimeError):
@@ -65,6 +81,15 @@ class SlurmJobStatus:
     has_result_error: bool = False
 
 
+@dataclass(frozen=True)
+class FinalisationResult:
+    """Validated database-bound data returned after the archive upload."""
+
+    calculation_result: dict[str, Any] | None
+    calculation_error: dict[str, Any] | None
+    artifacts: dict[str, str]
+
+
 def _job_id(value: UUID | str) -> str:
     try:
         return str(UUID(str(value)))
@@ -84,8 +109,12 @@ def _parse_response(output: str, operation: str) -> dict[str, Any]:
 
     invalid_message = f"Invalid {operation} response from cluster"
     try:
-        response = json.loads(output)
-    except json.JSONDecodeError:
+        if len(output.encode("utf-8")) > MAX_CLUSTER_RESPONSE_BYTES:
+            raise ClusterServiceError(
+                f"{operation.capitalize()} response is too large"
+            )
+        response = json.loads(output, parse_constant=_reject_json_constant)
+    except (UnicodeError, json.JSONDecodeError, ValueError):
         raise ClusterServiceError(invalid_message) from None
 
     if not isinstance(response, dict):
@@ -99,6 +128,52 @@ def _parse_response(output: str, operation: str) -> dict[str, Any]:
         if response["error"].get("category") in ERROR_CATEGORIES:
             return response
     raise ClusterServiceError(invalid_message)
+
+
+def _finalisation_result(
+    result: dict[str, Any],
+    *,
+    expected_job_id: str,
+) -> FinalisationResult:
+    """Validate the transport-level finalisation response."""
+
+    if result["job_id"] != expected_job_id:
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+    if result["archive_uploaded"] is not True:
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+    calculation_result = result["calculation_result"]
+    calculation_error = result["calculation_error"]
+    if calculation_result is not None and not isinstance(calculation_result, dict):
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+    if calculation_error is not None and not isinstance(calculation_error, dict):
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+
+    artifacts = result["artifacts"]
+    if not isinstance(artifacts, dict):
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+    for kind, content in artifacts.items():
+        if (
+            not isinstance(kind, str)
+            or not kind
+            or not isinstance(content, str)
+            or not content
+            or "\x00" in content
+        ):
+            raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+        try:
+            content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ClusterServiceError(INVALID_FINALISATION_RESPONSE) from None
+
+    return FinalisationResult(
+        calculation_result=calculation_result,
+        calculation_error=calculation_error,
+        artifacts=dict(artifacts),
+    )
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError
 
 
 def _returned_slurm_id(value: Any, operation: str) -> str:
@@ -254,25 +329,44 @@ class ClusterDispatchClient:
         job_id: UUID | str,
         calculation_type: CalculationType,
         terminal_status: JobStatus,
-        upload_urls: Mapping[str, str],
+        archive_upload_url: str,
         allow_missing_error: bool = False,
-    ) -> None:
-        job_id = _job_id(job_id)
+    ) -> FinalisationResult:
+        """Upload one archive and return the content destined for PostgreSQL."""
+
+        normalized_job_id = _job_id(job_id)
         result = self._send_request(
             {
                 "command": "upload-artifacts",
-                "job_id": job_id,
+                "job_id": normalized_job_id,
                 "calculation_type": calculation_type.value,
                 "terminal_status": terminal_status.value,
-                "upload_urls": dict(upload_urls),
+                "archive_upload_url": archive_upload_url,
                 "allow_missing_error": allow_missing_error,
             },
-            "artifact upload",
+            "artifact finalisation",
             timeout_seconds=self.storage_timeout_seconds,
         )
-        if result["job_id"] != job_id or result["uploaded"] is not True:
+        return _finalisation_result(result, expected_job_id=normalized_job_id)
+
+    def acknowledge_finalisation(self, job_id: UUID | str) -> None:
+        """Acknowledge a committed result so cluster cleanup can be repeated."""
+
+        normalized_job_id = _job_id(job_id)
+        result = self._send_request(
+            {
+                "command": "ack-finalisation",
+                "job_id": normalized_job_id,
+            },
+            "finalisation acknowledgement",
+            timeout_seconds=self.storage_timeout_seconds,
+        )
+        if (
+            result["job_id"] != normalized_job_id
+            or result["cleaned"] is not True
+        ):
             raise ClusterServiceError(
-                "Invalid artifact upload response from cluster"
+                "Invalid finalisation acknowledgement from cluster"
             )
 
     def _send_request(
@@ -287,6 +381,9 @@ class ClusterDispatchClient:
         command = request["command"]
         submission = command == "submit"
         job_specific = command in JOB_SPECIFIC_COMMANDS
+        expected_result_fields = RESULT_FIELDS_BY_COMMAND.get(command)
+        if expected_result_fields is None:
+            raise ValueError("Cluster command is not supported")
         payload = {"protocol_version": PROTOCOL_VERSION, **request}
         try:
             input_text = json.dumps(payload, separators=(",", ":"), allow_nan=False)
@@ -308,6 +405,8 @@ class ClusterDispatchClient:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="strict",
                 timeout=timeout_seconds or self.timeout_seconds,
             )
         except subprocess.TimeoutExpired:
@@ -316,7 +415,7 @@ class ClusterDispatchClient:
                     UNKNOWN_SUBMISSION_MESSAGE
                 ) from None
             raise ClusterServiceError(f"Cluster {operation} timed out") from None
-        except OSError:
+        except (OSError, UnicodeError):
             raise ClusterServiceError(f"Cluster {operation} could not start") from None
 
         stdout = completed.stdout or ""
@@ -327,7 +426,7 @@ class ClusterDispatchClient:
         try:
             response = _parse_response(stdout, operation)
             if response["ok"] is True and (
-                set(response["result"]) != RESULT_FIELDS_BY_COMMAND[command]
+                set(response["result"]) != expected_result_fields
             ):
                 raise ClusterServiceError(
                     f"Invalid {operation} response from cluster"

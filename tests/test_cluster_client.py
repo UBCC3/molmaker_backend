@@ -11,6 +11,7 @@ from enum_types import CalculationType, JobStatus
 from orchestration.cluster_client import (
     ClusterDispatchClient,
     ClusterServiceError,
+    FinalisationResult,
     JobDispatchError,
     SlurmJobStatus,
     SubmissionOutcomeUnknownError,
@@ -43,6 +44,18 @@ def failure(category, message="safe failure"):
             "error": {"category": category, "message": message},
         }
     )
+
+
+def finalisation_success(**overrides):
+    result = {
+        "job_id": str(JOB_ID),
+        "archive_uploaded": True,
+        "calculation_result": {"energy": -75.2},
+        "calculation_error": None,
+        "artifacts": {"vib": "vibration data"},
+    }
+    result.update(overrides)
+    return success(result)
 
 
 @pytest.fixture
@@ -99,6 +112,8 @@ def sent_request(calls, *, timeout=37):
     assert options["check"] is False
     assert options["capture_output"] is True
     assert options["text"] is True
+    assert options["encoding"] == "utf-8"
+    assert options["errors"] == "strict"
     assert options["timeout"] == timeout
     return json.loads(options["input"])
 
@@ -211,34 +226,104 @@ def test_cancel_slurm_job_checks_the_acknowledgement(client, run_dispatch):
     assert sent_request(calls)["command"] == "cancel"
 
 
-def test_upload_artifacts_sends_fresh_urls_only_in_json_stdin(
+def test_finalisation_sends_one_archive_url_and_returns_database_content(
     client,
     run_dispatch,
 ):
-    calls = run_dispatch(
-        stdout=success({"job_id": str(JOB_ID), "uploaded": True})
-    )
-    secret_url = "https://storage.example/upload?signature=secret"
+    calls = run_dispatch(stdout=finalisation_success())
+    secret_url = "https://storage.example/archive?signature=secret"
 
-    client.upload_artifacts(
+    result = client.upload_artifacts(
         job_id=JOB_ID,
         calculation_type=CalculationType.frequency,
-        terminal_status=JobStatus.failed,
-        upload_urls={"zip": secret_url, "error": secret_url},
-        allow_missing_error=True,
+        terminal_status=JobStatus.completed,
+        archive_upload_url=secret_url,
     )
 
-    request = sent_request(calls, timeout=41)
+    assert result == FinalisationResult(
+        calculation_result={"energy": -75.2},
+        calculation_error=None,
+        artifacts={"vib": "vibration data"},
+    )
     assert secret_url not in " ".join(calls[0][0])
-    assert request == {
+    assert sent_request(calls, timeout=41) == {
         "protocol_version": 1,
         "command": "upload-artifacts",
         "job_id": str(JOB_ID),
         "calculation_type": "frequency",
-        "terminal_status": "failed",
-        "upload_urls": {"zip": secret_url, "error": secret_url},
-        "allow_missing_error": True,
+        "terminal_status": "completed",
+        "archive_upload_url": secret_url,
+        "allow_missing_error": False,
     }
+
+
+def test_finalisation_acknowledges_only_the_matching_job(
+    client,
+    run_dispatch,
+):
+    calls = run_dispatch(
+        stdout=success({"job_id": str(JOB_ID), "cleaned": True})
+    )
+
+    client.acknowledge_finalisation(JOB_ID)
+
+    assert sent_request(calls, timeout=41) == {
+        "protocol_version": 1,
+        "command": "ack-finalisation",
+        "job_id": str(JOB_ID),
+    }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        finalisation_success(
+            job_id="22222222-2222-4222-8222-222222222222"
+        ),
+        finalisation_success(archive_uploaded=False),
+        finalisation_success(calculation_result=[]),
+        finalisation_success(calculation_error=[]),
+        finalisation_success(artifacts=[]),
+        finalisation_success(artifacts={"vib": 1}),
+        finalisation_success(artifacts={"vib": "\ud800"}),
+        finalisation_success(extra=True),
+    ],
+)
+def test_finalisation_rejects_invalid_transport_content(
+    client,
+    run_dispatch,
+    response,
+):
+    run_dispatch(stdout=response)
+
+    with pytest.raises(
+        ClusterServiceError,
+        match="Invalid artifact finalisation response",
+    ):
+        client.upload_artifacts(
+            job_id=JOB_ID,
+            calculation_type=CalculationType.frequency,
+            terminal_status=JobStatus.completed,
+            archive_upload_url="https://storage.example/archive",
+        )
+
+
+def test_finalisation_rejects_an_oversized_response(client, run_dispatch):
+    run_dispatch(
+        stdout=finalisation_success(
+            artifacts={
+                "vib": "x" * cluster_client.MAX_CLUSTER_RESPONSE_BYTES
+            }
+        )
+    )
+
+    with pytest.raises(ClusterServiceError, match="response is too large"):
+        client.upload_artifacts(
+            job_id=JOB_ID,
+            calculation_type=CalculationType.frequency,
+            terminal_status=JobStatus.completed,
+            archive_upload_url="https://storage.example/archive",
+        )
 
 
 @pytest.mark.parametrize(
@@ -423,7 +508,7 @@ def test_cluster_errors_do_not_expose_urls(client, run_dispatch):
             job_id=JOB_ID,
             calculation_type=CalculationType.energy,
             terminal_status=JobStatus.failed,
-            upload_urls={"zip": secret_url, "error": secret_url},
+            archive_upload_url=secret_url,
         )
 
     assert secret_url not in str(caught.value)
