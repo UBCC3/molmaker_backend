@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from auth import verify_token
 from database import Base
@@ -27,27 +27,41 @@ def clear_backend_settings_cache():
 
 # --- Test database ---
 
-SQLALCHEMY_TEST_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "sqlite:///:memory:",
-)
-
-if SQLALCHEMY_TEST_DATABASE_URL.startswith("sqlite"):
-    engine = create_engine(
-        SQLALCHEMY_TEST_DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+SQLALCHEMY_TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+if not SQLALCHEMY_TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL must identify a dedicated PostgreSQL test database"
     )
 
-    @event.listens_for(engine, "connect")
-    def enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-else:
-    engine = create_engine(SQLALCHEMY_TEST_DATABASE_URL)
+test_database_url = make_url(SQLALCHEMY_TEST_DATABASE_URL)
+if test_database_url.get_backend_name() != "postgresql":
+    raise RuntimeError("TEST_DATABASE_URL must use PostgreSQL")
+
+TEST_SCHEMA = f"molmaker_test_{uuid.uuid4().hex}"
+schema_engine = create_engine(test_database_url)
+engine = create_engine(
+    test_database_url,
+    connect_args={"options": f"-csearch_path={TEST_SCHEMA}"},
+)
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_postgresql_schema():
+    """Create and remove one isolated PostgreSQL schema per test run."""
+
+    with schema_engine.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{TEST_SCHEMA}"')
+    try:
+        yield
+    finally:
+        engine.dispose()
+        with schema_engine.begin() as connection:
+            connection.exec_driver_sql(
+                f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE'
+            )
+        schema_engine.dispose()
 
 
 def _save(db, instance):
@@ -216,7 +230,6 @@ def structure_factory(db):
             "user_sub": "auth0|testuser",
             "name": f"Structure {uuid.uuid4().hex[:8]}",
             "formula": "H2O",
-            "location": "s3://test-bucket/structures/test.xyz",
             "notes": None,
             "content": "3\nwater\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
             "thumbnail": b"thumbnail-bytes",

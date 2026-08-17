@@ -28,4 +28,12 @@ def get_session_local():
 
 
 def init_db():
+    """Create the current schema in an empty database."""
+
+    import models  # noqa: F401 - registers every table with Base.metadata
+
     Base.metadata.create_all(bind=get_engine(), checkfirst=True)
+
+
+if __name__ == "__main__":
+    init_db()

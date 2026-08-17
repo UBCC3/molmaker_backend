@@ -3,7 +3,6 @@ import uuid
 
 import pytest
 
-import calculation.service as calculation_service
 import storage
 from conftest import make_auth0_payload
 from models import Job, JobInput, Tags
@@ -39,7 +38,7 @@ def _forbid_cluster_and_upload_url_calls(monkeypatch):
         )
 
     monkeypatch.setattr(subprocess, "run", forbidden)
-    monkeypatch.setattr(storage, "generate_presigned_put_url", forbidden)
+    monkeypatch.setattr(storage, "generate_archive_upload_url", forbidden)
 
 
 def test_openapi_documents_durable_calculation_submission_contract(client):
@@ -228,7 +227,7 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     user_factory,
     structure_factory,
 ):
-    """A readable structure ID should be downloaded and linked to the job."""
+    """A readable database structure should be copied and linked to the job."""
     _forbid_cluster_and_upload_url_calls(monkeypatch)
     group = group_factory()
     owner = user_factory(group=group, user_sub="auth0|owner")
@@ -237,18 +236,7 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
         user_sub=owner.user_sub,
         group_id=group.group_id,
         is_public=True,
-        location="s3://molecule-bucket/structures/water.xyz",
-    )
-    download_calls = []
-
-    def fake_download(location):
-        download_calls.append(location)
-        return "downloaded structure"
-
-    monkeypatch.setattr(
-        calculation_service,
-        "download_structure_source",
-        fake_download,
+        content="stored structure content",
     )
 
     response = client.post(
@@ -270,10 +258,8 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     assert result["structures"][0]["structure_id"] == str(
         structure.structure_id
     )
-    assert download_calls == [structure.location]
-
     job = db.query(Job).filter_by(job_id=job_id).one()
-    assert job.job_input.input_xyz == "downloaded structure"
+    assert job.job_input.input_xyz == "stored structure content"
     assert [linked.structure_id for linked in job.structures] == [
         structure.structure_id
     ]

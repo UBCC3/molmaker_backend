@@ -5,14 +5,9 @@ import pytest
 from fastapi import HTTPException
 
 import request_service
-from conftest import TestingSessionLocal, engine
+from conftest import TestingSessionLocal
 from enum_types import RequestStatus, RequestType
 from models import Group, Request, User
-
-pytestmark = pytest.mark.skipif(
-    engine.dialect.name != "postgresql",
-    reason="requires PostgreSQL row locks and partial unique indexes",
-)
 
 
 def _run_twice(worker):

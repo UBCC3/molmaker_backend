@@ -90,10 +90,13 @@ DB_PASSWORD="molmaker_local_password"
 
 psql -d postgres -c "ALTER ROLE ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
 createdb -O "${DB_USER}" "${DB_NAME}"
-psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f molmaker.sql
 ```
 
-Set the matching database values in `.env`.
+Set the matching database values in `.env`, then create the current schema:
+
+```zsh
+python -m database
+```
 
 `.env.example` is the complete backend settings reference. AWS credentials are
 loaded through boto3's standard credential provider chain rather than stored in
@@ -200,42 +203,21 @@ job-specific names.
 
 ## Tests
 
-Install the development dependencies and run the full test suite:
+Tests require a dedicated PostgreSQL database. Create one, set its URL, then
+run the suite:
 
 ```zsh
 python -m pip install -r requirements-dev.txt
+createdb molmaker_test
+export TEST_DATABASE_URL="postgresql://<user>:<password>@localhost:5432/molmaker_test"
 python -m pytest -q
 ```
 
-Pull requests run the full suite against both SQLite and PostgreSQL.
+Each run creates a uniquely named schema inside that database and drops it at
+the end. Pull requests run the full suite against PostgreSQL only.
 
-## Database Files
+## Database Schema
 
-`molmaker.sql` contains the current PostgreSQL structure and saved data. The
-database role that imports it owns the created objects.
-
-Generate a replacement dump without owner or permission statements so another
-database user can import it:
-
-```zsh
-pg_dump --format=plain --no-owner --no-acl --file=molmaker.sql "${DB_NAME}"
-```
-
-To update a database created from `main`, stop the API and reconcilers, back up
-the database, and run both migrations in order:
-
-```zsh
-psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/001_pr14_database_changes.sql
-psql -v ON_ERROR_STOP=1 -d "${DB_NAME}" -f migrations/002_jobs_orchestration_redesign.sql
-```
-
-Migration `002` adds the orchestration fields and the retained `job_inputs`
-table used by new submissions. If migration `001` was already applied, run
-only migration `002`. Both scripts are safe to run again after they succeed.
-Do not run them after importing the current `molmaker.sql`; that dump already
-contains both sets of changes. Start the API and reconcilers only after the
-migration completes successfully.
-
-In production, confirm which database role runs migrations. If a separate
-migration role owns the tables, grant the backend role the permissions it
-needs before starting the backend.
+The SQLAlchemy models are the authoritative schema. This repository does not
+carry historical database dumps or migrations. Start with an empty database
+and run `python -m database` before starting the API or reconcilers.

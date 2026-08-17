@@ -1,15 +1,18 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import EndpointConnectionError
 
 import storage
 from conftest import make_auth0_payload
-from enum_types import JobFailureReason, JobStatus
+from enum_types import JobStatus
 from settings import get_settings
+
 
 def _url(prefix, key):
     return f"{prefix}:{key}"
+
 
 @pytest.fixture
 def mock_get_urls(monkeypatch):
@@ -20,11 +23,14 @@ def mock_get_urls(monkeypatch):
         return _url("get", key)
 
     monkeypatch.setattr(
-        storage, "generate_presigned_get_url", fake_generate_presigned_get_url
+        storage,
+        "_generate_presigned_get_url",
+        fake_generate_presigned_get_url,
     )
     return calls
 
-class TestFinalisationStorage:
+
+class TestArchiveStorage:
     def test_archive_upload_url_uses_one_deterministic_key(self, monkeypatch):
         calls = []
 
@@ -32,7 +38,7 @@ class TestFinalisationStorage:
             calls.append(key)
             return f"attempt-{len(calls)}:{key}"
 
-        monkeypatch.setattr(storage, "generate_presigned_put_url", generate)
+        monkeypatch.setattr(storage, "_generate_presigned_put_url", generate)
 
         first = storage.generate_archive_upload_url("job-123")
         second = storage.generate_archive_upload_url("job-123")
@@ -49,272 +55,58 @@ class TestFinalisationStorage:
         def fail(_key):
             raise EndpointConnectionError(endpoint_url="https://s3.example")
 
-        monkeypatch.setattr(storage, "generate_presigned_put_url", fail)
+        monkeypatch.setattr(storage, "_generate_presigned_put_url", fail)
 
         with pytest.raises(storage.StorageServiceError, match="archive upload URL"):
             storage.generate_archive_upload_url("job-123")
 
-    @pytest.mark.parametrize(
-        ("terminal_status", "expected_names"),
-        [
-            ("completed", {"zip", "result", "vib", "jdx"}),
-            ("failed", {"zip", "error"}),
-            ("cancelled", {"zip", "error"}),
-        ],
-    )
-    def test_artifact_keys_are_deterministic(
-        self,
-        terminal_status,
-        expected_names,
-    ):
-        first = storage.finalisation_artifact_keys(
-            "job-123",
-            "frequency",
-            terminal_status,
-        )
-        second = storage.finalisation_artifact_keys(
-            "job-123",
-            "frequency",
-            terminal_status,
-        )
-
-        assert first == second
-        assert set(first) == expected_names
-        assert first["zip"] == "ubchemica/archive/job-123.zip"
-        assert all(
-            key.startswith("ubchemica/jobs/job-123/")
-            for name, key in first.items()
-            if name != "zip"
-        )
-
-    def test_upload_urls_are_generated_afresh_for_the_same_keys(self, monkeypatch):
-        calls = []
-
-        def generate(key):
-            calls.append(key)
-            return f"attempt-{len(calls)}:{key}"
-
-        monkeypatch.setattr(storage, "generate_presigned_put_url", generate)
-
-        first = storage.generate_finalisation_upload_urls(
-            "job-123",
-            "energy",
-            "completed",
-        )
-        second = storage.generate_finalisation_upload_urls(
-            "job-123",
-            "energy",
-            "completed",
-        )
-
-        assert first.keys() == second.keys()
-        assert first != second
-        assert calls[:3] == calls[3:]
-
-    def test_presigning_failure_is_a_shared_storage_error(self, monkeypatch):
-        def fail(_key):
-            raise EndpointConnectionError(endpoint_url="https://s3.example")
-
-        monkeypatch.setattr(storage, "generate_presigned_put_url", fail)
-
-        with pytest.raises(storage.StorageServiceError, match="upload URLs"):
-            storage.generate_finalisation_upload_urls(
-                "job-123",
-                "energy",
-                "completed",
-            )
-
-    @pytest.mark.parametrize(
-        ("terminal_status", "failure_reason", "expected_names"),
-        [
-            ("completed", None, ["zip", "result", "vib", "jdx"]),
-            (
-                "failed",
-                "calculation_failed",
-                ["zip", "error"],
-            ),
-            ("failed", "timeout", ["zip"]),
-            ("failed", "cluster_failed", ["zip"]),
-            ("cancelled", None, ["zip"]),
-        ],
-    )
-    def test_only_required_objects_are_checked(
-        self,
-        monkeypatch,
-        terminal_status,
-        failure_reason,
-        expected_names,
-    ):
-        checked_keys = []
-
-        class S3:
-            def head_object(self, *, Bucket, Key):
-                assert Bucket == get_settings().s3_bucket_name
-                checked_keys.append(Key)
-
-        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
-
-        result = storage.required_finalisation_artifacts_exist(
-            "job-123",
-            "frequency",
-            terminal_status,
-            failure_reason,
-        )
-
-        all_keys = storage.finalisation_artifact_keys(
-            "job-123",
-            "frequency",
-            terminal_status,
-        )
-        assert result is True
-        assert checked_keys == [all_keys[name] for name in expected_names]
-
-    def test_missing_required_object_returns_false(self, monkeypatch):
-        class S3:
-            def head_object(self, **_kwargs):
-                raise ClientError(
-                    {"Error": {"Code": "404", "Message": "missing"}},
-                    "HeadObject",
-                )
-
-        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
-
-        assert (
-            storage.required_finalisation_artifacts_exist(
-                "job-123",
-                "energy",
-                "completed",
-                None,
-            )
-            is False
-        )
-
-    def test_object_check_failure_is_a_shared_storage_error(self, monkeypatch):
-        class S3:
-            def head_object(self, **_kwargs):
-                raise ClientError(
-                    {"Error": {"Code": "503", "Message": "unavailable"}},
-                    "HeadObject",
-                )
-
-        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: S3())
-
-        with pytest.raises(storage.StorageServiceError, match="verify"):
-            storage.required_finalisation_artifacts_exist(
-                "job-123",
-                "energy",
-                "completed",
-                None,
-            )
-
-class TestJobArtifactDownloadUrls:
-    @pytest.mark.parametrize(
-        ("terminal_status", "failure_reason", "expected_artifacts"),
-        [
-            (
-                JobStatus.completed.value,
-                None,
-                {
-                    "result": "result.json",
-                    "vib": "vib.xyz",
-                    "jdx": "ir.jdx",
-                },
-            ),
-            (
-                JobStatus.failed.value,
-                JobFailureReason.calculation_failed.value,
-                {"error": "result.err"},
-            ),
-            (JobStatus.failed.value, JobFailureReason.timeout.value, {}),
-            (JobStatus.cancelled.value, None, {}),
-        ],
-    )
-    def test_only_returns_artifacts_known_to_exist(
+    def test_archive_download_uses_the_deterministic_key(
         self,
         mock_get_urls,
-        terminal_status,
-        failure_reason,
-        expected_artifacts,
     ):
-        job_id = "job-123"
+        result = storage.presign_zip_download_url("job-archive")
 
-        result = storage.generate_job_artifact_download_urls(
-            job_id,
-            "frequency",
-            terminal_status,
-            failure_reason,
-        )
-
-        job_dir = f"{get_settings().s3_bucket_root}/jobs/{job_id}/"
-        expected = {
-            name: _url("get", job_dir + filename)
-            for name, filename in expected_artifacts.items()
-        }
-        assert result == expected
-        assert mock_get_urls == [job_dir + name for name in expected_artifacts.values()]
-
-    def test_presigning_failure_is_a_storage_error(self, monkeypatch):
-        def fail(_key):
-            raise EndpointConnectionError(endpoint_url="https://s3.example")
-
-        monkeypatch.setattr(storage, "generate_presigned_get_url", fail)
-
-        with pytest.raises(storage.StorageServiceError, match="download URLs"):
-            storage.generate_job_artifact_download_urls(
-                "job-123",
-                "energy",
-                JobStatus.completed.value,
-                None,
-            )
-
-class TestPresignZipDownloadUrl:
-    def test_presigns_expected_archive_key(self, mock_get_urls):
-        """
-        presign_zip_download_url should request the job archive download key.
-        """
-        job_id = "job-archive"
-
-        result = storage.presign_zip_download_url(job_id)
-
-        archive_key = f"{get_settings().s3_bucket_root}/archive/{job_id}.zip"
+        archive_key = f"{get_settings().s3_bucket_root}/archive/job-archive.zip"
         assert result == _url("get", archive_key)
         assert mock_get_urls == [archive_key]
 
-class TestJobDownloadEndpoints:
-    @pytest.fixture(autouse=True)
-    def mock_download_urls(self, monkeypatch):
-        calls = {"artifacts": [], "archives": []}
+    def test_archive_download_presigning_failure_is_a_storage_error(
+        self,
+        monkeypatch,
+    ):
+        def fail(_key):
+            raise EndpointConnectionError(endpoint_url="https://s3.example")
 
-        def artifacts(job_id, calculation_type, terminal_status, failure_reason):
-            calls["artifacts"].append(
-                (job_id, calculation_type, terminal_status, failure_reason)
-            )
-            return {"result": f"https://example.test/{job_id}/result.json"}
+        monkeypatch.setattr(storage, "_generate_presigned_get_url", fail)
+
+        with pytest.raises(storage.StorageServiceError, match="archive download URL"):
+            storage.presign_zip_download_url("job-123")
+
+
+class TestJobArchiveEndpoint:
+    @pytest.fixture(autouse=True)
+    def mock_archive_url(self, monkeypatch):
+        calls = []
 
         def archive(job_id):
-            calls["archives"].append(job_id)
+            calls.append(job_id)
             return f"https://example.test/{job_id}.zip"
 
-        monkeypatch.setattr(
-            "s3.routes.generate_job_artifact_download_urls",
-            artifacts,
-        )
         monkeypatch.setattr("s3.routes.presign_zip_download_url", archive)
         return calls
 
-    @pytest.mark.parametrize("path_suffix", ["", "/archive"])
     @pytest.mark.parametrize(
         "access",
         ["owner", "admin", "group_admin", "public_group_member"],
     )
-    def test_authorized_users_can_download_job_files(
+    def test_authorized_users_can_download_archives(
         self,
         client,
         set_auth_user,
         group_factory,
         user_factory,
         job_factory,
-        path_suffix,
+        job_result_factory,
         access,
     ):
         group = group_factory()
@@ -339,23 +131,22 @@ class TestJobDownloadEndpoints:
             status=JobStatus.completed.value,
             is_uploaded=True,
         )
+        job_result_factory(job=job)
         set_auth_user(make_auth0_payload(actor.user_sub))
 
-        response = client.get(f"/storage/jobs/{job.job_id}{path_suffix}")
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 200
 
-    @pytest.mark.parametrize("path_suffix", ["", "/archive"])
     @pytest.mark.parametrize("access", ["private_group_member", "unrelated_user"])
-    def test_unauthorized_users_cannot_download_job_files(
+    def test_unauthorized_users_cannot_download_archives(
         self,
         client,
         set_auth_user,
         group_factory,
         user_factory,
         job_factory,
-        mock_download_urls,
-        path_suffix,
+        mock_archive_url,
         access,
     ):
         job_group = group_factory()
@@ -376,20 +167,18 @@ class TestJobDownloadEndpoints:
         )
         set_auth_user(make_auth0_payload(actor.user_sub))
 
-        response = client.get(f"/storage/jobs/{job.job_id}{path_suffix}")
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Insufficient permissions"
-        assert mock_download_urls == {"artifacts": [], "archives": []}
+        assert mock_archive_url == []
 
-    @pytest.mark.parametrize("path_suffix", ["", "/archive"])
     def test_missing_and_deleted_jobs_return_404(
         self,
         client,
         user_factory,
         job_factory,
-        mock_download_urls,
-        path_suffix,
+        mock_archive_url,
     ):
         user_factory(user_sub="auth0|testuser")
         deleted_job = job_factory(
@@ -398,16 +187,13 @@ class TestJobDownloadEndpoints:
             is_uploaded=True,
         )
 
-        missing_response = client.get(f"/storage/jobs/{uuid.uuid4()}{path_suffix}")
-        deleted_response = client.get(
-            f"/storage/jobs/{deleted_job.job_id}{path_suffix}"
-        )
+        missing_response = client.get(f"/storage/jobs/{uuid.uuid4()}/archive")
+        deleted_response = client.get(f"/storage/jobs/{deleted_job.job_id}/archive")
 
         assert missing_response.status_code == 404
         assert deleted_response.status_code == 404
-        assert mock_download_urls == {"artifacts": [], "archives": []}
+        assert mock_archive_url == []
 
-    @pytest.mark.parametrize("path_suffix", ["", "/archive"])
     @pytest.mark.parametrize(
         ("job_status", "is_uploaded"),
         [
@@ -420,70 +206,23 @@ class TestJobDownloadEndpoints:
             (JobStatus.cancelled.value, False),
         ],
     )
-    def test_job_files_are_not_ready_until_finalisation_finishes(
+    def test_archive_is_not_ready_without_a_saved_result(
         self,
         client,
         user_factory,
         job_factory,
-        mock_download_urls,
-        path_suffix,
+        mock_archive_url,
         job_status,
         is_uploaded,
     ):
         user_factory(user_sub="auth0|testuser")
         job = job_factory(status=job_status, is_uploaded=is_uploaded)
 
-        response = client.get(f"/storage/jobs/{job.job_id}{path_suffix}")
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 409
         assert response.json()["detail"] == "Job files are not ready"
-        assert mock_download_urls == {"artifacts": [], "archives": []}
-
-    @pytest.mark.parametrize(
-        ("job_status", "failure_reason"),
-        [
-            (JobStatus.completed.value, None),
-            (
-                JobStatus.failed.value,
-                JobFailureReason.calculation_failed.value,
-            ),
-            (JobStatus.cancelled.value, None),
-        ],
-    )
-    def test_artifact_request_uses_stored_job_details(
-        self,
-        client,
-        user_factory,
-        job_factory,
-        mock_download_urls,
-        job_status,
-        failure_reason,
-    ):
-        user_factory(user_sub="auth0|testuser")
-        job = job_factory(
-            calculation_type="frequency",
-            status=job_status,
-            failure_reason=failure_reason,
-            is_uploaded=True,
-        )
-
-        response = client.get(f"/storage/jobs/{job.job_id}")
-
-        assert response.status_code == 200
-        assert response.json() == {
-            "job_id": str(job.job_id),
-            "calculation_type": "frequency",
-            "status": job_status,
-            "urls": {"result": f"https://example.test/{job.job_id}/result.json"},
-        }
-        assert mock_download_urls["artifacts"] == [
-            (
-                str(job.job_id),
-                "frequency",
-                job_status,
-                failure_reason,
-            )
-        ]
+        assert mock_archive_url == []
 
     @pytest.mark.parametrize(
         "job_status",
@@ -498,11 +237,13 @@ class TestJobDownloadEndpoints:
         client,
         user_factory,
         job_factory,
-        mock_download_urls,
+        job_result_factory,
+        mock_archive_url,
         job_status,
     ):
         user_factory(user_sub="auth0|testuser")
         job = job_factory(status=job_status, is_uploaded=True)
+        job_result_factory(job=job)
 
         response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
@@ -511,33 +252,62 @@ class TestJobDownloadEndpoints:
             "job_id": str(job.job_id),
             "url": f"https://example.test/{job.job_id}.zip",
         }
-        assert mock_download_urls["archives"] == [str(job.job_id)]
+        assert mock_archive_url == [str(job.job_id)]
 
-    @pytest.mark.parametrize("path_suffix", ["", "/archive"])
+    def test_archive_is_available_while_cluster_cleanup_is_pending(
+        self,
+        client,
+        user_factory,
+        job_factory,
+        job_result_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            status=JobStatus.finalising.value,
+            terminal_status=JobStatus.completed.value,
+            completed_at=datetime.now(timezone.utc),
+            is_uploaded=True,
+        )
+        job_result_factory(job=job)
+
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
+
+        assert response.status_code == 200
+
     def test_presigning_failure_returns_503(
         self,
         client,
         user_factory,
         job_factory,
+        job_result_factory,
         monkeypatch,
-        path_suffix,
     ):
         user_factory(user_sub="auth0|testuser")
         job = job_factory(
             status=JobStatus.completed.value,
             is_uploaded=True,
         )
+        job_result_factory(job=job)
 
         def fail(*_args):
             raise storage.StorageServiceError("S3 unavailable")
 
-        monkeypatch.setattr(
-            "s3.routes.generate_job_artifact_download_urls",
-            fail,
-        )
         monkeypatch.setattr("s3.routes.presign_zip_download_url", fail)
 
-        response = client.get(f"/storage/jobs/{job.job_id}{path_suffix}")
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Job files are temporarily unavailable"
+
+    def test_individual_s3_artifact_endpoint_is_removed(
+        self,
+        client,
+        user_factory,
+        job_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory()
+
+        response = client.get(f"/storage/jobs/{job.job_id}")
+
+        assert response.status_code == 404

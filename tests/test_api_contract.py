@@ -12,6 +12,8 @@ LEGACY_OPERATIONS = {
     ("/cluster/cancel/{slurm_id}", "post"),
     ("/storage/files/{job_id}/{calculation}/{status}", "get"),
     ("/storage/download/archive/{job_id}", "get"),
+    ("/storage/jobs/{job_id}", "get"),
+    ("/structures/presigned/{structure_id}", "get"),
 }
 
 REPLACEMENT_OPERATIONS = {
@@ -20,7 +22,6 @@ REPLACEMENT_OPERATIONS = {
     ("/jobs/", "get"),
     ("/jobs/{job_id}", "get"),
     ("/jobs/{job_id}/cancel", "post"),
-    ("/storage/jobs/{job_id}", "get"),
     ("/storage/jobs/{job_id}/archive", "get"),
 }
 

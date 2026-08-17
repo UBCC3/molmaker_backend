@@ -95,11 +95,11 @@ class TestAssetModel:
             "artifact_manifest",
         }.isdisjoint(Job.__table__.columns.keys())
 
-    def test_structure_database_content_is_nullable_during_backfill(self):
-        assert Structure.__table__.columns["location"].nullable is True
-        assert Structure.__table__.columns["content"].nullable is True
-        assert Structure.__table__.columns["thumbnail"].nullable is True
-        assert Structure.__table__.columns["thumbnail_media_type"].nullable is True
+    def test_structure_stores_required_content_without_a_legacy_location(self):
+        assert "location" not in Structure.__table__.columns
+        assert Structure.__table__.columns["content"].nullable is False
+        assert Structure.__table__.columns["thumbnail"].nullable is False
+        assert Structure.__table__.columns["thumbnail_media_type"].nullable is False
 
     def test_job_result_is_one_to_one_with_safe_artifact_default(
         self,

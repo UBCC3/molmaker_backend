@@ -63,7 +63,9 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
     assert "finalising" not in response_statuses
 
     structure_properties = components["StructureResponse"]["properties"]
-    assert "location" in structure_properties
+    assert "location" not in structure_properties
+    assert "content" not in structure_properties
+    assert "thumbnail" not in structure_properties
 
     paths = schema["paths"]
     assert paths["/jobs/"]["get"]["responses"]["200"]["content"][
@@ -81,7 +83,8 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
     update_body = paths["/jobs/{job_id}"]["patch"]["requestBody"]["content"][
         "application/json"
     ]["schema"]
-    update_schema_name = update_body["$ref"].rsplit("/", 1)[-1]
+    update_reference = update_body.get("$ref") or update_body["allOf"][0]["$ref"]
+    update_schema_name = update_reference.rsplit("/", 1)[-1]
     assert set(components[update_schema_name]["properties"]) == {
         "job_name",
         "job_notes",
@@ -175,14 +178,12 @@ class TestJobsAPI:
         assert listed_jobs[0]["tags"] == ["baseline"]
         listed_structure = listed_jobs[0]["structures"][0]
         assert listed_structure["structure_id"] == str(structure.structure_id)
-        assert listed_structure["location"] == structure.location
 
         assert detail_response.status_code == 200
         linked_structure = detail_response.json()["structures"][0]
         assert linked_structure["structure_id"] == str(structure.structure_id)
         assert linked_structure["name"] == "Water"
         assert linked_structure["formula"] == "H2O"
-        assert linked_structure["location"] == structure.location
 
     def test_get_job_by_id_returns_owned_job(self, client, group_factory, user_factory, job_factory):
         """
@@ -220,7 +221,6 @@ class TestJobsAPI:
         structure = structure_factory(
             user_sub=user.user_sub,
             group_id=group.group_id,
-            location="s3://private-bucket/structures/input.xyz",
         )
         job = job_factory(
             user_sub=user.user_sub,
@@ -269,7 +269,6 @@ class TestJobsAPI:
             assert payload["structures"][0]["structure_id"] == str(
                 structure.structure_id
             )
-            assert payload["structures"][0]["location"] == structure.location
 
     def test_failed_job_returns_user_safe_failure_details(
         self,

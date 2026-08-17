@@ -5,46 +5,6 @@ import uuid
 
 from conftest import make_auth0_payload
 from models import Structure, Tags
-from settings import get_settings
-
-
-class FakeS3Client:
-    """
-    Small fake for structure list presigned image URLs.
-    """
-
-    def __init__(self):
-        self.calls = []
-        self.upload_file_calls = []
-        self.upload_fileobj_calls = []
-
-    def generate_presigned_url(self, *args, **kwargs):
-        self.calls.append((args, kwargs))
-        key = kwargs["Params"]["Key"]
-        return f"presigned:{key}"
-
-    def upload_file(self, local_file_path, bucket, key):
-        self.upload_file_calls.append((local_file_path, bucket, key))
-
-    def upload_fileobj(self, fileobj, bucket, key):
-        position = fileobj.tell()
-        content = fileobj.read()
-        fileobj.seek(position)
-        self.upload_fileobj_calls.append((content, bucket, key))
-
-
-def _mock_structure_s3(monkeypatch):
-    import structures.routes as structures_routes
-
-    fake_s3 = FakeS3Client()
-    monkeypatch.setenv("S3_BUCKET_NAME", "test-bucket")
-    get_settings.cache_clear()
-    monkeypatch.setattr(
-        structures_routes,
-        "create_s3_client",
-        lambda: fake_s3,
-    )
-    return fake_s3
 
 
 def _structure_file(filename="input.xyz", content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
@@ -79,7 +39,6 @@ class TestStructuresAPI:
     def test_list_structures_returns_current_users_non_deleted_structures_newest_first(
         self,
         client,
-        monkeypatch,
         sql_statements,
         group_factory,
         user_factory,
@@ -89,7 +48,6 @@ class TestStructuresAPI:
         """
         GET /structures/ should only return current user's non-deleted structures newest first.
         """
-        fake_s3 = _mock_structure_s3(monkeypatch)
         group = group_factory()
         current_user = user_factory(group=group, user_sub="auth0|testuser")
         other_user = user_factory(group=group, user_sub="auth0|other")
@@ -134,7 +92,6 @@ class TestStructuresAPI:
         assert "content" not in result[0]
         assert "thumbnail" not in result[0]
         assert "imageS3URL" not in result[0]
-        assert fake_s3.calls == []
         structure_query = next(
             statement
             for statement in sql_statements
@@ -167,7 +124,6 @@ class TestStructuresAPI:
         assert result["structure_id"] == str(structure.structure_id)
         assert result["name"] == "Water"
         assert result["formula"] == "H2O"
-        assert result["location"] == structure.location
         assert result["content"] == structure.content
         assert result["thumbnail"] == {
             "media_type": "image/png",
@@ -264,65 +220,6 @@ class TestStructuresAPI:
 
         assert response.status_code == 200
         assert response.json() == []
-
-    def test_presigned_structure_url_returns_owned_structure_url(
-        self, client, monkeypatch, user_factory, structure_factory
-    ):
-        """
-        GET /structures/presigned/{structure_id} should return a download URL for owned structures.
-        """
-        fake_s3 = _mock_structure_s3(monkeypatch)
-        user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(user_sub="auth0|testuser")
-
-        response = client.get(f"/structures/presigned/{structure.structure_id}")
-
-        assert response.status_code == 200
-        assert response.json() == {
-            "url": f"presigned:structures/{structure.structure_id}.xyz"
-        }
-        assert fake_s3.calls == [
-            (
-                (),
-                {
-                    "ClientMethod": "get_object",
-                    "Params": {
-                        "Bucket": "test-bucket",
-                        "Key": f"structures/{structure.structure_id}.xyz",
-                    },
-                    "ExpiresIn": 300,
-                },
-            )
-        ]
-
-    def test_presigned_structure_url_returns_403_for_cross_user_structure(
-        self, client, monkeypatch, group_factory, user_factory, structure_factory
-    ):
-        """
-        Presigned structure downloads should not be generated for another user's structure.
-        """
-        _mock_structure_s3(monkeypatch)
-        group = group_factory()
-        user_factory(group=group, user_sub="auth0|testuser")
-        other_user = user_factory(group=group, user_sub="auth0|other")
-        structure = structure_factory(user_sub=other_user.user_sub)
-
-        response = client.get(f"/structures/presigned/{structure.structure_id}")
-
-        assert response.status_code == 403
-        assert response.json()["detail"] == "Insufficient permissions"
-
-    def test_presigned_structure_url_returns_404_for_invalid_id(self, client, monkeypatch):
-        """
-        Invalid structure IDs should not reach S3 presigned URL generation.
-        """
-        fake_s3 = _mock_structure_s3(monkeypatch)
-
-        response = client.get("/structures/presigned/not-a-uuid")
-
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Structure not found."
-        assert fake_s3.calls == []
 
     def test_owner_can_soft_delete_structure(
         self, client, db, user_factory, structure_factory
@@ -810,7 +707,6 @@ class TestStructuresAPI:
         self,
         client,
         db,
-        monkeypatch,
         group_factory,
         user_factory,
         tag_factory,
@@ -818,7 +714,6 @@ class TestStructuresAPI:
         """
         POST /structures/ should persist structure data and tags without using S3.
         """
-        fake_s3 = _mock_structure_s3(monkeypatch)
         group = group_factory()
         user = user_factory(group=group, user_sub="auth0|testuser")
         existing_tag = tag_factory(user_sub=user.user_sub, name="existing")
@@ -844,7 +739,6 @@ class TestStructuresAPI:
         assert result["name"] == "Water"
         assert result["formula"] == "H2O"
         assert result["notes"] == "created structure"
-        assert result["location"] is None
         assert result["content"] == "saved structure content"
         assert result["thumbnail"] == {
             "media_type": "image/png",
@@ -855,15 +749,11 @@ class TestStructuresAPI:
         assert result["is_public"] is False
         assert sorted(result["tags"]) == ["existing", "new"]
 
-        assert fake_s3.upload_file_calls == []
-        assert fake_s3.upload_fileobj_calls == []
-
         structure = db.query(Structure).filter_by(structure_id=structure_id).one()
         assert structure.user_sub == user.user_sub
         assert structure.group_id == group.group_id
         assert structure.name == "Water"
         assert structure.formula == "H2O"
-        assert structure.location is None
         assert structure.notes == "created structure"
         assert structure.content == "saved structure content"
         assert structure.thumbnail == b"saved image content"
@@ -881,7 +771,6 @@ class TestStructuresAPI:
         """
         POST /structures/ should not leave database rows if the commit fails.
         """
-        _mock_structure_s3(monkeypatch)
         user_factory(user_sub="auth0|testuser")
 
         def fail_commit():

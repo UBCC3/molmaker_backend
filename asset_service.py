@@ -83,23 +83,16 @@ def serialize_structure(
         **serialize_asset(structure, include_user_sub=include_user_sub),
         "name": structure.name,
         "formula": structure.formula,
-        "location": structure.location,
         "notes": structure.notes,
     }
     if include_tags:
         result["tags"] = serialize_tag_names(structure.tags)
     if include_content:
         result["content"] = structure.content
-        result["thumbnail"] = (
-            {
-                "media_type": (
-                    structure.thumbnail_media_type or "application/octet-stream"
-                ),
-                "base64": base64.b64encode(structure.thumbnail).decode("ascii"),
-            }
-            if structure.thumbnail is not None
-            else None
-        )
+        result["thumbnail"] = {
+            "media_type": structure.thumbnail_media_type,
+            "base64": base64.b64encode(structure.thumbnail).decode("ascii"),
+        }
     return result
 
 
@@ -147,12 +140,16 @@ def _published_job_status(job: Job) -> str | None:
     return None
 
 
+def is_job_result_ready(job: Job) -> bool:
+    return (
+        _published_job_status(job) is not None
+        and job.is_uploaded
+        and job.job_result is not None
+    )
+
+
 def require_job_result_ready(job: Job) -> None:
-    if (
-        _published_job_status(job) is None
-        or not job.is_uploaded
-        or job.job_result is None
-    ):
+    if not is_job_result_ready(job):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Job result is not ready",
@@ -736,49 +733,31 @@ def set_asset_tags(
     if not tag_names_to_link:
         return
 
-    if db.get_bind().dialect.name == "postgresql":
-        # Two requests may try to create the same new tag at the same time.
-        # PostgreSQL keeps one row, then both requests link to that row.
-        with db.no_autoflush:
-            db.execute(
-                postgresql_insert(Tags)
-                .values(
-                    [
-                        {"user_sub": user_sub, "name": tag_name}
-                        for tag_name in sorted(tag_names_to_link)
-                    ]
-                )
-                .on_conflict_do_nothing(
-                    index_elements=[Tags.user_sub, Tags.name],
-                )
+    # Two requests may try to create the same new tag at the same time.
+    # PostgreSQL keeps one row, then both requests link to that row.
+    with db.no_autoflush:
+        db.execute(
+            postgresql_insert(Tags)
+            .values(
+                [
+                    {"user_sub": user_sub, "name": tag_name}
+                    for tag_name in sorted(tag_names_to_link)
+                ]
             )
-            reusable_tags = (
-                db.query(Tags)
-                .filter(
-                    Tags.user_sub == user_sub,
-                    Tags.name.in_(tag_names_to_link),
-                )
-                .all()
+            .on_conflict_do_nothing(
+                index_elements=[Tags.user_sub, Tags.name],
             )
-        new_tag_names = set()
-    else:
+        )
         reusable_tags = (
             db.query(Tags)
-            .filter(Tags.user_sub == user_sub, Tags.name.in_(tag_names_to_link))
+            .filter(
+                Tags.user_sub == user_sub,
+                Tags.name.in_(tag_names_to_link),
+            )
             .all()
         )
-        reusable_tag_names = {
-            normalize_tag_name(tag.name)
-            for tag in reusable_tags
-        }
-        new_tag_names = tag_names_to_link - reusable_tag_names
 
     for tag in reusable_tags:
-        asset.tags.append(tag)
-
-    for tag_name in new_tag_names:
-        tag = Tags(user_sub=user_sub, name=tag_name)
-        db.add(tag)
         asset.tags.append(tag)
 
 

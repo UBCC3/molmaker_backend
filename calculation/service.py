@@ -3,7 +3,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
-from urllib.parse import urlparse
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -12,7 +11,6 @@ from asset_service import get_asset_or_404, set_asset_tags
 from enum_types import CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
-from storage import create_s3_client
 from utils import commit_or_rollback
 
 
@@ -158,45 +156,24 @@ def _read_keywords(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
     return keywords
 
 
-def download_structure_source(location: str) -> str:
-    """Return the bounded UTF-8 contents of an S3-backed structure."""
-
-    parsed_location = urlparse(location)
-    object_key = parsed_location.path.lstrip("/")
-    if parsed_location.scheme != "s3" or not parsed_location.netloc or not object_key:
-        raise ValueError("Structure location must be an S3 URI")
-
-    response = create_s3_client().get_object(
-        Bucket=parsed_location.netloc,
-        Key=object_key,
-    )
-    body = response.get("Body")
-    if body is None:
-        raise ValueError("Stored structure has no contents")
-    try:
-        contents = body.read(MAX_INPUT_XYZ_BYTES + 1)
-    finally:
-        body.close()
-    if len(contents) > MAX_INPUT_XYZ_BYTES:
-        raise ValueError("Stored structure is too large")
-    return _decode_xyz(contents)
-
-
 def _load_input_xyz(
     *,
     source_file: Optional[UploadFile],
-    structure_location: Optional[str],
+    structure_content: Optional[str],
 ) -> str:
     if source_file is not None:
         return _read_uploaded_xyz(source_file)
-    if structure_location is None:
+    if structure_content is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Calculation input is unavailable",
         )
     try:
-        return download_structure_source(structure_location)
-    except Exception as error:
+        contents = structure_content.encode("utf-8")
+        if len(contents) > MAX_INPUT_XYZ_BYTES:
+            raise ValueError("Stored structure is too large")
+        return _decode_xyz(contents)
+    except (UnicodeError, ValueError) as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load the stored molecule",
@@ -248,16 +225,16 @@ def create_calculation_job(
     user_sub = user.user_sub
     group_id = user.group_id
     source_structure_id = structure.structure_id if structure is not None else None
-    source_structure_location = (
-        structure.location if structure is not None else None
+    source_structure_content = (
+        structure.content if structure is not None else None
     )
 
-    # End the permission-check transaction before reading an upload or S3 object.
+    # End the permission-check transaction before reading an uploaded file.
     db.rollback()
 
     input_xyz = _load_input_xyz(
         source_file=source_file,
-        structure_location=source_structure_location,
+        structure_content=source_structure_content,
     )
     keyword_values = _read_keywords(keywords)
 

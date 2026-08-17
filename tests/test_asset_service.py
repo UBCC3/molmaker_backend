@@ -43,7 +43,6 @@ class TestSerializeStructure:
             group_id=group.group_id,
             name="Water",
             formula="H2O",
-            location="s3://test-bucket/structures/water.xyz",
             notes="stable molecule",
             uploaded_at=uploaded_at,
             is_public=True,
@@ -56,7 +55,6 @@ class TestSerializeStructure:
             "structure_id": str(structure_id),
             "name": "Water",
             "formula": "H2O",
-            "location": "s3://test-bucket/structures/water.xyz",
             "notes": "stable molecule",
             "uploaded_at": structure.uploaded_at.isoformat(),
             "group_id": str(group.group_id),
@@ -168,7 +166,6 @@ class TestSerializeJob:
         assert result["structures"] == [
             serialize_structure(structure, include_tags=False)
         ]
-        assert result["structures"][0]["location"] == structure.location
         assert {
             "slurm_id",
             "attempt_count",
@@ -178,20 +175,15 @@ class TestSerializeJob:
             "runtime",
         }.isdisjoint(result)
 
-    def test_serializes_linked_structure_location(
+    def test_serializes_linked_structure_as_metadata_only(
         self,
         user_factory,
         job_factory,
         structure_factory,
     ):
-        """
-        Job responses should retain the structure location used by the frontend.
-        """
+        """Job responses should not embed the structure's stored files."""
         user = user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(
-            user_sub=user.user_sub,
-            location="s3://private-bucket/structures/input.xyz",
-        )
+        structure = structure_factory(user_sub=user.user_sub)
         job = job_factory(user_sub=user.user_sub, structures=[structure])
 
         result = serialize_job(job)
@@ -199,7 +191,8 @@ class TestSerializeJob:
         assert result["structures"] == [
             serialize_structure(structure, include_tags=False)
         ]
-        assert result["structures"][0]["location"] == structure.location
+        assert "content" not in result["structures"][0]
+        assert "thumbnail" not in result["structures"][0]
 
     def test_serializes_none_optional_job_response_fields(
         self,

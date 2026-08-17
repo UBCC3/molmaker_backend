@@ -139,8 +139,8 @@ def get_job_by_id(
 
     Allows admins, direct owners, group admins for the job's group_id, and
     current group members when the job is public. Other group members do not
-    receive another user's user_sub. Linked structures retain their location
-    field, while internal orchestration fields are never returned.
+    receive another user's user_sub. Internal orchestration fields are never
+    returned.
 
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.

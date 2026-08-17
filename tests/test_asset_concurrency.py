@@ -3,17 +3,9 @@ from datetime import datetime, timezone
 from threading import Barrier
 import uuid
 
-import pytest
-
 from asset_service import set_asset_tags
-from conftest import TestingSessionLocal, engine
+from conftest import TestingSessionLocal
 from models import Job, Tags
-
-
-pytestmark = pytest.mark.skipif(
-    engine.dialect.name != "postgresql",
-    reason="requires PostgreSQL conflict handling",
-)
 
 
 def test_concurrent_jobs_can_share_a_new_tag(db, user_factory):

@@ -31,8 +31,6 @@ from datetime import datetime, timezone
 from typing import List
 from ase.io import read
 from pymatgen.core import Molecule
-from settings import get_settings
-from storage import create_s3_client
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 
@@ -125,31 +123,6 @@ def get_user_tags(
                 .filter(Tags.user_sub == user_id)
                 .all())
         return serialize_tag_names(tags)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/presigned/{structure_id}")
-def get_presigned_url_for_structure(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db),
-):
-    """
-    Generate a presigned URL when the authenticated user can read the structure.
-    """
-    structure = get_asset_or_404(db, Structure, structure_id)
-    db_user = get_user_or_404(db, get_user_sub(user))
-    require_asset_permission(db_user, structure, can_read_asset)
-    key = f"structures/{structure.id}.xyz"
-    try:
-        settings = get_settings()
-        s3 = create_s3_client()
-        url = s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": settings.s3_bucket_name, "Key": key},
-            ExpiresIn=300
-        )
-        return JSONResponse({"url": url})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -353,7 +326,6 @@ def create_and_upload_structure(
             group_id=db_user.group_id,
             name=name,
             formula=formula,
-            location=None,
             notes=notes,
             content=structure_content,
             thumbnail=thumbnail,

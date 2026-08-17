@@ -8,7 +8,6 @@ from sqlalchemy import (
     Index,
     Integer,
     Interval,
-    JSON,
     LargeBinary,
     String,
     Table,
@@ -160,9 +159,6 @@ class Job(Asset):
             postgresql_where=text(
                 "status IN ('submitting', 'submitted', 'running', 'finalising')"
             ),
-            sqlite_where=text(
-                "status IN ('submitting', 'submitted', 'running', 'finalising')"
-            ),
         ),
     )
 
@@ -233,10 +229,7 @@ class JobInput(Base):
         primary_key=True,
     )
     input_xyz = Column(Text, nullable=False)
-    keywords = Column(
-        JSON().with_variant(JSONB, "postgresql"),
-        nullable=True,
-    )
+    keywords = Column(JSONB, nullable=True)
 
     job = relationship("Job", back_populates="job_input")
 
@@ -251,19 +244,13 @@ class JobResult(Base):
         ForeignKey("jobs.job_id", ondelete="CASCADE"),
         primary_key=True,
     )
-    result = Column(
-        JSON().with_variant(JSONB, "postgresql"),
-        nullable=True,
-    )
-    error = Column(
-        JSON().with_variant(JSONB, "postgresql"),
-        nullable=True,
-    )
+    result = Column(JSONB, nullable=True)
+    error = Column(JSONB, nullable=True)
     artifacts = Column(
-        JSON().with_variant(JSONB, "postgresql"),
+        JSONB,
         nullable=False,
         default=dict,
-        server_default=text("'{}'"),
+        server_default=text("'{}'::jsonb"),
     )
 
     job = relationship("Job", back_populates="job_result")
@@ -293,15 +280,14 @@ class Structure(Asset):
     uploaded_at = synonym("created_at")
     name = Column(Text, nullable=False)
     formula = Column(Text, nullable=False)
-    location = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
-    content = deferred(Column(Text, nullable=True), group="structure_data")
+    content = deferred(Column(Text, nullable=False), group="structure_data")
     thumbnail = deferred(
-        Column(LargeBinary, nullable=True),
+        Column(LargeBinary, nullable=False),
         group="structure_data",
     )
     thumbnail_media_type = deferred(
-        Column(Text, nullable=True),
+        Column(Text, nullable=False),
         group="structure_data",
     )
 
@@ -399,9 +385,6 @@ class Request(Base):
             postgresql_where=text(
                 "status = 'pending' AND request_type = 'invite'"
             ),
-            sqlite_where=text(
-                "status = 'pending' AND request_type = 'invite'"
-            ),
         ),
         Index(
             "uq_requests_pending_join",
@@ -411,9 +394,6 @@ class Request(Base):
             postgresql_where=text(
                 "status = 'pending' AND request_type = 'join_request'"
             ),
-            sqlite_where=text(
-                "status = 'pending' AND request_type = 'join_request'"
-            ),
         ),
         Index(
             "uq_requests_pending_demember",
@@ -421,9 +401,6 @@ class Request(Base):
             "sender_sub",
             unique=True,
             postgresql_where=text(
-                "status = 'pending' AND request_type = 'demember_request'"
-            ),
-            sqlite_where=text(
                 "status = 'pending' AND request_type = 'demember_request'"
             ),
         ),
