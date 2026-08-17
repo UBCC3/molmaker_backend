@@ -132,9 +132,24 @@ class JobResultValidationError(ValueError):
     """A database-bound job result does not match the finished job."""
 
 
+def _published_job_status(job: Job) -> str | None:
+    """Return the externally visible terminal status once result data is saved."""
+
+    if job.status in TERMINAL_JOB_STATUSES:
+        return job.status
+    if (
+        job.status == JobStatus.finalising.value
+        and job.is_uploaded
+        and job.completed_at is not None
+        and job.terminal_status in TERMINAL_JOB_STATUSES
+    ):
+        return job.terminal_status
+    return None
+
+
 def require_job_result_ready(job: Job) -> None:
     if (
-        job.status not in TERMINAL_JOB_STATUSES
+        _published_job_status(job) is None
         or not job.is_uploaded
         or job.job_result is None
     ):
@@ -343,6 +358,9 @@ _JOB_RESPONSE_STATUS_BY_INTERNAL_STATUS = {
 
 
 def _job_response_status(job: Job) -> str:
+    published_status = _published_job_status(job)
+    if job.status == JobStatus.finalising.value and published_status is not None:
+        return published_status
     return _JOB_RESPONSE_STATUS_BY_INTERNAL_STATUS.get(job.status, job.status)
 
 

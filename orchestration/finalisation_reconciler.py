@@ -94,6 +94,7 @@ class FinalisationReconciler(BaseReconciler):
             self._record_job_failure(db, job, "Final job information is invalid")
             return
 
+        result_was_saved = False
         if job.job_result is None:
             archive_upload_url = self.generate_upload_url(str(job.job_id))
             try:
@@ -110,10 +111,16 @@ class FinalisationReconciler(BaseReconciler):
                     error=result.calculation_error,
                     artifacts=result.artifacts,
                 )
+                result_was_saved = True
             except (JobDispatchError, JobResultValidationError) as error:
                 self._record_job_failure(db, job, str(error))
                 return
-            # Keep the job private while making the result recoverable on retry.
+
+        if result_was_saved or not job.is_uploaded:
+            # Results are externally ready; finalising now means cleanup is pending.
+            job.is_uploaded = True
+            job.completed_at = job.completed_at or datetime.now(timezone.utc)
+            job.attempt_count = 0
             self._commit(db)
 
         try:
@@ -145,7 +152,7 @@ class FinalisationReconciler(BaseReconciler):
 
     def _record_job_failure(self, db: Session, job: Job, message: str) -> None:
         job.attempt_count += 1
-        if job.attempt_count >= self.settings.max_attempts:
+        if not job.is_uploaded and job.attempt_count >= self.settings.max_attempts:
             job.status = JobStatus.failed.value
             job.terminal_status = JobStatus.failed.value
             job.failure_reason = JobFailureReason.result_upload_failed.value
@@ -161,7 +168,7 @@ class FinalisationReconciler(BaseReconciler):
     ) -> None:
         job.status = terminal_status.value
         job.is_uploaded = True
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = job.completed_at or datetime.now(timezone.utc)
         job.attempt_count = 0
         if terminal_status != JobStatus.failed:
             job.failure_reason = None

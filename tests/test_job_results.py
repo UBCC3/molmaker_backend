@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -7,6 +8,31 @@ from enum_types import JobStatus
 
 
 class TestJobResultEndpoints:
+    @pytest.mark.parametrize(
+        "path_suffix",
+        ["result", "artifacts", "artifacts/trajectory"],
+    )
+    def test_saved_results_are_available_while_cleanup_is_pending(
+        self,
+        client,
+        user_factory,
+        job_factory,
+        job_result_factory,
+        path_suffix,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            status=JobStatus.finalising.value,
+            terminal_status=JobStatus.completed.value,
+            is_uploaded=True,
+            completed_at=datetime.now(timezone.utc),
+        )
+        job_result_factory(job=job, artifacts={"trajectory": "trajectory text"})
+
+        response = client.get(f"/jobs/{job.job_id}/{path_suffix}")
+
+        assert response.status_code == 200
+
     def test_returns_parsed_result_and_error(
         self,
         client,

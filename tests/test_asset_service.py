@@ -230,15 +230,24 @@ class TestSerializeJob:
         self,
         user_factory,
         job_factory,
+        job_result_factory,
     ):
         """
-        finalising is returned as running, and stored failure details are returned.
+        Finalising is running until saved results make its outcome public.
         """
         user = user_factory(user_sub="auth0|testuser")
         finalising_job = job_factory(
             user_sub=user.user_sub,
             status="finalising",
         )
+        cleanup_pending_job = job_factory(
+            user_sub=user.user_sub,
+            status="finalising",
+            terminal_status="completed",
+            is_uploaded=True,
+            completed_at=datetime.now(timezone.utc),
+        )
+        job_result_factory(job=cleanup_pending_job)
         failed_job = job_factory(
             user_sub=user.user_sub,
             status="failed",
@@ -247,11 +256,13 @@ class TestSerializeJob:
         )
 
         finalising_result = serialize_job(finalising_job)
+        cleanup_pending_result = serialize_job(cleanup_pending_job)
         failed_result = serialize_job(failed_job)
 
         assert finalising_result["status"] == "running"
         assert finalising_result["failure_reason"] is None
         assert finalising_result["failure_message"] is None
+        assert cleanup_pending_result["status"] == "completed"
         assert failed_result["status"] == "failed"
         assert failed_result["failure_reason"] == "timeout"
         assert (

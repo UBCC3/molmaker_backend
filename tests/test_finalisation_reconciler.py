@@ -304,6 +304,38 @@ def test_saved_result_retries_acknowledgement_without_reuploading(
     client.acknowledge_finalisation.assert_called_once_with(job.job_id)
 
 
+def test_saved_result_is_public_while_acknowledgement_retries(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
+    client.acknowledge_finalisation.side_effect = [
+        ClusterServiceError("cluster unavailable"),
+        None,
+    ]
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory)
+
+    with pytest.raises(ClusterServiceError):
+        reconciler.run_round()
+
+    cleanup_pending = refresh(db, job)
+    assert cleanup_pending.status == JobStatus.finalising.value
+    assert cleanup_pending.is_uploaded is True
+    assert cleanup_pending.completed_at is not None
+    assert cleanup_pending.job_result is not None
+    assert serialize_job(cleanup_pending)["status"] == JobStatus.completed.value
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert client.upload_artifacts.call_count == 1
+    assert client.acknowledge_finalisation.call_count == 2
+
+
 def test_finalisation_failure_at_the_attempt_limit_publishes_upload_failure(
     db,
     job_factory,
@@ -377,8 +409,16 @@ def test_shared_outage_stops_the_round_without_incrementing_jobs(
     with pytest.raises(error_type):
         reconciler.run_round()
 
-    assert refresh(db, first).attempt_count == 1
-    assert refresh(db, first).status == JobStatus.finalising.value
+    saved_first = refresh(db, first)
+    expected_attempt_count = 0 if failure_point == "acknowledgement" else 1
+    assert saved_first.attempt_count == expected_attempt_count
+    assert saved_first.status == JobStatus.finalising.value
+    assert saved_first.is_uploaded is (failure_point == "acknowledgement")
+    assert serialize_job(saved_first)["status"] == (
+        JobStatus.completed.value
+        if failure_point == "acknowledgement"
+        else JobStatus.running.value
+    )
     assert refresh(db, second).attempt_count == 2
     assert refresh(db, second).status == JobStatus.finalising.value
     assert generate.call_count == 1
