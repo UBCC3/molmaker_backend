@@ -21,7 +21,7 @@ calculation results.
 ## Requirements
 
 - Python 3.11
-- PostgreSQL 14
+- PostgreSQL 11.22 or newer; CI verifies the deployment target against 11.22
 - The environment values listed in `.env.example`
 - For production calculation processing, a compatible reviewed
   `Cluster-API-QC` dispatch deployment on Alliance
@@ -46,8 +46,10 @@ python -m venv venv
 
 ### 2. Install dependencies
 
-On macOS, install PostgreSQL first because `psycopg2` needs its `pg_config`
-command:
+PostgreSQL 11 has reached upstream end of life and is no longer available from
+Homebrew. The application remains compatible with the deployed PostgreSQL
+11.22 servers, while these macOS instructions use PostgreSQL 14 for an
+available local server and the `pg_config` command required by `psycopg2`:
 
 ```zsh
 brew install postgresql@14
@@ -219,7 +221,7 @@ python -m pytest -q
 ```
 
 Each run creates a uniquely named schema inside that database and drops it at
-the end. Pull requests run the full suite against PostgreSQL only.
+the end. Pull requests run the full suite against PostgreSQL 11.22.
 
 ## Code quality
 
