@@ -1,4 +1,6 @@
 from enum_types import (
+    JobFailureReason,
+    JobStatus,
     basis_sets,
     calculation_types,
     density_functional_theories,
@@ -6,6 +8,32 @@ from enum_types import (
     optimization_types,
     wave_functional_theories,
 )
+
+
+def test_job_status_values_match_the_orchestration_contract():
+    assert {status.value for status in JobStatus} == {
+        "submitting",
+        "submitted",
+        "running",
+        "finalising",
+        "completed",
+        "failed",
+        "cancelled",
+    }
+
+
+def test_job_failure_reason_values_are_separate_from_statuses():
+    assert {reason.value for reason in JobFailureReason} == {
+        "calculation_failed",
+        "out_of_memory",
+        "timeout",
+        "node_failure",
+        "submission_failed",
+        "status_check_failed",
+        "result_upload_failed",
+        "cluster_failed",
+        "unknown",
+    }
 
 
 class TestEnumsAPI:

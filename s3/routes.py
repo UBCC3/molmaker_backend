@@ -1,85 +1,80 @@
+from uuid import UUID
+
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    status,
 )
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from asset_service import get_asset_or_404, require_asset_permission
+from asset_service import (
+    get_asset_or_404,
+    is_job_result_ready,
+    require_asset_permission,
+)
 from auth import verify_token
 from dependencies import get_db
 from models import Job
 from permissions import can_read_asset
-from storage import construct_fetch_script, presign_zip_download_url
+from storage import (
+    StorageServiceError,
+    presign_zip_download_url,
+)
 from user_service import get_user_or_404
 from utils import get_user_sub
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 
-class JobFilesResponse(BaseModel):
-    job_id: str
-    calculation: str
-    status: str
-    urls: dict[str, str]
-class ZipDownloadResponse(BaseModel):
-    job_id: str
+
+class JobArchiveResponse(BaseModel):
+    job_id: UUID
     url: str
 
-# @router.get("/files/{job_id}", response_model=JobFilesResponse)
-# def fetch_job_files(
-#     job_id: str,
-#     db: Session = Depends(get_db),
-#     current_user=Depends(verify_token),
-# ):
-@router.get("/files/{job_id}/{calculation}/{status}", response_model=JobFilesResponse)
-def fetch_job_files(
+
+def _require_job_files_ready(job: Job) -> None:
+    if not is_job_result_ready(job):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job files are not ready",
+        )
+
+
+@router.get(
+    "/jobs/{job_id}/archive",
+    response_model=JobArchiveResponse,
+    responses={
+        status.HTTP_409_CONFLICT: {"description": "Job files are not ready."},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "File storage is temporarily unavailable."
+        },
+    },
+)
+def get_job_archive(
     job_id: str,
-    calculation: str,
-    status: str,
     db: Session = Depends(get_db),
     current_user=Depends(verify_token),
 ):
     """
-    Generate result/artifact download URLs when the authenticated user can read
-    the job. Allows admins, direct owners, group admins for the job's group_id,
-    and current group members when the job is public.
-    :param job_id: ID of the job whose files should be fetched.
-    :param calculation: Calculation type used to determine expected artifacts.
-    :param status: Job status; completed/true returns result artifacts, other
-        values return the error artifact.
+    Return a fresh archive download link for an accessible finished job.
+
+    :param job_id: ID of the job whose archive should be downloaded.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: Presigned file download URLs for the job.
+    :return: Archive download link for the job.
     """
     job = get_asset_or_404(db, Job, job_id)
     user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_read_asset)
+    _require_job_files_ready(job)
 
     try:
-        success: bool = status.lower() in {"completed", "true"}
-        urls = construct_fetch_script(job_id, calculation, success)
-        return JobFilesResponse(job_id=job_id, calculation=calculation, status=status, urls=urls)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch files from S3: {e}")
-    
-@router.get("/download/archive/{job_id}", response_model=ZipDownloadResponse)
-def download_job_zip(job_id: str, db: Session = Depends(get_db), current_user = Depends(verify_token)):
-    """
-    Generate an archive download URL when the authenticated user can read the job.
-    Allows admins, direct owners, group admins for the job's group_id, and
-    current group members when the job is public.
-    :param job_id: ID of the job archive to download.
-    :param db: Database session dependency.
-    :param current_user: Current user dependency, verified via token.
-    :return: Presigned archive download URL.
-    """
-    job = get_asset_or_404(db, Job, job_id)
-    user = get_user_or_404(db, get_user_sub(current_user))
-    require_asset_permission(user, job, can_read_asset)
+        url = presign_zip_download_url(str(job.job_id))
+    except StorageServiceError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Job files are temporarily unavailable",
+        ) from error
 
-    try:
-        zip_url: str = presign_zip_download_url(job_id)
-        return ZipDownloadResponse(job_id=job_id, url=zip_url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch files from S3: {e}")
+    return JobArchiveResponse(job_id=job.job_id, url=url)

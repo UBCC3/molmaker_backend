@@ -1,13 +1,10 @@
 import logging
-import shutil
 import uuid
-from pathlib import Path
 from typing import Callable, Optional
 
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +29,29 @@ DEFAULT_REFRESH_ERROR_DETAIL = (
 )
 
 
+def read_bounded_upload(
+    upload: UploadFile,
+    maximum_bytes: int,
+    field_name: str,
+) -> bytes:
+    """Read at most one bounded upload into memory, starting at byte zero."""
+
+    try:
+        upload.file.seek(0)
+        contents = upload.file.read(maximum_bytes + 1)
+    except OSError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read {field_name}",
+        ) from error
+    if len(contents) > maximum_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} is too large",
+        )
+    return contents
+
+
 def _rollback_and_cleanup(
     db: Session,
     on_error: Optional[Callable[[], None]],
@@ -53,8 +73,10 @@ def _rollback_and_cleanup(
 def parse_uuid_or_404(value: str, detail: str) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=detail
+        ) from error
 
 
 def commit_or_rollback(
@@ -123,8 +145,3 @@ def get_user_sub(current_user) -> str:
         if user_sub:
             return user_sub
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-
-def clean_up_upload_cache(job_dir: str):
-    path = Path(job_dir)
-    if path.exists():
-        shutil.rmtree(path)

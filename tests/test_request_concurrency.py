@@ -2,17 +2,12 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from conftest import TestingSessionLocal
 from fastapi import HTTPException
 
 import request_service
-from conftest import TestingSessionLocal, engine
 from enum_types import RequestStatus, RequestType
 from models import Group, Request, User
-
-pytestmark = pytest.mark.skipif(
-    engine.dialect.name != "postgresql",
-    reason="requires PostgreSQL row locks and partial unique indexes",
-)
 
 
 def _run_twice(worker):

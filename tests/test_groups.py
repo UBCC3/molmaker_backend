@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
 import uuid
+from datetime import datetime, timezone
 
 import pytest
-
 from conftest import make_auth0_payload
+
 from enum_types import RequestType
-from models import Group, Job, Request, Structure, User
+from models import Group, User
 
 
 def _users_by_sub(response_json):
@@ -32,7 +32,9 @@ class TestGroupsAPI:
         """
         group = group_factory(name="Current Group")
         other_group = group_factory(name="Other Group")
-        current_user = user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        current_user = user_factory(
+            group=group, user_sub="auth0|testuser", role="group_admin"
+        )
         group_member = user_factory(group=group, user_sub="auth0|member", role="member")
         user_factory(group=other_group, user_sub="auth0|other", role="member")
 
@@ -127,7 +129,9 @@ class TestGroupsAPI:
         DELETE /group/users/{user_sub} should let group admins remove normal members.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
         target = user_factory(
             group=group,
@@ -160,7 +164,9 @@ class TestGroupsAPI:
         Direct de-membering should cancel stale pending de-member requests.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(group=group, user_sub="auth0|target", role="member")
         request = request_factory(
             sender=target,
@@ -192,7 +198,9 @@ class TestGroupsAPI:
         De-membering should leave co-owned jobs and structures co-owned.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(group=group, user_sub="auth0|target", role="member")
         job = job_factory(user_sub=target.user_sub, group_id=group.group_id)
         structure = structure_factory(user_sub=target.user_sub, group_id=group.group_id)
@@ -217,7 +225,9 @@ class TestGroupsAPI:
         A group admin can remove themself; groups may be left empty.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.delete(f"/group/users/{group_admin.user_sub}")
@@ -236,7 +246,9 @@ class TestGroupsAPI:
         Group admins should not be able to remove another group admin.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(group=group, user_sub="auth0|target", role="group_admin")
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
@@ -305,7 +317,9 @@ class TestGroupsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        target = user_factory(group=target_group, user_sub="auth0|target", role="member")
+        target = user_factory(
+            group=target_group, user_sub="auth0|target", role="member"
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.delete(f"/group/users/{target.user_sub}")
@@ -340,7 +354,9 @@ class TestGroupsAPI:
         DELETE /group/users/{user_sub} should return 404 for missing users.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.delete("/group/users/auth0|missing")
@@ -442,7 +458,12 @@ class TestGroupsAPI:
         assert all("user_sub" in job for job in result)
 
     def test_group_member_only_sees_public_group_jobs(
-        self, client, group_factory, user_factory, job_factory
+        self,
+        client,
+        group_factory,
+        user_factory,
+        tag_factory,
+        job_factory,
     ):
         """
         Normal group members should only see public group jobs.
@@ -460,12 +481,17 @@ class TestGroupsAPI:
             role="member",
             role_or_group_updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         )
+        group_member_tag = tag_factory(
+            user_sub=group_member.user_sub,
+            name="shared-result",
+        )
         public_job = job_factory(
             user_sub=group_member.user_sub,
             group_id=group.group_id,
             job_name="public",
             is_public=True,
             submitted_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            tags=[group_member_tag],
         )
         job_factory(
             user_sub=current_user.user_sub,
@@ -482,7 +508,8 @@ class TestGroupsAPI:
         assert [job["job_id"] for job in result] == [str(public_job.job_id)]
         assert result[0]["job_name"] == "public"
         assert result[0]["group_id"] == str(group.group_id)
-        assert "user_sub" not in result[0]
+        assert result[0]["user_sub"] is None
+        assert result[0]["tags"] == ["shared-result"]
 
     def test_group_member_gets_empty_jobs_list_when_no_group_jobs_are_public(
         self, client, group_factory, user_factory, job_factory
@@ -492,7 +519,9 @@ class TestGroupsAPI:
         group job is hidden by visibility filtering.
         """
         group = group_factory()
-        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        current_user = user_factory(
+            group=group, user_sub="auth0|testuser", role="member"
+        )
         group_member = user_factory(group=group, user_sub="auth0|member", role="member")
         job_factory(
             user_sub=current_user.user_sub,
@@ -537,9 +566,7 @@ class TestGroupsAPI:
         response = client.get("/group/jobs?limit=1&offset=1")
 
         assert response.status_code == 200
-        assert [job["job_id"] for job in response.json()] == [
-            str(expected_job.job_id)
-        ]
+        assert [job["job_id"] for job in response.json()] == [str(expected_job.job_id)]
 
     @pytest.mark.parametrize(
         ("path", "factory_name", "expected_query_count"),
@@ -587,10 +614,12 @@ class TestGroupsAPI:
         """
         group = group_factory(name="Current Group")
         other_group = group_factory(name="Other Group")
-        group_admin = user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
+        user_factory(group=group, user_sub="auth0|testuser", role="group_admin")
         owner = user_factory(group=group, user_sub="auth0|member", role="member")
         former_member = user_factory(group=None, user_sub="auth0|former", role="member")
-        other_user = user_factory(group=other_group, user_sub="auth0|other", role="member")
+        other_user = user_factory(
+            group=other_group, user_sub="auth0|other", role="member"
+        )
         member_structure = structure_factory(
             user_sub=owner.user_sub,
             group_id=group.group_id,
@@ -646,7 +675,9 @@ class TestGroupsAPI:
         user_sub for structures owned by other members.
         """
         group = group_factory()
-        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        current_user = user_factory(
+            group=group, user_sub="auth0|testuser", role="member"
+        )
         group_member = user_factory(group=group, user_sub="auth0|member", role="member")
         public_structure = structure_factory(
             user_sub=group_member.user_sub,
@@ -682,7 +713,9 @@ class TestGroupsAPI:
         group structure is hidden by visibility filtering.
         """
         group = group_factory()
-        current_user = user_factory(group=group, user_sub="auth0|testuser", role="member")
+        current_user = user_factory(
+            group=group, user_sub="auth0|testuser", role="member"
+        )
         group_member = user_factory(group=group, user_sub="auth0|member", role="member")
         structure_factory(
             user_sub=current_user.user_sub,
@@ -1001,7 +1034,9 @@ class TestGroupsAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "user_sub must be omitted for group ownership"
+        assert (
+            response.json()["detail"] == "user_sub must be omitted for group ownership"
+        )
 
     @pytest.mark.parametrize("asset_kind", ["job", "structure"])
     def test_user_ownership_rejects_group_id(
@@ -1037,7 +1072,9 @@ class TestGroupsAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "group_id must be omitted for user ownership"
+        assert (
+            response.json()["detail"] == "group_id must be omitted for user ownership"
+        )
 
     @pytest.mark.parametrize("asset_kind", ["job", "structure"])
     def test_group_admin_cannot_replace_co_owner_directly(
@@ -1074,7 +1111,10 @@ class TestGroupsAPI:
         )
 
         assert response.status_code == 403
-        assert response.json()["detail"] == "Group admins cannot replace a co-owner directly"
+        assert (
+            response.json()["detail"]
+            == "Group admins cannot replace a co-owner directly"
+        )
 
     @pytest.mark.parametrize("asset_kind", ["job", "structure"])
     def test_co_owned_ownership_requires_group_id(
@@ -1109,7 +1149,9 @@ class TestGroupsAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "group_id is required for co_owned ownership"
+        assert (
+            response.json()["detail"] == "group_id is required for co_owned ownership"
+        )
 
     @pytest.mark.parametrize("asset_kind", ["job", "structure"])
     def test_normal_member_cannot_transfer_asset_ownership(
@@ -1609,7 +1651,9 @@ class TestGroupsAPI:
         group = group_factory(name="Original")
         user_factory(user_sub="auth0|testuser", role="admin")
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 200
         assert response.json() == {"group_id": str(group.group_id), "name": "Updated"}
@@ -1623,10 +1667,14 @@ class TestGroupsAPI:
         Group admins should be able to update their own group.
         """
         group = group_factory(name="Original")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 200
         assert response.json() == {"group_id": str(group.group_id), "name": "Updated"}
@@ -1663,7 +1711,9 @@ class TestGroupsAPI:
         group = group_factory()
         user_factory(group=group, user_sub="auth0|testuser", role="member")
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
@@ -1682,7 +1732,9 @@ class TestGroupsAPI:
         )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
@@ -1693,12 +1745,16 @@ class TestGroupsAPI:
         """
         user_factory(user_sub="auth0|testuser", role="admin")
 
-        response = client.patch(f"/group/{uuid.uuid4()}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{uuid.uuid4()}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Group not found"
 
-    def test_update_group_rejects_duplicate_name(self, client, group_factory, user_factory):
+    def test_update_group_rejects_duplicate_name(
+        self, client, group_factory, user_factory
+    ):
         """
         PATCH /group/{group_id} should reject duplicate group names.
         """
@@ -1706,7 +1762,9 @@ class TestGroupsAPI:
         group_factory(name="Existing")
         user_factory(user_sub="auth0|testuser", role="admin")
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Existing"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Existing"}
+        )
 
         assert response.status_code == 400
         assert response.json()["detail"] == "Group name already exists"
@@ -1737,7 +1795,9 @@ class TestGroupsAPI:
 
         monkeypatch.setattr(db, "commit", fail_commit)
 
-        response = client.patch(f"/group/{group.group_id}", data={"group_name": "Updated"})
+        response = client.patch(
+            f"/group/{group.group_id}", data={"group_name": "Updated"}
+        )
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Could not save changes"
@@ -1777,7 +1837,14 @@ class TestGroupsAPI:
         assert request.group_name_snapshot == "Renamed group"
 
     def test_admin_can_delete_group_and_unassign_users(
-        self, client, db, group_factory, user_factory, job_factory, structure_factory, request_factory
+        self,
+        client,
+        db,
+        group_factory,
+        user_factory,
+        job_factory,
+        structure_factory,
+        request_factory,
     ):
         """
         DELETE /group/{group_id} should soft-delete group-only assets, convert
@@ -1785,14 +1852,20 @@ class TestGroupsAPI:
         """
         group = group_factory(name="Delete Me")
         admin = user_factory(group=group, user_sub="auth0|testuser", role="admin")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         member = user_factory(group=group, user_sub="auth0|member", role="member")
         previous_admin_update = admin.role_or_group_updated_at
         previous_group_admin_update = group_admin.role_or_group_updated_at
         previous_member_update = member.role_or_group_updated_at
         co_owned_job = job_factory(user_sub=member.user_sub, group_id=group.group_id)
-        co_owned_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
-        linked_structure = structure_factory(user_sub=member.user_sub, group_id=group.group_id)
+        co_owned_structure = structure_factory(
+            user_sub=member.user_sub, group_id=group.group_id
+        )
+        linked_structure = structure_factory(
+            user_sub=member.user_sub, group_id=group.group_id
+        )
         group_only_job = job_factory(
             user_sub=None,
             group_id=group.group_id,
@@ -1846,7 +1919,9 @@ class TestGroupsAPI:
         assert linked_structure.user_sub == member.user_sub
         assert linked_structure.group_id is None
 
-    def test_delete_group_requires_admin_user(self, client, group_factory, user_factory):
+    def test_delete_group_requires_admin_user(
+        self, client, group_factory, user_factory
+    ):
         """
         DELETE /group/{group_id} should be admin-only.
         """
@@ -1888,7 +1963,9 @@ class TestGroupsAPI:
         """
         group = group_factory(name="Keep Me")
         user_factory(user_sub="auth0|testuser", role="admin")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         member = user_factory(group=group, user_sub="auth0|member", role="member")
 
         def fail_commit():

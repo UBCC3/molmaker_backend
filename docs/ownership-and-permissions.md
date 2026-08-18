@@ -62,12 +62,17 @@ These rules apply to every backend path that creates a job or structure.
 | Read a private co-owned asset | Yes | Yes | Yes | No | No |
 | Read a public group-owned or co-owned asset | Yes | Yes, when co-owned | Yes | Yes | No |
 | Edit or delete an asset | Yes | Yes | Yes | No | No |
+| Cancel an active job | Yes | Yes | Yes | No | No |
 | Change visibility of a user-owned asset | Yes | Yes | Not applicable | No | No |
 | Change visibility of a group-owned or co-owned asset | Yes | No | Yes | No | No |
 | Transfer ownership | Yes | No | Yes, with the restrictions below | No | No |
 
 The categories in this table can overlap. For example, a regular group member
 who is also the direct user owner follows the **Direct user owner** column.
+
+Job cancellation uses the same write permission as metadata edits. It records a
+cancellation request for background processing; it is separate from deleting
+the job from API views.
 
 ## Personal and Group Lists
 
@@ -166,6 +171,11 @@ Deleting an owner keeps the remaining owner's data usable:
 Soft deletion sets `is_deleted` instead of immediately removing the asset row.
 Normal asset lookups and lists do not return soft-deleted assets.
 
+Soft-deleting an active job does not cancel its calculation. Submission,
+status, and finalisation queries intentionally continue to include soft-deleted
+active jobs so they can finish and clean up. Cancel the job before deleting it
+when the calculation itself should stop.
+
 Request history cleanup after user or group deletion is described in
 [Membership Requests](membership-requests.md).
 
@@ -173,13 +183,16 @@ Request history cleanup after user or group deletion is described in
 
 Permission to read a job also controls access to its related data:
 
-- S3 result files
-- Archive downloads
-- Cluster result output
-- Cluster error output
+- fresh links for individually available S3 artifacts from
+  `GET /storage/jobs/{job_id}`
+- the S3 archive link from `GET /storage/jobs/{job_id}/archive`
 
 An endpoint that exposes new job files or results must use the same job read
 permission. Checking only that the caller is authenticated is not enough.
+
+Both endpoints require a publicly terminal job whose files finished uploading.
+They return `409` while files are unavailable. Soft-deleted jobs are hidden and
+therefore cannot be used to fetch artifact links through the API.
 
 ## User and Group Management
 

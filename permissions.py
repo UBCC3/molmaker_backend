@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from enum_types import RequestType
 from models import Asset, Group, Request, User
 
-
 # Shared predicates
+
 
 def _same_id(left: object, right: object) -> bool:
     return left is not None and right is not None and str(left) == str(right)
@@ -23,6 +23,7 @@ def is_admin_or_group_admin(user: User) -> bool:
 
 
 # Admin/user permissions
+
 
 def has_admin_permission(user: User) -> bool:
     return is_admin(user)
@@ -57,14 +58,14 @@ def can_demember_group_user(actor: User, target: User) -> bool:
     if not _same_id(actor.group_id, target.group_id):
         return False
 
-    target_is_another_group_admin = (
-        is_group_admin(target)
-        and not _same_id(actor.user_sub, target.user_sub)
+    target_is_another_group_admin = is_group_admin(target) and not _same_id(
+        actor.user_sub, target.user_sub
     )
     return not target_is_another_group_admin
 
 
 # Group permissions
+
 
 def can_update_group(user: User, group: Group) -> bool:
     return is_admin(user) or is_group_admin_for_group(user, group.group_id)
@@ -87,6 +88,7 @@ def can_access_user_requests(requesting_user_sub: str, target_user_sub: str) -> 
 
 
 # Request permissions
+
 
 def can_create_invite_request(user: User) -> bool:
     return is_admin_or_group_admin(user) and user.group_id is not None
@@ -125,6 +127,7 @@ def can_view_request_user_metadata(user: User, request: Request) -> bool:
 
 # Asset predicates
 
+
 def is_group_admin_for_group(user: User, group_id: object) -> bool:
     return is_group_admin(user) and _same_id(user.group_id, group_id)
 
@@ -142,6 +145,7 @@ def is_group_asset(asset: Asset) -> bool:
 
 
 # Asset permissions
+
 
 def can_read_asset(user: User, asset: Asset) -> bool:
     if is_admin(user) or is_user_owner(user, asset):

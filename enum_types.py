@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class CalculationType(str, Enum):
     energy = "energy"
     geometry = "optimization"
@@ -8,6 +9,28 @@ class CalculationType(str, Enum):
     standard = "standard"
     transition = "transition"
     irc = "irc"
+
+
+class JobStatus(str, Enum):
+    submitting = "submitting"
+    submitted = "submitted"
+    running = "running"
+    finalising = "finalising"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class JobFailureReason(str, Enum):
+    calculation_failed = "calculation_failed"
+    out_of_memory = "out_of_memory"
+    timeout = "timeout"
+    node_failure = "node_failure"
+    submission_failed = "submission_failed"
+    status_check_failed = "status_check_failed"
+    result_upload_failed = "result_upload_failed"
+    cluster_failed = "cluster_failed"
+    unknown = "unknown"
 
 
 class AssetOwnership(str, Enum):
@@ -31,61 +54,64 @@ class RequestStatus(str, Enum):
 
 
 calculation_types = {
-    'Molecular Energy': 'energy',
-	'Geometric Optimization': 'optimization',
-	'Vibrational Frequency': 'frequency',
-	'Molecular Orbitals': 'orbitals',
-    'Standard Analysis': 'standard',
-    'Transition State Optimization': 'transition',
-    'Intrinsic Reaction Coordinate': 'irc',
+    "Molecular Energy": "energy",
+    "Geometric Optimization": "optimization",
+    "Vibrational Frequency": "frequency",
+    "Molecular Orbitals": "orbitals",
+    "Standard Analysis": "standard",
+    "Transition State Optimization": "transition",
+    "Intrinsic Reaction Coordinate": "irc",
 }
 
 wave_functional_theories = {
-    'Hartree-Fock': 'scf',
-	'MP2': 'mp2',
-	'MP4': 'mp4',
-	'CCSD': 'ccsd',
-	'CCSD(T)': r'ccsd\(t\)'
+    "Hartree-Fock": "scf",
+    "MP2": "mp2",
+    "MP4": "mp4",
+    "CCSD": "ccsd",
+    "CCSD(T)": r"ccsd\(t\)",
 }
 
 density_functional_theories = [
-    'BLYP',
-	'B3LYP',
-	'B3LYP-D',
-	'B97-D',
-	'BP86',
-	'M05',
-	'M05-2X',
-	'PBE',
-	'PBE-D',
+    "BLYP",
+    "B3LYP",
+    "B3LYP-D",
+    "B97-D",
+    "BP86",
+    "M05",
+    "M05-2X",
+    "PBE",
+    "PBE-D",
 ]
 
 basis_sets = {
-    'STO-3G': 'sto-3g',
-    '6-31G': '6-31g',
-    '6-31G(d)': r'6-31G\(d\)',
-    '6-311G(2d,p)': r'6-311G\(2d,p\)',
-    'cc-pVDZ': 'cc-pvdz',
-    'cc-pVTZ': 'cc-pvtz',
-    'cc-pCVQZ': 'cc-pcvqz',
-    'cc-pCVTZ': 'cc-pcvtz',
-    'cc-pVQZ': 'cc-pvqz',
-    'jun-cc-pVDZ': 'jun-cc-pvdz',
-    'aug-cc-pVDZ': 'aug-cc-pvdz',
-    'aug-cc-pVTZ': 'aug-cc-pvtz',
-    'aug-cc-pVQZ': 'aug-cc-pvqz',
+    "STO-3G": "sto-3g",
+    "6-31G": "6-31g",
+    "6-31G(d)": r"6-31G\(d\)",
+    "6-311G(2d,p)": r"6-311G\(2d,p\)",
+    "cc-pVDZ": "cc-pvdz",
+    "cc-pVTZ": "cc-pvtz",
+    "cc-pCVQZ": "cc-pcvqz",
+    "cc-pCVTZ": "cc-pcvtz",
+    "cc-pVQZ": "cc-pvqz",
+    "jun-cc-pVDZ": "jun-cc-pvdz",
+    "aug-cc-pVDZ": "aug-cc-pvdz",
+    "aug-cc-pVTZ": "aug-cc-pvtz",
+    "aug-cc-pVQZ": "aug-cc-pvqz",
 }
 
+# Number of unpaired electrons the user selects, mapped to the spin
+# multiplicity the calculation endpoints expect. multiplicity = unpaired + 1.
+# The submit forms ask for the unpaired count rather than the spectroscopic
+# name, so the keys are what a client can render directly. Keep the range in
+# step with the multiplicity validators in calculation/routes.py.
 multiplicities = {
-	'Singlet': 1,
-	'Doublet': 2,
-	'Triplet': 3,
-	'Quartet': 4,
-	'Quintet': 5,
-	'Sextet': 6,
+    "0": 1,  # singlet
+    "1": 2,  # doublet
+    "2": 3,  # triplet
+    "3": 4,  # quartet
 }
 
 optimization_types = {
-    'Ground State': 'ground',
-    'Transition State': 'ts',
+    "Ground State": "ground",
+    "Transition State": "ts",
 }

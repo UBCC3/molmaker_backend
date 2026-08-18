@@ -1,11 +1,10 @@
 import logging
 
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from utils import (
-    clean_up_upload_cache,
     commit_or_rollback,
     get_user_sub,
 )
@@ -72,7 +71,9 @@ class TestCommitOrRollback:
 
     def test_rolls_back_and_maps_constraint_error(self, mocker, caplog):
         db = mocker.Mock()
-        db.commit.side_effect = IntegrityError("statement", {}, RuntimeError("duplicate"))
+        db.commit.side_effect = IntegrityError(
+            "statement", {}, RuntimeError("duplicate")
+        )
 
         with caplog.at_level(logging.ERROR, logger="utils"):
             with pytest.raises(HTTPException) as error:
@@ -189,11 +190,16 @@ class TestGetUserSub:
         When payload is not a dict, it should raise an error.
         """
         payload = [
-            "sub", "auth0|abc456efg",
-            "iss", "https://your-tenant.auth0.com/",
-            "aud", "https://your-api.com",
-            "iat", 1716230400,
-            "exp", 1716234000,
+            "sub",
+            "auth0|abc456efg",
+            "iss",
+            "https://your-tenant.auth0.com/",
+            "aud",
+            "https://your-api.com",
+            "iat",
+            1716230400,
+            "exp",
+            1716234000,
         ]
 
         with pytest.raises(HTTPException) as exc_info:
@@ -236,28 +242,3 @@ class TestGetUserSub:
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Unauthorized"
-
-
-class TestCleanUpUploadCache:
-    def test_removes_existing_directory(self, tmp_path):
-        """
-        clean_up_upload_cache should remove an existing job upload directory.
-        """
-        job_dir = tmp_path / "job-cache"
-        nested_dir = job_dir / "nested"
-        nested_dir.mkdir(parents=True)
-        (nested_dir / "input.xyz").write_text("1\nH\n", encoding="utf-8")
-
-        clean_up_upload_cache(str(job_dir))
-
-        assert not job_dir.exists()
-
-    def test_missing_directory_does_not_fail(self, tmp_path):
-        """
-        clean_up_upload_cache should be safe to call for paths that do not exist.
-        """
-        missing_dir = tmp_path / "missing-job-cache"
-
-        clean_up_upload_cache(str(missing_dir))
-
-        assert not missing_dir.exists()

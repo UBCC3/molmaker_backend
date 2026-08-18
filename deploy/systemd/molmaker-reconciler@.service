@@ -1,0 +1,19 @@
+[Unit]
+Description=Molmaker %i job reconciler
+After=network-online.target molmaker.service
+Wants=network-online.target
+PartOf=molmaker-reconcilers.target
+
+[Service]
+Type=simple
+User=backend
+Group=backend
+WorkingDirectory=/home/backend/molmaker_backend
+EnvironmentFile=/home/backend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/backend/env/bin/python -m orchestration.%i_reconciler
+Restart=on-failure
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=molmaker-%i-reconciler

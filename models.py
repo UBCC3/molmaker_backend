@@ -1,4 +1,8 @@
 # models.py
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import ClassVar
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -8,70 +12,79 @@ from sqlalchemy import (
     Index,
     Integer,
     Interval,
+    LargeBinary,
     String,
     Table,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import declared_attr, relationship, synonym
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import (
+    declared_attr,
+    deferred,
+    relationship,
+    synonym,
+    validates,
+)
 
 from database import Base
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import ClassVar
 
 jobs_structures = Table(
-    'jobs_structures',
+    "jobs_structures",
     Base.metadata,
     Column(
-        'job_id',
+        "job_id",
         UUID(as_uuid=True),
-        ForeignKey('jobs.job_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'structure_id',
+        "structure_id",
         UUID(as_uuid=True),
-        ForeignKey('structures.structure_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("structures.structure_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
 
 structures_tags = Table(
-    'structures_tags',
+    "structures_tags",
     Base.metadata,
     Column(
-        'structure_id',
+        "structure_id",
         UUID(as_uuid=True),
-        ForeignKey('structures.structure_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("structures.structure_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'tag_id',
+        "tag_id",
         UUID(as_uuid=True),
-        ForeignKey('tags.tag_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("tags.tag_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
 
 jobs_tags = Table(
-    'jobs_tags',
+    "jobs_tags",
     Base.metadata,
     Column(
-        'job_id',
+        "job_id",
         UUID(as_uuid=True),
-        ForeignKey('jobs.job_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'tag_id',
+        "tag_id",
         UUID(as_uuid=True),
-        ForeignKey('tags.tag_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("tags.tag_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
+
+
+def normalize_tag_name(name: str) -> str:
+    """Return the canonical, case-insensitive form stored for a tag name."""
+    return name.strip().casefold()
 
 
 class Asset(Base):
@@ -90,8 +103,8 @@ class Asset(Base):
             default=uuid.uuid4,
         )
 
-    user_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    user_sub = Column(String, ForeignKey("users.user_sub"), nullable=True)
+    group_id = Column(UUID(as_uuid=True), ForeignKey("groups.group_id"), nullable=True)
     is_deleted = Column(Boolean, nullable=False)
     is_public = Column(Boolean, nullable=False, default=False)
 
@@ -137,8 +150,22 @@ class Job(Asset):
             "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
             name="ck_jobs_owner_present",
         ),
-        Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
-        Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
+        UniqueConstraint("slurm_id", name="uq_jobs_slurm_id"),
+        Index(
+            "idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"
+        ),
+        Index(
+            "idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"
+        ),
+        Index(
+            "idx_jobs_orchestration_active",
+            "status",
+            "submitted_at",
+            "job_id",
+            postgresql_where=text(
+                "status IN ('submitting', 'submitted', 'running', 'finalising')"
+            ),
+        ),
     )
 
     job_id = synonym("id")
@@ -156,13 +183,84 @@ class Job(Asset):
     slurm_id = Column(String, nullable=True)
     runtime = Column(Interval, nullable=True)
     is_uploaded = Column(Boolean, nullable=False)
+    attempt_count = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    terminal_status = Column(String, nullable=True)
+    cancel_requested = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    failure_reason = Column(String, nullable=True)
+    failure_message = Column(Text, nullable=True)
+    optimization_type = Column(String, nullable=True)
+
+    job_input = relationship(
+        "JobInput",
+        back_populates="job",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    job_result = relationship(
+        "JobResult",
+        back_populates="job",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     structures = relationship(
-        'Structure',
+        "Structure",
         secondary=jobs_structures,
-        back_populates='jobs',
-        cascade="all, delete"
+        back_populates="jobs",
+        cascade="all, delete",
     )
+
+
+class JobInput(Base):
+    """Immutable calculation inputs retained with one job."""
+
+    __tablename__ = "job_inputs"
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    input_xyz = Column(Text, nullable=False)
+    keywords = Column(JSONB, nullable=True)
+
+    job = relationship("Job", back_populates="job_input")
+
+
+class JobResult(Base):
+    """Calculation result and frontend-facing artifacts retained for one job."""
+
+    __tablename__ = "job_results"
+
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    result = Column(JSONB, nullable=True)
+    error = Column(JSONB, nullable=True)
+    artifacts = Column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    job = relationship("Job", back_populates="job_result")
+
 
 class Structure(Asset):
     __tablename__ = "structures"
@@ -180,22 +278,37 @@ class Structure(Asset):
             "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
             name="ck_structures_owner_present",
         ),
-        Index("idx_structures_user_active_uploaded", "user_sub", "is_deleted", "uploaded_at"),
-        Index("idx_structures_group_active_uploaded", "group_id", "is_deleted", "uploaded_at"),
+        Index(
+            "idx_structures_user_active_uploaded",
+            "user_sub",
+            "is_deleted",
+            "uploaded_at",
+        ),
+        Index(
+            "idx_structures_group_active_uploaded",
+            "group_id",
+            "is_deleted",
+            "uploaded_at",
+        ),
     )
 
     structure_id = synonym("id")
     uploaded_at = synonym("created_at")
     name = Column(Text, nullable=False)
     formula = Column(Text, nullable=False)
-    location = Column(Text, nullable=False)
     notes = Column(Text, nullable=True)
-
-    jobs = relationship(
-        'Job',
-        secondary=jobs_structures,
-        back_populates='structures'
+    content = deferred(Column(Text, nullable=False), group="structure_data")
+    thumbnail = deferred(
+        Column(LargeBinary, nullable=False),
+        group="structure_data",
     )
+    thumbnail_media_type = deferred(
+        Column(Text, nullable=False),
+        group="structure_data",
+    )
+
+    jobs = relationship("Job", secondary=jobs_structures, back_populates="structures")
+
 
 class Tags(Base):
     __tablename__ = "tags"
@@ -207,17 +320,19 @@ class Tags(Base):
     user_sub = Column(String, nullable=False)
     name = Column(String, nullable=False)
 
-    jobs = relationship(
-        'Job',
-        secondary=jobs_tags,
-        back_populates='tags'
-    )
+    @validates("name")
+    def validate_name(self, _key, value):
+        normalized_name = normalize_tag_name(value)
+        if not normalized_name:
+            raise ValueError("Tag name must not be blank")
+        return normalized_name
+
+    jobs = relationship("Job", secondary=jobs_tags, back_populates="tags")
 
     structures = relationship(
-        'Structure',
-        secondary=structures_tags,
-        back_populates='tags'
+        "Structure", secondary=structures_tags, back_populates="tags"
     )
+
 
 class Group(Base):
     __tablename__ = "groups"
@@ -231,16 +346,17 @@ class Group(Base):
     structures = relationship("Structure", back_populates="group")
     requests = relationship("Request", back_populates="group")
 
+
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (
-        Index("idx_users_group_role", "group_id", "role"),
-    )
+    __table_args__ = (Index("idx_users_group_role", "group_id", "role"),)
 
     user_sub = Column(String, primary_key=True)  # From Auth0
     email = Column(String, nullable=False, unique=True)
-    role = Column(String, nullable=False, default='member')  # 'admin', 'group_admin', or 'member'
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    role = Column(
+        String, nullable=False, default="member"
+    )  # 'admin', 'group_admin', or 'member'
+    group_id = Column(UUID(as_uuid=True), ForeignKey("groups.group_id"), nullable=True)
     role_or_group_updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -262,6 +378,7 @@ class User(Base):
         back_populates="receiver",
     )
 
+
 class Request(Base):
     __tablename__ = "requests"
     __table_args__ = (
@@ -275,12 +392,7 @@ class Request(Base):
             "group_id",
             "receiver_sub",
             unique=True,
-            postgresql_where=text(
-                "status = 'pending' AND request_type = 'invite'"
-            ),
-            sqlite_where=text(
-                "status = 'pending' AND request_type = 'invite'"
-            ),
+            postgresql_where=text("status = 'pending' AND request_type = 'invite'"),
         ),
         Index(
             "uq_requests_pending_join",
@@ -288,9 +400,6 @@ class Request(Base):
             "sender_sub",
             unique=True,
             postgresql_where=text(
-                "status = 'pending' AND request_type = 'join_request'"
-            ),
-            sqlite_where=text(
                 "status = 'pending' AND request_type = 'join_request'"
             ),
         ),
@@ -302,15 +411,12 @@ class Request(Base):
             postgresql_where=text(
                 "status = 'pending' AND request_type = 'demember_request'"
             ),
-            sqlite_where=text(
-                "status = 'pending' AND request_type = 'demember_request'"
-            ),
         ),
     )
 
     request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    status = Column(String, nullable=False, default='pending')
-    request_type = Column(String, nullable=False, default='invite')
+    status = Column(String, nullable=False, default="pending")
+    request_type = Column(String, nullable=False, default="invite")
     requested_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -322,19 +428,35 @@ class Request(Base):
         default=lambda: datetime.now(timezone.utc) + timedelta(days=7),
     )
     resolved_at = Column(DateTime(timezone=True), nullable=True)
-    sender_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    receiver_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    created_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    resolved_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id', ondelete='SET NULL'), nullable=True)
+    sender_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    receiver_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    created_by_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    resolved_by_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    group_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("groups.group_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     sender_email_snapshot = Column(String, nullable=True)
     receiver_email_snapshot = Column(String, nullable=True)
     created_by_email_snapshot = Column(String, nullable=True)
     resolved_by_email_snapshot = Column(String, nullable=True)
     group_name_snapshot = Column(String, nullable=True)
 
-    sender = relationship("User", foreign_keys=[sender_sub], back_populates="sent_requests")
-    receiver = relationship("User", foreign_keys=[receiver_sub], back_populates="received_requests")
+    sender = relationship(
+        "User", foreign_keys=[sender_sub], back_populates="sent_requests"
+    )
+    receiver = relationship(
+        "User", foreign_keys=[receiver_sub], back_populates="received_requests"
+    )
     created_by = relationship("User", foreign_keys=[created_by_sub])
     resolved_by = relationship("User", foreign_keys=[resolved_by_sub])
     group = relationship("Group", back_populates="requests")

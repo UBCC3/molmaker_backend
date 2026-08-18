@@ -1,19 +1,12 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Barrier
-import uuid
 
-import pytest
+from conftest import TestingSessionLocal
 
 from asset_service import set_asset_tags
-from conftest import TestingSessionLocal, engine
 from models import Job, Tags
-
-
-pytestmark = pytest.mark.skipif(
-    engine.dialect.name != "postgresql",
-    reason="requires PostgreSQL conflict handling",
-)
 
 
 def test_concurrent_jobs_can_share_a_new_tag(db, user_factory):
@@ -52,11 +45,7 @@ def test_concurrent_jobs_can_share_a_new_tag(db, user_factory):
         job_ids = [future.result(timeout=20) for future in futures]
 
     db.expire_all()
-    shared_tags = (
-        db.query(Tags)
-        .filter_by(user_sub=owner_sub, name="shared")
-        .all()
-    )
+    shared_tags = db.query(Tags).filter_by(user_sub=owner_sub, name="shared").all()
     assert len(shared_tags) == 1
 
     jobs = db.query(Job).filter(Job.job_id.in_(job_ids)).all()

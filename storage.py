@@ -1,130 +1,74 @@
-import json
-import sys
-
 import boto3
 from botocore.client import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
-BUCKET_NAME: str = "ubchemica-bucket-1"
-REGION: str = "ca-central-1"
-BUCKET_ROOT_DIR: str = "ubchemica"
+from settings import get_settings
 
-def generate_presigned_put_url(key: str):
+
+class StorageServiceError(RuntimeError):
+    """An artifact storage operation could not be completed."""
+
+
+def create_s3_client():
+    """Create an S3 client using the shared region and AWS credential chain."""
+
+    settings = get_settings()
+    return boto3.client(
+        "s3",
+        region_name=settings.s3_region,
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def _generate_presigned_put_url(key: str) -> str:
     """
-    Returns a presigned URL which allows anyone (with that URL) to PUT a file into s3://bucket/key.
+    Return a presigned URL for uploading one object.
+
     - expires_in: time in seconds that the URL remains valid.
     """
-    # TODO: Fix the aws access later
-    s3 = boto3.client(
-        "s3",
-        region_name=REGION,
-        config=Config(signature_version="s3v4")
-    )
+    settings = get_settings()
+    s3 = create_s3_client()
 
     url = s3.generate_presigned_url(
         ClientMethod="put_object",
-        Params={"Bucket": BUCKET_NAME, "Key": key},
+        Params={"Bucket": settings.s3_bucket_name, "Key": key},
         ExpiresIn=3600,
     )
 
     return url
 
-def construct_upload_script(job_id: str, calculation_type: str):
-    # All calculations' artifacts
-    zip = generate_presigned_put_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
 
-    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
-    result = generate_presigned_put_url(job_dir + "result.json")
-    error = generate_presigned_put_url(job_dir + "result.err")
-
-    urls = {
-        "zip": zip,
-        "result": result,
-        "error": error,
-    }
-
-    match calculation_type:
-        case "energy":
-            urls["mol"] = generate_presigned_put_url(job_dir + "input.xyz")
-        case "frequency":
-            urls["vib"] = generate_presigned_put_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_put_url(job_dir + "ir.jdx")
-        case "orbitals":
-            urls["esp"] = generate_presigned_put_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_put_url(job_dir + "orbitals.molden")
-        case "optimization" | "transition" | "irc":
-            urls["trajectory"] = generate_presigned_put_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_put_url(job_dir + "opt.xyz")
-        case "standard":
-            urls["trajectory"] = generate_presigned_put_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_put_url(job_dir + "opt.xyz")
-            urls["esp"] = generate_presigned_put_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_put_url(job_dir + "orbitals.molden")
-            urls["vib"] = generate_presigned_put_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_put_url(job_dir + "ir.jdx")
-        case _:
-            urls["calculation_type"] = calculation_type
-
-    return urls
-
-def generate_presigned_get_url(key: str):
-    s3 = boto3.client(
-        "s3",
-        region_name=REGION,
-        config=Config(signature_version="s3v4")
-    )
+def _generate_presigned_get_url(key: str) -> str:
+    settings = get_settings()
+    s3 = create_s3_client()
 
     url = s3.generate_presigned_url(
         ClientMethod="get_object",
-        Params={"Bucket": BUCKET_NAME, "Key": key},
+        Params={"Bucket": settings.s3_bucket_name, "Key": key},
         ExpiresIn=3600,
     )
 
     return url
 
+
+def job_archive_key(job_id: str) -> str:
+    """Return the deterministic S3 key for one job's complete ZIP archive."""
+
+    bucket_root = get_settings().s3_bucket_root
+    return f"{bucket_root}/archive/{job_id}.zip"
+
+
+def generate_archive_upload_url(job_id: str) -> str:
+    """Generate a fresh PUT URL for only the deterministic job archive."""
+
+    try:
+        return _generate_presigned_put_url(job_archive_key(job_id))
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create archive upload URL") from error
+
+
 def presign_zip_download_url(job_id: str) -> str:
-    return generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip")
-
-def construct_fetch_script(job_id: str, calculation_type: str, success: bool) -> dict[str, str]:
-    job_dir = f"{BUCKET_ROOT_DIR}/jobs/{job_id}/"
-    urls = {
-        # "zip": generate_presigned_get_url(f"{BUCKET_ROOT_DIR}/archive/{job_id}.zip"),
-    }
-
-    if not success:
-        urls["error"] = generate_presigned_get_url(job_dir + "result.err")
-        return urls
-
-    urls["result"] = generate_presigned_get_url(job_dir + "result.json")
-    match calculation_type:
-        case "energy":
-            urls["mol"] = generate_presigned_get_url(job_dir + "input.xyz")
-        case "frequency":
-            urls["vib"] = generate_presigned_get_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_get_url(job_dir + "ir.jdx")
-        case "orbitals":
-            urls["esp"] = generate_presigned_get_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_get_url(job_dir + "orbitals.molden")
-        case "optimization" | "transition" | "irc":
-            urls["trajectory"] = generate_presigned_get_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_get_url(job_dir + "opt.xyz")
-        case "standard":
-            urls["trajectory"] = generate_presigned_get_url(job_dir + "trajectory.xyz")
-            urls["opt"] = generate_presigned_get_url(job_dir + "opt.xyz")
-            urls["esp"] = generate_presigned_get_url(job_dir + "esp.cube")
-            urls["molden"] = generate_presigned_get_url(job_dir + "orbitals.molden")
-            urls["vib"] = generate_presigned_get_url(job_dir + "vib.xyz")
-            urls["jdx"] = generate_presigned_get_url(job_dir + "ir.jdx")
-        case _:
-            pass
-
-    return urls
-
-if __name__ == "__main__":
-    urls_path = sys.argv[1]
-    job_id = sys.argv[2]
-    calculation_type = sys.argv[3]
-
-    urls = construct_upload_script(job_id, calculation_type)
-
-    with open(urls_path, "w") as f:
-        f.write(json.dumps(urls))
+    try:
+        return _generate_presigned_get_url(job_archive_key(job_id))
+    except (BotoCoreError, ClientError) as error:
+        raise StorageServiceError("Could not create archive download URL") from error

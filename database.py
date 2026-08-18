@@ -1,9 +1,7 @@
-import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-from dotenv import load_dotenv
-load_dotenv()
+from settings import get_settings
 
 Base = declarative_base()
 
@@ -12,19 +10,7 @@ _SessionLocal = None
 
 
 def get_database_url() -> str:
-    database_user = os.getenv('DATABASE_USER')
-    database_password = os.getenv('DATABASE_PASSWORD')
-    database_host = os.getenv('DATABASE_HOST')
-    database_port = os.getenv('DATABASE_PORT')
-    database_name = os.getenv('DATABASE_NAME')
-
-    if not all([database_user, database_password, database_host, database_port, database_name]):
-        raise EnvironmentError("One or more database environment variables are not set.")
-
-    return (
-        f'postgresql://{database_user}:{database_password}'
-        f'@{database_host}:{database_port}/{database_name}'
-    )
+    return get_settings().database_url()
 
 
 def get_engine():
@@ -37,9 +23,19 @@ def get_engine():
 def get_session_local():
     global _SessionLocal
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine(), autocommit=False, autoflush=False)
+        _SessionLocal = sessionmaker(
+            bind=get_engine(), autocommit=False, autoflush=False
+        )
     return _SessionLocal
 
 
 def init_db():
-    Base.metadata.create_all(bind=get_engine(), checkfirst=True)
+    """Create the current schema in an empty database."""
+
+    import models
+
+    models.Base.metadata.create_all(bind=get_engine(), checkfirst=True)
+
+
+if __name__ == "__main__":
+    init_db()

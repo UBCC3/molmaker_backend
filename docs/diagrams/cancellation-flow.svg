@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 800" role="img" aria-labelledby="title description">
+  <title id="title">Job cancellation flow</title>
+  <desc id="description">A cancellation request is stored in PostgreSQL. Jobs not yet submitted are cancelled locally, uncertain submissions are recovered before cancellation, and known Slurm jobs are checked before an idempotent cancellation request is sent.</desc>
+
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e87522"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#526fe8"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#159a62"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; }
+    .title { font-size: 27px; font-weight: 700; }
+    .subtitle { font-size: 14px; fill: #5b6472; }
+    .panel-title { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; fill: #526173; }
+    .lane-title { font-size: 12px; font-weight: 700; letter-spacing: 1px; fill: #738094; }
+    .node-title { font-size: 16px; font-weight: 700; }
+    .node-body { font-size: 13px; fill: #4b5565; }
+    .edge-label { font-size: 12px; font-weight: 650; }
+    .note-title { font-size: 13px; font-weight: 700; }
+    .note-body { font-size: 12.5px; fill: #526173; }
+  </style>
+
+  <text class="title" x="700" y="31" text-anchor="middle">Cancellation is processed from saved job state</text>
+  <text class="subtitle" x="700" y="54" text-anchor="middle">The responsible reconciler checks what actually happened before deciding what to do next</text>
+
+  <!-- Public request path. -->
+  <rect x="25" y="74" width="1350" height="132" rx="16" fill="#f5f9ff" stroke="#b7d3f2" stroke-width="1.5"/>
+  <text class="panel-title" x="50" y="98">PUBLIC REQUEST PATH</text>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="119" width="210" height="62" rx="10" fill="#ffffff" stroke="#9bbce4" stroke-width="1.5"/>
+    <text class="node-title" x="165" y="145" text-anchor="middle">Frontend</text>
+    <text class="node-body" x="165" y="166" text-anchor="middle">POST /jobs/{job_id}/cancel</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="340" y="111" width="260" height="78" rx="10" fill="#ffffff" stroke="#8da1ba" stroke-width="1.5"/>
+    <text class="node-title" x="470" y="139" text-anchor="middle">FastAPI service</text>
+    <text class="node-body" x="470" y="161" text-anchor="middle">check write permission</text>
+    <text class="node-body" x="470" y="181" text-anchor="middle">save the request and return 202</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="680" y="107" width="350" height="86" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2.3"/>
+    <text class="node-title" x="855" y="136" text-anchor="middle">Save cancel_requested = true</text>
+    <text class="node-body" x="855" y="159" text-anchor="middle">keep the current job status</text>
+    <text class="node-body" x="855" y="180" text-anchor="middle">202 Accepted while cancellation is pending</text>
+  </g>
+
+  <g>
+    <rect x="1085" y="104" width="255" height="92" rx="10" fill="#f8fafc" stroke="#b8c1ce" stroke-width="1.4"/>
+    <text class="note-title" x="1105" y="130">Immediate responses</text>
+    <text class="note-body" x="1105" y="153">200: already cancelled</text>
+    <text class="note-body" x="1105" y="175">409: job cannot be cancelled</text>
+  </g>
+
+  <path d="M 270 150 H 340" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <path d="M 600 150 H 680" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+  <path d="M 1030 150 H 1085" fill="none" stroke="#7a8ba3" stroke-width="2.5" stroke-dasharray="6 5"/>
+
+  <!-- Reconciler decisions. -->
+  <rect x="25" y="225" width="1350" height="550" rx="16" fill="#ffffff" stroke="#c8d0dc" stroke-width="1.5"/>
+  <text class="panel-title" x="50" y="250">BACKGROUND PROCESSING FROM SAVED STATE</text>
+
+  <g filter="url(#shadow)">
+    <rect x="500" y="264" width="400" height="62" rx="11" fill="#edf4ff" stroke="#2563eb" stroke-width="2.1"/>
+    <text class="node-title" x="700" y="291" text-anchor="middle">Which state is saved in PostgreSQL?</text>
+    <text class="node-body" x="700" y="313" text-anchor="middle">The job row determines which reconciler owns the next step</text>
+  </g>
+  <path d="M 855 193 V 264" fill="none" stroke="#2563eb" stroke-width="4" marker-end="url(#arrow-blue)"/>
+
+  <text class="lane-title" x="220" y="356" text-anchor="middle">NOT YET ATTEMPTED</text>
+  <text class="lane-title" x="660" y="356" text-anchor="middle">SUBMISSION OUTCOME IS UNCERTAIN</text>
+  <text class="lane-title" x="1135" y="356" text-anchor="middle">SLURM ID IS KNOWN</text>
+
+  <!-- State fan-out. -->
+  <path d="M 555 326 V 336 H 220 V 373" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
+  <path d="M 700 326 V 373" fill="none" stroke="#e87522" stroke-width="3.4" marker-end="url(#arrow-orange)"/>
+  <path d="M 845 326 V 336 H 1135 V 373" fill="none" stroke="#526fe8" stroke-width="3.4" marker-end="url(#arrow-indigo)"/>
+
+  <!-- No-attempt lane. -->
+  <g filter="url(#shadow)">
+    <rect x="55" y="373" width="330" height="72" rx="10" fill="#fff4e8" stroke="#e87522" stroke-width="2"/>
+    <text class="node-title" x="220" y="402" text-anchor="middle">submitting · attempt_count = 0</text>
+    <text class="node-body" x="220" y="426" text-anchor="middle">nothing could be running on Slurm</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="55" y="488" width="330" height="72" rx="10" fill="#ffffff" stroke="#d6955d" stroke-width="1.7"/>
+    <text class="node-title" x="220" y="517" text-anchor="middle">Cancel locally</text>
+    <text class="node-body" x="220" y="541" text-anchor="middle">mark cancelled in PostgreSQL</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="90" y="603" width="260" height="58" rx="10" fill="#eaf8f0" stroke="#159a62" stroke-width="2"/>
+    <text class="node-title" x="220" y="630" text-anchor="middle">Public status: cancelled</text>
+    <text class="node-body" x="220" y="650" text-anchor="middle">request completed locally</text>
+  </g>
+  <path d="M 220 445 V 488" fill="none" stroke="#e87522" stroke-width="3.5" marker-end="url(#arrow-orange)"/>
+  <path d="M 220 560 V 603" fill="none" stroke="#159a62" stroke-width="3.5" marker-end="url(#arrow-green)"/>
+
+  <!-- Ambiguous-submission lane. -->
+  <g filter="url(#shadow)">
+    <rect x="445" y="373" width="430" height="72" rx="10" fill="#fff4e8" stroke="#e87522" stroke-width="2"/>
+    <text class="node-title" x="660" y="402" text-anchor="middle">submitting · attempt_count &gt; 0</text>
+    <text class="node-body" x="660" y="426" text-anchor="middle">submission may have succeeded before its response was saved</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="445" y="484" width="430" height="72" rx="10" fill="#ffffff" stroke="#d6955d" stroke-width="1.7"/>
+    <text class="node-title" x="660" y="512" text-anchor="middle">Lookup only: find-submission</text>
+    <text class="node-body" x="660" y="536" text-anchor="middle">dispatch checks exact UUID in squeue, then recent sacct</text>
+  </g>
+  <path d="M 660 445 V 484" fill="none" stroke="#e87522" stroke-width="3.5" marker-end="url(#arrow-orange)"/>
+  <path d="M 660 556 V 570 H 785 V 582" fill="none" stroke="#e87522" stroke-width="3.2"/>
+  <polygon points="785,582 837,615 785,648 733,615" fill="#fffaf5" stroke="#e87522" stroke-width="2"/>
+  <text class="node-title" x="785" y="612" text-anchor="middle">Job found?</text>
+  <text class="node-body" x="785" y="631" text-anchor="middle">exact UUID</text>
+
+  <g filter="url(#shadow)">
+    <rect x="445" y="586" width="235" height="68" rx="10" fill="#eaf8f0" stroke="#159a62" stroke-width="2"/>
+    <text class="node-title" x="562" y="614" text-anchor="middle">No match: cancel locally</text>
+    <text class="node-body" x="562" y="638" text-anchor="middle">finish as cancelled</text>
+  </g>
+  <path d="M 733 615 H 680" fill="none" stroke="#159a62" stroke-width="3.4" marker-end="url(#arrow-green)"/>
+  <text class="edge-label" x="707" y="603" text-anchor="middle" fill="#117b50">no</text>
+
+  <!-- Known-Slurm lane. -->
+  <g filter="url(#shadow)">
+    <rect x="950" y="373" width="370" height="72" rx="10" fill="#eef2ff" stroke="#526fe8" stroke-width="2"/>
+    <text class="node-title" x="1135" y="402" text-anchor="middle">submitted or running</text>
+    <text class="node-body" x="1135" y="426" text-anchor="middle">the status reconciler owns cluster cancellation</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="950" y="484" width="370" height="72" rx="10" fill="#ffffff" stroke="#8595e8" stroke-width="1.7"/>
+    <text class="node-title" x="1135" y="513" text-anchor="middle">Read the latest state first</text>
+    <text class="node-body" x="1135" y="537" text-anchor="middle">status-batch JSON → sacct</text>
+  </g>
+  <path d="M 1135 445 V 484" fill="none" stroke="#526fe8" stroke-width="3.5" marker-end="url(#arrow-indigo)"/>
+
+  <!-- A recovered Slurm ID joins the status path. -->
+  <path d="M 837 615 H 910 V 409 H 950" fill="none" stroke="#526fe8" stroke-width="3.4" marker-end="url(#arrow-indigo)"/>
+  <text class="edge-label" x="926" y="510" text-anchor="middle" fill="#445fc6" transform="rotate(-90 926 510)">yes · save Slurm ID</text>
+
+  <path d="M 1135 556 V 579" fill="none" stroke="#526fe8" stroke-width="3.2"/>
+  <polygon points="1135,579 1185,611 1135,643 1085,611" fill="#f7f8ff" stroke="#526fe8" stroke-width="2"/>
+  <text class="node-title" x="1135" y="608" text-anchor="middle">Terminal?</text>
+  <text class="node-body" x="1135" y="628" text-anchor="middle">latest state</text>
+
+  <g filter="url(#shadow)">
+    <rect x="900" y="666" width="205" height="50" rx="9" fill="#f8fafc" stroke="#8c99aa" stroke-width="1.6"/>
+    <text class="note-title" x="1002" y="688" text-anchor="middle">Actual outcome wins</text>
+    <text class="note-body" x="1002" y="707" text-anchor="middle">continue with finalisation</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="1160" y="666" width="190" height="50" rx="9" fill="#eef2ff" stroke="#526fe8" stroke-width="1.8"/>
+    <text class="note-title" x="1255" y="688" text-anchor="middle">Send cancel JSON</text>
+    <text class="note-body" x="1255" y="707" text-anchor="middle">dispatch → scancel --quiet</text>
+  </g>
+  <path d="M 1102 632 L 1028 666" fill="none" stroke="#7a8ba3" stroke-width="3" marker-end="url(#arrow-blue)"/>
+  <text class="edge-label" x="1052" y="642" fill="#526173">yes</text>
+  <path d="M 1168 632 L 1235 666" fill="none" stroke="#526fe8" stroke-width="3.2" marker-end="url(#arrow-indigo)"/>
+  <text class="edge-label" x="1206" y="642" fill="#445fc6">no</text>
+
+  <!-- Confirmation loop and public cancellation outcome. -->
+  <path d="M 1350 691 H 1362 V 520 H 1320" fill="none" stroke="#526fe8" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow-indigo)"/>
+  <text class="edge-label" x="1360" y="604" text-anchor="end" fill="#445fc6" transform="rotate(-90 1360 604)">next round checks again</text>
+  <path d="M 1002 716 V 730" fill="none" stroke="#159a62" stroke-width="3.3" marker-end="url(#arrow-green)"/>
+  <path d="M 1255 716 V 730" fill="none" stroke="#159a62" stroke-width="3.3" marker-end="url(#arrow-green)"/>
+
+  <rect x="875" y="730" width="475" height="37" rx="8" fill="#eaf8f0" stroke="#159a62" stroke-width="1.8"/>
+  <text class="note-title" x="1112" y="754" text-anchor="middle">CANCELLED confirmed → finalise files → public cancelled</text>
+
+</svg>

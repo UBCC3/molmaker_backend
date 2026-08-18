@@ -1,23 +1,26 @@
-from typing import Optional
+from typing import List, Optional
+
 from fastapi import (
     APIRouter,
+    Depends,
     Form,
     HTTPException,
-    Depends,
     Query,
+    status,
 )
 from sqlalchemy.orm import Session
-from fastapi import status
-
-from dependencies import get_db
-from auth import verify_token
 
 from asset_service import list_all_jobs_with_metadata
+from auth import verify_token
+from dependencies import get_db
 from group_service import (
     create_group as create_group_record,
+)
+from group_service import (
     get_group_or_404,
     list_groups_with_users,
 )
+from jobs.schemas import AdminJobResponse
 from permissions import has_admin_permission
 from user_service import (
     get_user_or_404,
@@ -36,7 +39,8 @@ from utils import (
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-@router.get("/jobs")
+
+@router.get("/jobs", response_model=List[AdminJobResponse])
 def get_all_jobs(
     limit: int = Query(DEFAULT_JOB_LIST_LIMIT, ge=1, le=MAX_JOB_LIST_LIMIT),
     offset: int = Query(0, ge=0),
@@ -44,23 +48,33 @@ def get_all_jobs(
     current_user=Depends(verify_token),
 ):
     """
-    List all non-deleted jobs for all users, ordered by submission time - most recent first.
-    Job group metadata comes from the job's persisted group_id, not from the
-    owner's current group membership.
+    List all non-deleted jobs for all users, newest first.
+
+    Each response includes the owning user's email and group name, when
+    applicable, to help administrators identify job ownership. Job group
+    information comes from the job's persisted group_id, not from the owner's
+    current group membership. Serialized linked structures are included, but
+    internal orchestration fields are not returned.
+
     :param limit: Maximum number of jobs to return, up to 100.
     :param offset: Number of sorted jobs to skip.
     :param db: Database session dependency.
     :param current_user: Current user dependency, verified via token.
-    :return: List of serialized job details.
+    :return: List of job responses including user and group ownership details.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
     try:
         return list_all_jobs_with_metadata(db, limit=limit, offset=offset)
 
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        ) from e
+
 
 @router.get("/users")
 def get_all_users(
@@ -79,11 +93,16 @@ def get_all_users(
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
     try:
         return list_users_for_admin(db, limit=limit, offset=offset)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        ) from e
+
 
 @router.get("/groups")
 def get_all_groups(
@@ -102,12 +121,17 @@ def get_all_groups(
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     try:
         return list_groups_with_users(db, limit=limit, offset=offset)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        ) from e
+
 
 @router.post("/groups")
 def create_group(
@@ -124,9 +148,12 @@ def create_group(
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     return create_group_record(db, name)
+
 
 @router.put("/users/{selected_user_sub}")
 def update_user_role(
@@ -148,7 +175,9 @@ def update_user_role(
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not has_admin_permission(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     selected_user = get_user_or_404(
         db,
