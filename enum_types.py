@@ -104,8 +104,6 @@ multiplicities = {
     "Doublet": 2,
     "Triplet": 3,
     "Quartet": 4,
-    "Quintet": 5,
-    "Sextet": 6,
 }
 
 optimization_types = {
