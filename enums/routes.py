@@ -51,8 +51,12 @@ def get_basis_sets():
 @router.get("/multiplicities")
 def get_multiplicities():
     """
-    Returns a dictionary of multiplicities.
-    :return: Dictionary of multiplicities.
+    Returns the selectable unpaired-electron counts and their multiplicities.
+
+    Keys are the number of unpaired electrons, which is what the submit forms
+    ask the user for. Values are the spin multiplicity the calculation
+    endpoints accept, and equal the key plus one.
+    :return: Mapping of unpaired electron count to spin multiplicity.
     """
     return multiplicities
 

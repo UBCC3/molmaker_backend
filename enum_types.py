@@ -99,11 +99,16 @@ basis_sets = {
     "aug-cc-pVQZ": "aug-cc-pvqz",
 }
 
+# Number of unpaired electrons the user selects, mapped to the spin
+# multiplicity the calculation endpoints expect. multiplicity = unpaired + 1.
+# The submit forms ask for the unpaired count rather than the spectroscopic
+# name, so the keys are what a client can render directly. Keep the range in
+# step with the multiplicity validators in calculation/routes.py.
 multiplicities = {
-    "Singlet": 1,
-    "Doublet": 2,
-    "Triplet": 3,
-    "Quartet": 4,
+    "0": 1,  # singlet
+    "1": 2,  # doublet
+    "2": 3,  # triplet
+    "3": 4,  # quartet
 }
 
 optimization_types = {
