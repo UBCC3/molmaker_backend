@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta, timezone
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from conftest import make_auth0_payload
+
 from models import Request
 
 
@@ -106,8 +107,12 @@ class TestRequestCreationAPI:
         POST /request/invite should require only target email and infer group_id.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        target = user_factory(user_sub="auth0|target", email="target@test.com", group_id=None)
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
+        target = user_factory(
+            user_sub="auth0|target", email="target@test.com", group_id=None
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.post(
@@ -199,8 +204,12 @@ class TestRequestCreationAPI:
         """
         group = group_factory()
         other_group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        user_factory(group=other_group, user_sub="auth0|target", email="target@test.com")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
+        user_factory(
+            group=other_group, user_sub="auth0|target", email="target@test.com"
+        )
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
         response = client.post(
@@ -287,7 +296,9 @@ class TestRequestListingAPI:
         """
         group = group_factory(name="Chemistry")
         receiver = user_factory(group_id=None, user_sub="auth0|testuser")
-        creator = user_factory(group=group, user_sub="auth0|group-admin", email="admin@test.com")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", email="admin@test.com"
+        )
         pending = request_factory(
             sender=None,
             receiver=receiver,
@@ -356,8 +367,7 @@ class TestRequestListingAPI:
         user = user_factory(user_sub="auth0|testuser", group_id=None)
         requested_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
         request_ids = [
-            uuid.UUID(f"aaaaaaaa-0000-0000-0000-{value:012x}")
-            for value in (3, 1, 2)
+            uuid.UUID(f"aaaaaaaa-0000-0000-0000-{value:012x}") for value in (3, 1, 2)
         ]
         for request_id in request_ids:
             request_factory(
@@ -440,8 +450,7 @@ class TestRequestListingAPI:
         assert response.status_code == 200
         assert len(response.json()) == 5
         assert [
-            statement.lstrip().split(None, 1)[0].upper()
-            for statement in sql_statements
+            statement.lstrip().split(None, 1)[0].upper() for statement in sql_statements
         ] == ["SELECT", "UPDATE", "SELECT"]
 
     def test_request_lists_filter_by_status_type_and_recent_days(
@@ -487,7 +496,9 @@ class TestRequestListingAPI:
         GET /group/requests returns invites, join requests, and de-member requests for the group.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         invitee = user_factory(user_sub="auth0|invitee", group_id=None)
         joiner = user_factory(user_sub="auth0|joiner", group_id=None)
         member = user_factory(group=group, user_sub="auth0|member")
@@ -522,11 +533,17 @@ class TestRequestListingAPI:
             str(demember_request.request_id),
         }
         assert requests[str(invite.request_id)]["receiver_sub"] == invitee.user_sub
-        assert requests[str(invite.request_id)]["created_by_sub"] == group_admin.user_sub
+        assert (
+            requests[str(invite.request_id)]["created_by_sub"] == group_admin.user_sub
+        )
         assert requests[str(join_request.request_id)]["sender_sub"] == joiner.user_sub
-        assert requests[str(demember_request.request_id)]["sender_sub"] == member.user_sub
+        assert (
+            requests[str(demember_request.request_id)]["sender_sub"] == member.user_sub
+        )
 
-    def test_group_requests_require_group_admin(self, client, group_factory, user_factory):
+    def test_group_requests_require_group_admin(
+        self, client, group_factory, user_factory
+    ):
         """
         Normal members cannot list the group request inbox.
         """
@@ -573,13 +590,16 @@ class TestRequestListingAPI:
 
         assert pending_response.status_code == 200
         assert pending_response.json() == []
-        assert len(
-            [
-                statement
-                for statement in sql_statements
-                if statement.lstrip().upper().startswith("UPDATE REQUESTS")
-            ]
-        ) == 1
+        assert (
+            len(
+                [
+                    statement
+                    for statement in sql_statements
+                    if statement.lstrip().upper().startswith("UPDATE REQUESTS")
+                ]
+            )
+            == 1
+        )
         db.refresh(expired_request)
         db.refresh(other_expired_request)
         assert expired_request.status == "expired"
@@ -612,7 +632,9 @@ class TestRequestResolutionAPI:
             role_or_group_updated_at=old_timestamp,
         )
         previous_timestamp = receiver.role_or_group_updated_at
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         request = request_factory(
             sender=None,
             receiver=receiver,
@@ -643,7 +665,9 @@ class TestRequestResolutionAPI:
         group = group_factory()
         other_group = group_factory()
         receiver = user_factory(user_sub="auth0|invitee", group_id=None)
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         other_creator = user_factory(
             group=other_group,
             user_sub="auth0|other-group-admin",
@@ -692,7 +716,9 @@ class TestRequestResolutionAPI:
         Group admins approve join requests for their own group.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
         sender = user_factory(
             user_sub="auth0|joiner",
@@ -726,7 +752,9 @@ class TestRequestResolutionAPI:
         """
         group = group_factory()
         other_group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         other_creator = user_factory(
             group=other_group,
             user_sub="auth0|other-group-admin",
@@ -775,7 +803,9 @@ class TestRequestResolutionAPI:
         Group admins approve de-member requests without changing asset ownership.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         old_timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
         sender = user_factory(
             group=group,
@@ -809,8 +839,12 @@ class TestRequestResolutionAPI:
         Group admins cannot approve de-member requests for other group admins.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
-        sender = user_factory(group=group, user_sub="auth0|other-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
+        sender = user_factory(
+            group=group, user_sub="auth0|other-admin", role="group_admin"
+        )
         request = request_factory(
             sender=sender,
             receiver=None,
@@ -838,7 +872,9 @@ class TestRequestResolutionAPI:
         group = group_factory()
         other_group = group_factory()
         receiver = user_factory(user_sub="auth0|invitee", group_id=None)
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         request = request_factory(
             sender=None,
             receiver=receiver,
@@ -888,7 +924,9 @@ class TestRequestResolutionAPI:
         """
         group = group_factory()
         receiver = user_factory(user_sub="auth0|invitee", group_id=None)
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         request = request_factory(
             sender=None,
             receiver=receiver,
@@ -913,7 +951,9 @@ class TestRequestResolutionAPI:
         Group admins can reject join requests for their group.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         sender = user_factory(user_sub="auth0|joiner", group_id=None)
         request = request_factory(
             sender=sender,
@@ -936,7 +976,9 @@ class TestRequestResolutionAPI:
         DELETE /request/{request_id} cancels a pending request without deleting it.
         """
         group = group_factory()
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(user_sub="auth0|target", group_id=None)
         request = request_factory(
             sender=None,
@@ -962,7 +1004,9 @@ class TestRequestResolutionAPI:
         Users unrelated to a request cannot cancel it.
         """
         group = group_factory()
-        creator = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        creator = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(user_sub="auth0|target", group_id=None)
         other = user_factory(user_sub="auth0|other", group_id=None)
         request = request_factory(

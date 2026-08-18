@@ -1,10 +1,9 @@
-from datetime import datetime, timedelta, timezone
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
 
-from permissions import can_write_asset
 from asset_service import (
     get_asset_or_404,
     list_group_assets,
@@ -17,7 +16,7 @@ from asset_service import (
     update_asset_visibility,
 )
 from models import Job, Structure, Tags
-
+from permissions import can_write_asset
 
 ASSET_CASES = [
     (Job, "job_factory"),
@@ -43,7 +42,6 @@ class TestSerializeStructure:
             group_id=group.group_id,
             name="Water",
             formula="H2O",
-            location="s3://test-bucket/structures/water.xyz",
             notes="stable molecule",
             uploaded_at=uploaded_at,
             is_public=True,
@@ -56,7 +54,6 @@ class TestSerializeStructure:
             "structure_id": str(structure_id),
             "name": "Water",
             "formula": "H2O",
-            "location": "s3://test-bucket/structures/water.xyz",
             "notes": "stable molecule",
             "uploaded_at": structure.uploaded_at.isoformat(),
             "group_id": str(group.group_id),
@@ -168,7 +165,6 @@ class TestSerializeJob:
         assert result["structures"] == [
             serialize_structure(structure, include_tags=False)
         ]
-        assert result["structures"][0]["location"] == structure.location
         assert {
             "slurm_id",
             "attempt_count",
@@ -178,20 +174,15 @@ class TestSerializeJob:
             "runtime",
         }.isdisjoint(result)
 
-    def test_serializes_linked_structure_location(
+    def test_serializes_linked_structure_as_metadata_only(
         self,
         user_factory,
         job_factory,
         structure_factory,
     ):
-        """
-        Job responses should retain the structure location used by the frontend.
-        """
+        """Job responses should not embed the structure's stored files."""
         user = user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(
-            user_sub=user.user_sub,
-            location="s3://private-bucket/structures/input.xyz",
-        )
+        structure = structure_factory(user_sub=user.user_sub)
         job = job_factory(user_sub=user.user_sub, structures=[structure])
 
         result = serialize_job(job)
@@ -199,7 +190,8 @@ class TestSerializeJob:
         assert result["structures"] == [
             serialize_structure(structure, include_tags=False)
         ]
-        assert result["structures"][0]["location"] == structure.location
+        assert "content" not in result["structures"][0]
+        assert "thumbnail" not in result["structures"][0]
 
     def test_serializes_none_optional_job_response_fields(
         self,
@@ -230,15 +222,24 @@ class TestSerializeJob:
         self,
         user_factory,
         job_factory,
+        job_result_factory,
     ):
         """
-        finalising is returned as running, and stored failure details are returned.
+        Finalising is running until saved results make its outcome public.
         """
         user = user_factory(user_sub="auth0|testuser")
         finalising_job = job_factory(
             user_sub=user.user_sub,
             status="finalising",
         )
+        cleanup_pending_job = job_factory(
+            user_sub=user.user_sub,
+            status="finalising",
+            terminal_status="completed",
+            is_uploaded=True,
+            completed_at=datetime.now(timezone.utc),
+        )
+        job_result_factory(job=cleanup_pending_job)
         failed_job = job_factory(
             user_sub=user.user_sub,
             status="failed",
@@ -247,11 +248,13 @@ class TestSerializeJob:
         )
 
         finalising_result = serialize_job(finalising_job)
+        cleanup_pending_result = serialize_job(cleanup_pending_job)
         failed_result = serialize_job(failed_job)
 
         assert finalising_result["status"] == "running"
         assert finalising_result["failure_reason"] is None
         assert finalising_result["failure_message"] is None
+        assert cleanup_pending_result["status"] == "completed"
         assert failed_result["status"] == "failed"
         assert failed_result["failure_reason"] == "timeout"
         assert (
@@ -505,15 +508,9 @@ def test_set_asset_tags_deduplicates_input_and_existing_links(
 
     assert sorted(tag.name for tag in asset.tags) == ["existing", "new"]
     assert (
-        db.query(Tags)
-        .filter_by(user_sub=owner.user_sub, name="existing")
-        .count()
+        db.query(Tags).filter_by(user_sub=owner.user_sub, name="existing").count()
     ) == 1
-    assert (
-        db.query(Tags)
-        .filter_by(user_sub=owner.user_sub, name="new")
-        .count()
-    ) == 1
+    assert (db.query(Tags).filter_by(user_sub=owner.user_sub, name="new").count()) == 1
 
 
 @pytest.mark.parametrize("model,factory_name", ASSET_CASES)

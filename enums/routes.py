@@ -1,12 +1,16 @@
 from fastapi import APIRouter
-from enum_types import calculation_types
-from enum_types import wave_functional_theories
-from enum_types import density_functional_theories
-from enum_types import basis_sets
-from enum_types import multiplicities
-from enum_types import optimization_types
+
+from enum_types import (
+    basis_sets,
+    calculation_types,
+    density_functional_theories,
+    multiplicities,
+    optimization_types,
+    wave_functional_theories,
+)
 
 router = APIRouter(prefix="/enums", tags=["enums"])
+
 
 @router.get("/calculation_types")
 def get_calculation_types():
@@ -16,6 +20,7 @@ def get_calculation_types():
     """
     return calculation_types
 
+
 @router.get("/wave_functional_theories")
 def get_wave_functional_theories():
     """
@@ -23,6 +28,7 @@ def get_wave_functional_theories():
     :return: List of wave functional theories.
     """
     return wave_functional_theories
+
 
 @router.get("/density_functional_theories")
 def get_density_functional_theories():
@@ -32,6 +38,7 @@ def get_density_functional_theories():
     """
     return density_functional_theories
 
+
 @router.get("/basis_sets")
 def get_basis_sets():
     """
@@ -40,6 +47,7 @@ def get_basis_sets():
     """
     return basis_sets
 
+
 @router.get("/multiplicities")
 def get_multiplicities():
     """
@@ -47,6 +55,7 @@ def get_multiplicities():
     :return: Dictionary of multiplicities.
     """
     return multiplicities
+
 
 @router.get("/optimization_types")
 def get_optimization_types():

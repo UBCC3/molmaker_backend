@@ -1,7 +1,7 @@
 import logging
 
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from utils import (
@@ -71,7 +71,9 @@ class TestCommitOrRollback:
 
     def test_rolls_back_and_maps_constraint_error(self, mocker, caplog):
         db = mocker.Mock()
-        db.commit.side_effect = IntegrityError("statement", {}, RuntimeError("duplicate"))
+        db.commit.side_effect = IntegrityError(
+            "statement", {}, RuntimeError("duplicate")
+        )
 
         with caplog.at_level(logging.ERROR, logger="utils"):
             with pytest.raises(HTTPException) as error:
@@ -188,11 +190,16 @@ class TestGetUserSub:
         When payload is not a dict, it should raise an error.
         """
         payload = [
-            "sub", "auth0|abc456efg",
-            "iss", "https://your-tenant.auth0.com/",
-            "aud", "https://your-api.com",
-            "iat", 1716230400,
-            "exp", 1716234000,
+            "sub",
+            "auth0|abc456efg",
+            "iss",
+            "https://your-tenant.auth0.com/",
+            "aud",
+            "https://your-api.com",
+            "iat",
+            1716230400,
+            "exp",
+            1716234000,
         ]
 
         with pytest.raises(HTTPException) as exc_info:

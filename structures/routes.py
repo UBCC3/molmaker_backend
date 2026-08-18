@@ -1,42 +1,57 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query, status
-from sqlalchemy.orm import Session
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import List
+
+from ase.io import read
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
+from pymatgen.core import Molecule
+from sqlalchemy.orm import Session
+
 from asset_service import (
     get_asset_or_404,
     list_user_assets,
     require_asset_permission,
-    serialize_tag_names,
     serialize_structure,
+    serialize_tag_names,
     set_asset_tags,
     soft_delete_asset,
     update_asset_visibility,
 )
+from auth import verify_token
+from dependencies import get_db
+from models import Structure, Tags
 from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Structure, Tags
-from dependencies import get_db
-from auth import verify_token
 from user_service import get_user_or_404
-import os, uuid, shutil
-from pathlib import Path
 from utils import (
     DEFAULT_STRUCTURE_LIST_LIMIT,
     MAX_STRUCTURE_LIST_LIMIT,
     commit_or_rollback,
     get_user_sub,
+    read_bounded_upload,
 )
-from datetime import datetime, timezone
-from typing import List
-from ase.io import read
-from pymatgen.core import Molecule
-from settings import get_settings
-from storage import create_s3_client
 
 router = APIRouter(prefix="/structures", tags=["structures"])
-JOB_DIR = "./results"
+
+MAX_STRUCTURE_CONTENT_BYTES = 4 * 1024 * 1024
+MAX_STRUCTURE_THUMBNAIL_BYTES = 8 * 1024 * 1024
+PNG_MEDIA_TYPE = "image/png"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
 
 @router.get("/")
 def get_all_structures(
@@ -47,12 +62,12 @@ def get_all_structures(
     ),
     offset: int = Query(0, ge=0),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     List non-deleted structures directly owned by the authenticated user.
-    Results are ordered by upload time, most recent first. Each response item
-    includes tags and a presigned image URL.
+    Results are ordered by upload time, most recent first. The response contains
+    metadata only; structure text and thumbnails are returned by the detail API.
     :param limit: Maximum number of structures to return, up to 100.
     :param offset: Number of sorted structures to skip.
     :param user: Current user dependency, verified via token.
@@ -68,47 +83,34 @@ def get_all_structures(
             limit=limit,
             offset=offset,
         )
-        settings = get_settings()
-        s3 = create_s3_client()
-
-        return [
-            {
-                **serialize_structure(s),
-                "imageS3URL": s3.generate_presigned_url(
-                    "get_object",
-                    Params={
-                        "Bucket": settings.s3_bucket_name,
-                        "Key": f"structures/{s.id}.png"
-                    },
-                    ExpiresIn=3600
-                )
-            }
-            for s in structures
-        ]
+        return [serialize_structure(structure) for structure in structures]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.post("/formula")
-async def get_structure_formula(
-        file: UploadFile = File(...)
-):
+def get_structure_formula(file: UploadFile = File(...)):
     """
     Calculate molecular formula from uploaded structure file.
-    :param file: Uploaded structure file.
+    :param file: Uploaded structure file, up to 4 MiB.
     :return: Dictionary containing the molecular formula.
     """
     try:
         temp_file = f"temp_{uuid.uuid4()}.xyz"
         try:
             with open(temp_file, "wb") as f:
-                content = await file.read()
+                content = read_bounded_upload(
+                    file,
+                    MAX_STRUCTURE_CONTENT_BYTES,
+                    "structure file",
+                )
                 f.write(content)
 
             # Try reading with ASE first
             try:
                 atoms = read(temp_file)
                 chemical_formula = atoms.get_chemical_formula()
-            except:
+            except Exception:
                 # If ASE fails, try with Pymatgen
                 mol = Molecule.from_file(temp_file)
                 chemical_formula = mol.composition.reduced_formula
@@ -119,18 +121,17 @@ async def get_structure_formula(
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not calculate formula: {str(e)}"
-        )
+            detail=f"Could not calculate formula: {str(e)}",
+        ) from e
 
 
 @router.get("/tags")
-def get_user_tags(
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
-):
+def get_user_tags(user=Depends(verify_token), db: Session = Depends(get_db)):
     """
     Get the authenticated user's normalized, case-insensitive tag names.
     :param user: Current user dependency, verified via token.
@@ -139,43 +140,15 @@ def get_user_tags(
     """
     try:
         user_id = get_user_sub(user)
-        tags = (db.query(Tags)
-                .filter(Tags.user_sub == user_id)
-                .all())
+        tags = db.query(Tags).filter(Tags.user_sub == user_id).all()
         return serialize_tag_names(tags)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
-@router.get("/presigned/{structure_id}")
-def get_presigned_url_for_structure(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db),
-):
-    """
-    Generate a presigned URL when the authenticated user can read the structure.
-    """
-    structure = get_asset_or_404(db, Structure, structure_id)
-    db_user = get_user_or_404(db, get_user_sub(user))
-    require_asset_permission(db_user, structure, can_read_asset)
-    key = f"structures/{structure.id}.xyz"
-    try:
-        settings = get_settings()
-        s3 = create_s3_client()
-        url = s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": settings.s3_bucket_name, "Key": key},
-            ExpiresIn=300
-        )
-        return JSONResponse({"url": url})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{structure_id}")
 def get_structure_by_id(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    structure_id: str, user=Depends(verify_token), db: Session = Depends(get_db)
 ):
     """
     Retrieve one structure when the authenticated user has read access.
@@ -195,19 +168,21 @@ def get_structure_by_id(
             **serialize_structure(
                 structure,
                 include_user_sub=can_view_asset_user_owner(db_user, structure),
+                include_content=True,
             )
         }
-    except HTTPException: 
+    except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.patch("/{structure_id}/visibility", status_code=status.HTTP_200_OK)
 def update_structure_visibility(
     structure_id: str,
     is_public: bool = Form(...),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update public/private visibility for one structure.
@@ -235,6 +210,7 @@ def update_structure_visibility(
         "message": "Structure visibility updated successfully.",
     }
 
+
 @router.patch("/{structure_id}")
 def update_structure(
     structure_id: str,
@@ -244,7 +220,7 @@ def update_structure(
     tags: List[str] = Form([]),
     replace_tags: bool = Form(False),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update an existing structure when the authenticated user has write access.
@@ -293,13 +269,12 @@ def update_structure(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.delete("/{structure_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_structure(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    structure_id: str, user=Depends(verify_token), db: Session = Depends(get_db)
 ):
     """
     Soft-delete one structure when the authenticated user has delete access.
@@ -315,6 +290,7 @@ def delete_structure(
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
+
 @router.post("/")
 def create_and_upload_structure(
     name: str = Form(...),
@@ -324,72 +300,77 @@ def create_and_upload_structure(
     tags: List[str] = Form([]),
     image: UploadFile = File(...),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
-    Create a new structure by uploading a structure file and image.
+    Create a new structure with its structure file and thumbnail in PostgreSQL.
     Ownership is derived from the authenticated user's database record. Users in a
     group always create co-owned structures with user_sub and group_id set.
     :param formula: Chemical formula of the structure.
-    :param image: UploadFile containing the structure image.
+    :param image: PNG structure thumbnail, up to 8 MiB.
     :param tags: Case-insensitive tags to associate with the structure.
     :param notes: Optional notes for the structure.
     :param name: Name of the structure.
-    :param file: File containing the structure data.
+    :param file: UTF-8 structure data, up to 4 MiB.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: The created structure object.
     """
-    structure_path = None
     try:
-        settings = get_settings()
-        s3 = create_s3_client()
         db_user = get_user_or_404(db, get_user_sub(user))
         user_id = db_user.user_sub
-
-        # Create directory for the structure
-        structure_id = uuid.uuid4()
-        structure_id_str = str(structure_id)
-        structure_path = os.path.join(JOB_DIR, structure_id_str)
-        os.makedirs(structure_path, exist_ok=True)
-
-        # Save the uploaded file
-        safe_name = Path(file.filename or "").name
-        file_path = os.path.join(structure_path, safe_name)
-        with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        s3_link = upload_structure_to_s3(
-            file_path,
-            structure_id_str,
-            s3,
-            settings.s3_bucket_name,
-        )
-        uploaded_at = datetime.now(timezone.utc)
-
-        print("FORMULA", formula)
         try:
-            image_key = f"structures/{structure_id_str}.png"
-            s3.upload_fileobj(
-                image.file,
-                settings.s3_bucket_name,
-                image_key,
-            )
-        except Exception as e:
-            print("Upload to s3 failed:", e)
-            raise
+            structure_content = read_bounded_upload(
+                file,
+                MAX_STRUCTURE_CONTENT_BYTES,
+                "structure file",
+            ).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure file must be valid UTF-8 text",
+            ) from error
 
-        # Create and save the structure in the database
+        if not structure_content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure file must not be empty",
+            )
+
+        if image.content_type != PNG_MEDIA_TYPE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must be a PNG image",
+            )
+
+        thumbnail = read_bounded_upload(
+            image,
+            MAX_STRUCTURE_THUMBNAIL_BYTES,
+            "structure thumbnail",
+        )
+        if not thumbnail:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must not be empty",
+            )
+        if not thumbnail.startswith(PNG_SIGNATURE):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must contain valid PNG data",
+            )
+
         structure = Structure(
-            structure_id=structure_id,
+            structure_id=uuid.uuid4(),
             user_sub=user_id,
             group_id=db_user.group_id,
             name=name,
             formula=formula,
-            location=s3_link,
             notes=notes,
-            uploaded_at=uploaded_at,
-            is_deleted=False
+            content=structure_content,
+            thumbnail=thumbnail,
+            thumbnail_media_type=PNG_MEDIA_TYPE,
+            uploaded_at=datetime.now(timezone.utc),
+            is_deleted=False,
         )
         db.add(structure)
 
@@ -400,34 +381,16 @@ def create_and_upload_structure(
             refresh=structure,
             integrity_error_detail="Structure with this name already exists.",
             error_detail="Could not create structure",
-            on_error=lambda: shutil.rmtree(structure_path, ignore_errors=True),
         )
 
         return {
             **serialize_structure(
                 structure,
                 include_user_sub=can_view_asset_user_owner(db_user, structure),
+                include_content=True,
             )
         }
     except HTTPException:
         raise
     except Exception as e:
-        if structure_path:
-            shutil.rmtree(structure_path, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-def upload_structure_to_s3(
-    local_file_path: str,
-    structure_id: str,
-    s3,
-    bucket_name: str,
-):
-    key = f"structures/{structure_id}.xyz"
-
-    try:
-        s3.upload_file(local_file_path, bucket_name, key)
-        print(f"Uploaded to s3://{bucket_name}/{key}")
-        return f"s3://{bucket_name}/{key}"
-    except Exception as e:
-        print("Upload to s3 failed:", e)
-        raise
+        raise HTTPException(status_code=500, detail=str(e)) from e

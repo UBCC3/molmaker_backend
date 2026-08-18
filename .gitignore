@@ -6,7 +6,9 @@
 /PR14_IN_SCOPE_FIX_PLAN.md
 /JOBS_API_ORCHESTRATION_REDESIGN_PR_PLAN.md
 /docs/Jobs API and Orchestration Redesign.md
+/S3_TO_DATABASE_MIGRATION_DESIGN.md
 /jobs/*/input.xyz
 /jobs/*/urls.json
 **/__pycache__
+.ruff_cache/
 venv

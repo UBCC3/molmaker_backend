@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
+
 from database import get_session_local
+
 
 def get_db() -> Session:
     """

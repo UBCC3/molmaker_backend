@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -50,3 +50,18 @@ class AdminJobResponse(JobResponse):
 
     user_email: Optional[str] = None
     group_name: Optional[str] = None
+
+
+class JobResultResponse(BaseModel):
+    """Parsed calculation result and error retained for one job."""
+
+    job_id: UUID
+    result: Optional[Any] = None
+    error: Optional[Any] = None
+
+
+class JobArtifactListResponse(BaseModel):
+    """Artifact kinds available through the generic artifact endpoint."""
+
+    job_id: UUID
+    artifacts: List[str]

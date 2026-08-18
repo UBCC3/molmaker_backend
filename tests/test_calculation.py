@@ -2,10 +2,9 @@ import subprocess
 import uuid
 
 import pytest
-
-import calculation.service as calculation_service
-import storage
 from conftest import make_auth0_payload
+
+import storage
 from models import Job, JobInput, Tags
 
 
@@ -39,7 +38,7 @@ def _forbid_cluster_and_upload_url_calls(monkeypatch):
         )
 
     monkeypatch.setattr(subprocess, "run", forbidden)
-    monkeypatch.setattr(storage, "generate_presigned_put_url", forbidden)
+    monkeypatch.setattr(storage, "generate_archive_upload_url", forbidden)
 
 
 def test_openapi_documents_durable_calculation_submission_contract(client):
@@ -52,21 +51,19 @@ def test_openapi_documents_durable_calculation_submission_contract(client):
         "/calculation/workflow/standard_analysis",
     ):
         operation = schema["paths"][path]["post"]
-        response_schema = operation["responses"]["201"]["content"][
-            "application/json"
-        ]["schema"]
+        response_schema = operation["responses"]["201"]["content"]["application/json"][
+            "schema"
+        ]
         assert response_schema["$ref"].endswith("/JobResponse")
         assert "processed asynchronously" in operation["description"]
         assert "Slurm" not in operation["description"]
 
-        request_schema = operation["requestBody"]["content"][
-            "multipart/form-data"
-        ]["schema"]
+        request_schema = operation["requestBody"]["content"]["multipart/form-data"][
+            "schema"
+        ]
         request_schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
         request_properties = components[request_schema_name]["properties"]
-        assert {"file", "structure_id", "job_name"}.issubset(
-            request_properties
-        )
+        assert {"file", "structure_id", "job_name"}.issubset(request_properties)
 
 
 @pytest.mark.parametrize(
@@ -173,12 +170,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert existing_tag in job.tags
     assert job.job_input.input_xyz == "custom xyz input"
     assert job.job_input.keywords == {"scf": "tight"}
-    assert (
-        db.query(Tags)
-        .filter_by(user_sub=user.user_sub, name="new")
-        .count()
-        == 1
-    )
+    assert db.query(Tags).filter_by(user_sub=user.user_sub, name="new").count() == 1
 
 
 def test_standard_submission_uses_workflow_defaults(
@@ -189,7 +181,7 @@ def test_standard_submission_uses_workflow_defaults(
 ):
     """The standard workflow should persist its fixed method and basis set."""
     _forbid_cluster_and_upload_url_calls(monkeypatch)
-    user = user_factory(user_sub="auth0|testuser")
+    user_factory(user_sub="auth0|testuser")
 
     response = client.post(
         "/calculation/workflow/standard_analysis",
@@ -228,7 +220,7 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     user_factory,
     structure_factory,
 ):
-    """A readable structure ID should be downloaded and linked to the job."""
+    """A readable database structure should be copied and linked to the job."""
     _forbid_cluster_and_upload_url_calls(monkeypatch)
     group = group_factory()
     owner = user_factory(group=group, user_sub="auth0|owner")
@@ -237,18 +229,7 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
         user_sub=owner.user_sub,
         group_id=group.group_id,
         is_public=True,
-        location="s3://molecule-bucket/structures/water.xyz",
-    )
-    download_calls = []
-
-    def fake_download(location):
-        download_calls.append(location)
-        return "downloaded structure"
-
-    monkeypatch.setattr(
-        calculation_service,
-        "download_structure_source",
-        fake_download,
+        content="stored structure content",
     )
 
     response = client.post(
@@ -267,13 +248,9 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     assert result["user_sub"] == submitter.user_sub
     assert result["group_id"] == str(group.group_id)
     assert result["tags"] == ["shared"]
-    assert result["structures"][0]["structure_id"] == str(
-        structure.structure_id
-    )
-    assert download_calls == [structure.location]
-
+    assert result["structures"][0]["structure_id"] == str(structure.structure_id)
     job = db.query(Job).filter_by(job_id=job_id).one()
-    assert job.job_input.input_xyz == "downloaded structure"
+    assert job.job_input.input_xyz == "stored structure content"
     assert [linked.structure_id for linked in job.structures] == [
         structure.structure_id
     ]
@@ -340,9 +317,7 @@ def test_submission_hides_an_inaccessible_structure(
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == (
-        "Structure not found or not accessible"
-    )
+    assert response.json()["detail"] == ("Structure not found or not accessible")
     assert db.query(Job).count() == 0
     assert db.query(JobInput).count() == 0
 

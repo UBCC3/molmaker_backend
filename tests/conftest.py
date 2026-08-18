@@ -5,15 +5,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from auth import verify_token
 from database import Base
 from dependencies import get_db
 from enum_types import JobStatus
 from main import create_app
-from models import Group, Job, JobInput, Request, Structure, Tags, User
+from models import Group, Job, JobInput, JobResult, Request, Structure, Tags, User
 from settings import get_settings
 
 
@@ -25,29 +25,42 @@ def clear_backend_settings_cache():
     yield
     get_settings.cache_clear()
 
+
 # --- Test database ---
 
-SQLALCHEMY_TEST_DATABASE_URL = os.getenv(
-    "TEST_DATABASE_URL",
-    "sqlite:///:memory:",
-)
-
-if SQLALCHEMY_TEST_DATABASE_URL.startswith("sqlite"):
-    engine = create_engine(
-        SQLALCHEMY_TEST_DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+SQLALCHEMY_TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
+if not SQLALCHEMY_TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL must identify a dedicated PostgreSQL test database"
     )
 
-    @event.listens_for(engine, "connect")
-    def enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-else:
-    engine = create_engine(SQLALCHEMY_TEST_DATABASE_URL)
+test_database_url = make_url(SQLALCHEMY_TEST_DATABASE_URL)
+if test_database_url.get_backend_name() != "postgresql":
+    raise RuntimeError("TEST_DATABASE_URL must use PostgreSQL")
+
+TEST_SCHEMA = f"molmaker_test_{uuid.uuid4().hex}"
+schema_engine = create_engine(test_database_url)
+engine = create_engine(
+    test_database_url,
+    connect_args={"options": f"-csearch_path={TEST_SCHEMA}"},
+)
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_postgresql_schema():
+    """Create and remove one isolated PostgreSQL schema per test run."""
+
+    with schema_engine.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{TEST_SCHEMA}"')
+    try:
+        yield
+    finally:
+        engine.dispose()
+        with schema_engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE')
+        schema_engine.dispose()
 
 
 def _save(db, instance):
@@ -131,6 +144,7 @@ def set_auth_user(app):
     """
     Replace the authenticated user payload inside a test.
     """
+
     def _set_auth_user(payload):
         app.dependency_overrides[verify_token] = lambda: payload
         return payload
@@ -143,6 +157,7 @@ def client(app, db, auth_user):
     """
     Test client with DB and auth dependencies overridden.
     """
+
     def override_get_db():
         yield db
 
@@ -157,6 +172,7 @@ def group_factory(db):
     """
     Factory for persisted Group rows with overridable fields.
     """
+
     def create_group(**overrides):
         values = {
             "group_id": uuid.uuid4(),
@@ -173,6 +189,7 @@ def user_factory(db):
     """
     Factory for persisted User rows, optionally attached to a Group.
     """
+
     def create_user(group=None, **overrides):
         user_sub = overrides.pop("user_sub", f"auth0|{uuid.uuid4().hex}")
         values = {
@@ -193,6 +210,7 @@ def tag_factory(db):
     """
     Factory for persisted Tags rows.
     """
+
     def create_tag(**overrides):
         values = {
             "tag_id": uuid.uuid4(),
@@ -210,14 +228,17 @@ def structure_factory(db):
     """
     Factory for persisted Structure rows, with optional tag relationships.
     """
+
     def create_structure(tags=None, **overrides):
         values = {
             "structure_id": uuid.uuid4(),
             "user_sub": "auth0|testuser",
             "name": f"Structure {uuid.uuid4().hex[:8]}",
             "formula": "H2O",
-            "location": "s3://test-bucket/structures/test.xyz",
             "notes": None,
+            "content": "3\nwater\nO 0 0 0\nH 0 0 1\nH 0 1 0\n",
+            "thumbnail": b"thumbnail-bytes",
+            "thumbnail_media_type": "image/png",
             "uploaded_at": datetime.now(timezone.utc),
             "is_deleted": False,
         }
@@ -235,6 +256,7 @@ def job_factory(db):
     """
     Factory for persisted Job rows, with optional structure and tag relationships.
     """
+
     def create_job(
         structures=None,
         tags=None,
@@ -280,10 +302,32 @@ def job_factory(db):
 
 
 @pytest.fixture
+def job_result_factory(db, job_factory):
+    """Factory for the one-to-one result row of a persisted job."""
+
+    def create_job_result(job=None, **overrides):
+        job = job or job_factory(
+            status=JobStatus.completed.value,
+            is_uploaded=True,
+        )
+        values = {
+            "job_id": job.job_id,
+            "result": {"success": True},
+            "error": None,
+            "artifacts": {},
+        }
+        values.update(overrides)
+        return _save(db, JobResult(**values))
+
+    return create_job_result
+
+
+@pytest.fixture
 def request_factory(db):
     """
     Factory for persisted Request rows between two users and a group.
     """
+
     def create_request(sender, receiver, group, **overrides):
         sender_sub = sender.user_sub if hasattr(sender, "user_sub") else sender
         receiver_sub = receiver.user_sub if hasattr(receiver, "user_sub") else receiver

@@ -85,8 +85,7 @@ class SubmissionReconciler(BaseReconciler):
             return
 
         if job.attempt_count and (
-            job.cancel_requested
-            or job.attempt_count >= self.settings.max_attempts
+            job.cancel_requested or job.attempt_count >= self.settings.max_attempts
         ):
             recovered_slurm_id = self._find_existing_submission(job)
             if recovered_slurm_id:
@@ -129,6 +128,8 @@ class SubmissionReconciler(BaseReconciler):
                 optimization_type=job.optimization_type,
                 input_xyz=job_input.input_xyz,
                 keywords=job_input.keywords,
+                time_limit_minutes=self.settings.slurm_job_time_limit_minutes,
+                memory_mb=self.settings.slurm_job_memory_mb,
                 recover_existing=recover_existing,
             )
         except JobDispatchError as error:

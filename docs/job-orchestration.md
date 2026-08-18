@@ -47,7 +47,8 @@ is available.
 The submission reconciler selects `submitting` jobs and loads their immutable
 input from `job_inputs`. Before it calls the cluster, it commits the increased
 `attempt_count`. It then sends one `submit` request containing the calculation
-settings, `input_xyz`, optional keywords, and whether recovery is required.
+settings, `input_xyz`, optional keywords, backend-configured Slurm time and
+memory limits, and whether recovery is required.
 
 On the cluster, `dispatch.py`:
 
@@ -97,29 +98,39 @@ terminal.
 
 ### 3. Finalisation
 
-Before an upload, the finalisation reconciler checks the job's deterministic S3
-keys. This recovers an upload that succeeded before the database update was
-committed. Otherwise, it creates fresh presigned PUT URLs and sends them
-directly in an `upload-artifacts` JSON request. The URLs are never written to a
-file, stored in PostgreSQL, or logged.
+The finalisation reconciler creates one fresh presigned PUT URL for the job's
+deterministic ZIP key and sends it in an `upload-artifacts` JSON request. The
+cluster builds and uploads the ZIP, then returns parsed result/error data and
+the required frontend artifacts through SSH stdout. Those returned files are
+stored in PostgreSQL; only the ZIP is stored in S3.
 
-The cluster uploader archives the available job files, uploads the required
-individual artifacts, and removes the Alliance job directory only after the
-uploads succeed. The backend then publishes the terminal status.
+The cluster keeps the Alliance job directory until the backend validates and
+commits the complete `job_results` row. The backend then marks the result data
+and external terminal status available, sends `ack-finalisation`, and replaces
+the internal `finalising` state with the terminal state after cleanup succeeds.
+If acknowledgement fails, the next attempt retries cleanup without
+transferring or saving the result again. A job-specific cleanup failure is
+retried up to `MAX_ATTEMPTS`; after that, the backend publishes the already
+available terminal result and logs that the cluster directory may need manual
+cleanup. This prevents one undeletable directory from blocking finalisation
+forever.
 
-Every terminal outcome has an archive. Individual downloads depend on the
-outcome:
-
-| Outcome | Individually downloadable |
-|---|---|
-| `completed` | `result.json` and calculation-specific outputs |
-| `failed` with `calculation_failed` | `result.err` |
-| Other failure or `cancelled` | None |
+The complete cluster response is limited to 64 MiB. Exceeding that bound is a
+job-specific failure, so it consumes this job's attempt budget instead of
+being treated as a shared cluster outage.
 
 The archive keeps available inputs, outputs, Slurm logs, and partial results.
-For non-calculation failures, `result.err` is archived when present but is not
-required. If finalisation has not made the required files ready, storage
-endpoints return `409 Job files are not ready`.
+The result and artifact endpoints serve the verified PostgreSQL data directly,
+while the archive endpoint creates the only presigned S3 download URL.
+
+The ZIP upload happens before the backend validates and saves the returned
+data. If validation or persistence repeatedly fails until `MAX_ATTEMPTS`, the
+job becomes `failed` with `result_upload_failed`. The backend does not expose a
+possibly uploaded ZIP from that incomplete attempt because no verified result
+was saved. Not every terminal job therefore has a downloadable archive; jobs
+cancelled before submission and jobs whose archive upload fails also do not.
+Until verified result data is ready, result, artifact, and archive endpoints
+return `409`.
 
 ## Retries, Outages, and Cancellation
 
@@ -168,7 +179,8 @@ the dispatch runner, protocol, calculation code, and artifact uploader.
 | `find-submission` | Search exact job names with `squeue`, then the last 24 hours of `sacct`; never submit. |
 | `status-batch` | Run one allocation-only `sacct` query for a batch of Slurm IDs. |
 | `cancel` | Run repeat-safe `scancel --quiet`. |
-| `upload-artifacts` | Pass fresh URLs to the job-scoped uploader through stdin. |
+| `upload-artifacts` | Pass one fresh archive PUT URL, upload the ZIP, and return database-bound result data without deleting scratch. |
+| `ack-finalisation` | Delete the validated job directory after the backend has saved the result. |
 
 The matching repository commit must be deployed before the reconcilers are
 enabled. See the

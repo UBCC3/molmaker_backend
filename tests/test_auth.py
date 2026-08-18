@@ -1,11 +1,9 @@
-import pytest
-from unittest.mock import patch, MagicMock
-import uuid
-from datetime import datetime, timezone
+from unittest.mock import patch
 
-from conftest import make_auth0_payload
-from models import Job
+import pytest
+
 from settings import get_settings
+
 
 # Helper to mock verify_token as a FastAPI dependency override
 def mock_verify_token(payload):
@@ -17,10 +15,12 @@ def mock_verify_token(payload):
 
     def _override():
         return payload
-    
+
     app.dependency_overrides[verify_token] = _override
 
+
 # 1. verify_token unit tests (the function itself, not via HTTP)
+
 
 class TestVerifyTokenUnit:
     @pytest.fixture(autouse=True)
@@ -28,30 +28,37 @@ class TestVerifyTokenUnit:
         monkeypatch.setenv("AUTH0_DOMAIN", "test.auth0.com")
         monkeypatch.setenv("API_AUDIENCE", "test-audience")
         get_settings.cache_clear()
-    
+
     @patch("auth.requests.get")
     @patch("auth.jwt.get_unverified_header")
     @patch("auth.jwt.decode")
-    def test_valid_token_returns_payload(self, mock_decode, mock_header, mock_requests_get):
+    def test_valid_token_returns_payload(
+        self, mock_decode, mock_header, mock_requests_get
+    ):
         """
         A well-formed token with a matching key returns the decoded payload.
         """
         mock_requests_get.return_value.json.return_value = {
-            "keys": [{
-                "kid": "test-key-id",
-                "kty": "RSA",
-                "use": "sig",
-                "n": "some-n",
-                "e": "AQAB"
-            }]
+            "keys": [
+                {
+                    "kid": "test-key-id",
+                    "kty": "RSA",
+                    "use": "sig",
+                    "n": "some-n",
+                    "e": "AQAB",
+                }
+            ]
         }
         mock_header.return_value = {"kid": "test-key-id"}
         mock_decode.return_value = {"sub": "auth0|testuser"}
 
-        from auth import verify_token
         from fastapi.security import HTTPAuthorizationCredentials
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake.jwt.token")
+        from auth import verify_token
+
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="fake.jwt.token"
+        )
         result = verify_token(credentials)
 
         assert result == {"sub": "auth0|testuser"}
@@ -63,13 +70,18 @@ class TestVerifyTokenUnit:
         Token with a kid that doesn't match any JWKS key raises 401.
         """
         from fastapi import HTTPException
-        from auth import verify_token
         from fastapi.security import HTTPAuthorizationCredentials
 
-        mock_requests_get.return_value.json.return_value = {"keys": [{"kid": "other-key"}]}
+        from auth import verify_token
+
+        mock_requests_get.return_value.json.return_value = {
+            "keys": [{"kid": "other-key"}]
+        }
         mock_header.return_value = {"kid": "missing-key-id"}
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="fake.jwt.token")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="fake.jwt.token"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             verify_token(credentials)
@@ -80,28 +92,29 @@ class TestVerifyTokenUnit:
     @patch("auth.requests.get")
     @patch("auth.jwt.get_unverified_header")
     @patch("auth.jwt.decode")
-    def test_expired_token_raises_401(self, mock_decode, mock_header, mock_requests_get):
+    def test_expired_token_raises_401(
+        self, mock_decode, mock_header, mock_requests_get
+    ):
         """
         An expired token raises 401.
         """
-        from jose import ExpiredSignatureError
         from fastapi import HTTPException
-        from auth import verify_token
         from fastapi.security import HTTPAuthorizationCredentials
+        from jose import ExpiredSignatureError
+
+        from auth import verify_token
 
         mock_requests_get.return_value.json.return_value = {
-            "keys": [{
-                "kid": "test-key-id",
-                "kty": "RSA",
-                "use": "sig",
-                "n": "n",
-                "e": "e"
-            }]
+            "keys": [
+                {"kid": "test-key-id", "kty": "RSA", "use": "sig", "n": "n", "e": "e"}
+            ]
         }
         mock_header.return_value = {"kid": "test-key-id"}
         mock_decode.side_effect = ExpiredSignatureError("Token expired")
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="expired.jwt.token")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="expired.jwt.token"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             verify_token(credentials)
@@ -115,14 +128,17 @@ class TestVerifyTokenUnit:
         """
         JWKS response missing the 'keys' field raises 401.
         """
-        from auth import verify_token
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
+
+        from auth import verify_token
 
         mock_requests_get.return_value.json.return_value = {}
         mock_header.return_value = {"kid": "test-key-id"}
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="malformed.jwk.response")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="malformed.jwk.response"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             verify_token(credentials)
@@ -133,32 +149,39 @@ class TestVerifyTokenUnit:
     @patch("auth.requests.get")
     @patch("auth.jwt.get_unverified_header")
     @patch("auth.jwt.decode")
-    def test_decode_failure_raises_401(self, mock_decode, mock_header, mock_requests_get):
+    def test_decode_failure_raises_401(
+        self, mock_decode, mock_header, mock_requests_get
+    ):
         """
         Any JWTError during decode raises 401.
         """
-        from jose import JWTError
-        from auth import verify_token
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
+        from jose import JWTError
+
+        from auth import verify_token
 
         mock_requests_get.return_value.json.return_value = {
-            "keys": [{
-                "kid": "test-key-id",
-                "kty": "RSA",
-                "use": "sig",
-                "n": "some-n",
-                "e": "AQAB"
-            }]
+            "keys": [
+                {
+                    "kid": "test-key-id",
+                    "kty": "RSA",
+                    "use": "sig",
+                    "n": "some-n",
+                    "e": "AQAB",
+                }
+            ]
         }
         mock_header.return_value = {"kid": "test-key-id"}
         mock_decode.side_effect = JWTError("bad signature")
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="jwt.decode.fail")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="jwt.decode.fail"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             verify_token(credentials)
-        
+
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid access token"
 
@@ -169,16 +192,21 @@ class TestVerifyTokenUnit:
         When Auth0 JWKS endpoint is unreachable the endpoint raises 401.
         """
         import requests
-        from auth import verify_token
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
 
+        from auth import verify_token
+
         mock_header.return_value = {"kid": "test-key-id"}
-        mock_requests_get.side_effect = requests.exceptions.ConnectionError("unreachable")
+        mock_requests_get.side_effect = requests.exceptions.ConnectionError(
+            "unreachable"
+        )
 
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="jwks.network.failure")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="jwks.network.failure"
+        )
 
-        with pytest.raises(HTTPException) as exc_info:        
+        with pytest.raises(HTTPException) as exc_info:
             verify_token(credentials)
 
         assert exc_info.value.status_code == 401
@@ -192,22 +220,27 @@ class TestVerifyTokenUnit:
         """
         verify_token passes audience and issuer to jwt.decode
         """
-        from auth import verify_token
         from fastapi.security import HTTPAuthorizationCredentials
 
+        from auth import verify_token
+
         mock_requests_get.return_value.json.return_value = {
-            "keys": [{
-                "kid": "test-key-id",
-                "kty": "RSA",
-                "use": "sig",
-                "n": "some-n",
-                "e": "AQAB"
-            }]
+            "keys": [
+                {
+                    "kid": "test-key-id",
+                    "kty": "RSA",
+                    "use": "sig",
+                    "n": "some-n",
+                    "e": "AQAB",
+                }
+            ]
         }
         mock_header.return_value = {"kid": "test-key-id"}
         mock_decode.return_value = {"sub": "auth0|testuser"}
-        
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="configured.audience.issuer")
+
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials="configured.audience.issuer"
+        )
 
         verify_token(credentials)
 

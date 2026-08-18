@@ -14,5 +14,4 @@ class StructureResponse(BaseModel):
     is_public: bool
     name: str
     formula: str
-    location: str
     notes: Optional[str] = None

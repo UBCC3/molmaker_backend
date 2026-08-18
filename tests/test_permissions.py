@@ -45,9 +45,13 @@ class TestAdminPermissionHelpers:
             role="group_admin",
         )
 
-        assert has_group_admin_permission(db, group_admin, target_user.user_sub) is False
+        assert (
+            has_group_admin_permission(db, group_admin, target_user.user_sub) is False
+        )
 
-    def test_member_user_cannot_act_as_group_admin(self, db, group_factory, user_factory):
+    def test_member_user_cannot_act_as_group_admin(
+        self, db, group_factory, user_factory
+    ):
         group = group_factory()
         target_user = user_factory(group=group, user_sub="auth0|target")
         member = user_factory(group=group, user_sub="auth0|member", role="member")
@@ -58,9 +62,13 @@ class TestAdminPermissionHelpers:
         target_user = user_factory(user_sub="auth0|target")
         group_admin = user_factory(user_sub="auth0|group-admin", role="group_admin")
 
-        assert has_group_admin_permission(db, group_admin, target_user.user_sub) is False
+        assert (
+            has_group_admin_permission(db, group_admin, target_user.user_sub) is False
+        )
 
-    def test_missing_target_user_denies_group_admin_user(self, db, group_factory, user_factory):
+    def test_missing_target_user_denies_group_admin_user(
+        self, db, group_factory, user_factory
+    ):
         group = group_factory()
         group_admin = user_factory(
             group=group,

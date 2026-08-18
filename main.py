@@ -1,16 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import init_db
-from calculation.routes import router as calculation_router
-from jobs.routes import router as jobs_router
-from structures.routes import router as structures_router
-from enums.routes import router as enums_router
 from admin.routes import router as admin_router
-from users.routes import router as user_router
+from calculation.routes import router as calculation_router
+from database import init_db
+from enums.routes import router as enums_router
 from groups.routes import router as groups_router
+from jobs.routes import router as jobs_router
 from request.routes import router as requests_router
 from s3.routes import router as s3_router
+from structures.routes import router as structures_router
+from users.routes import router as user_router
 
 
 def create_app(create_tables: bool = False) -> FastAPI:

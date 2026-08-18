@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, call
 
 import pytest
+from conftest import TestingSessionLocal
 
 import orchestration.submission_reconciler as submission_reconciler
-from conftest import TestingSessionLocal
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
 from orchestration.cluster_client import (
@@ -123,8 +123,7 @@ def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
     assert refresh(db, newest).status == JobStatus.submitting.value
     assert refresh(db, ignored).status == JobStatus.running.value
     assert [
-        submitted.kwargs["job_id"]
-        for submitted in client.submit_job.call_args_list
+        submitted.kwargs["job_id"] for submitted in client.submit_job.call_args_list
     ] == [oldest.job_id, second.job_id]
 
 
@@ -171,6 +170,8 @@ def test_success_commits_attempt_then_submits_the_database_inputs(
             "optimization_type": "ts",
             "input_xyz": "2\n\nH 0 0 0\nH 0 0 1\n",
             "keywords": {"scf_type": "df"},
+            "time_limit_minutes": 15,
+            "memory_mb": 4096,
             "recover_existing": False,
         }
         return "98765"
@@ -204,18 +205,22 @@ def test_retry_uses_one_recovering_submission_request(
     saved = refresh(db, job)
     assert saved.status == JobStatus.submitted.value
     assert saved.slurm_id == "33333"
-    assert client.method_calls == [call.submit_job(
-        job_id=job.job_id,
-        calculation_type=CalculationType.energy,
-        method="hf",
-        basis_set="sto-3g",
-        charge=0,
-        multiplicity=1,
-        optimization_type=None,
-        input_xyz="1\n\nH 0 0 0\n",
-        keywords=None,
-        recover_existing=True,
-    )]
+    assert client.method_calls == [
+        call.submit_job(
+            job_id=job.job_id,
+            calculation_type=CalculationType.energy,
+            method="hf",
+            basis_set="sto-3g",
+            charge=0,
+            multiplicity=1,
+            optimization_type=None,
+            input_xyz="1\n\nH 0 0 0\n",
+            keywords=None,
+            time_limit_minutes=15,
+            memory_mb=4096,
+            recover_existing=True,
+        )
+    ]
 
 
 def test_cancel_before_any_attempt_finishes_without_cluster_work(

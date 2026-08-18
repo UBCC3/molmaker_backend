@@ -1,6 +1,8 @@
+import pytest
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 
-from models import Asset, Job, Request, Structure, Tags
+from models import Asset, Job, JobResult, Request, Structure, Tags
 
 
 class TestAssetModel:
@@ -85,6 +87,34 @@ class TestAssetModel:
             assert f"'{status}'" in predicate
         assert "is_deleted" not in predicate
 
+    def test_slurm_id_is_nullable_but_unique_when_assigned(
+        self,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        first_waiting_job = job_factory(slurm_id=None)
+        second_waiting_job = job_factory(slurm_id=None)
+        submitted_job = job_factory(slurm_id="12345")
+
+        assert first_waiting_job.slurm_id is None
+        assert second_waiting_job.slurm_id is None
+        assert submitted_job.slurm_id == "12345"
+        assert Job.__table__.columns["slurm_id"].nullable is True
+
+        constraint = next(
+            constraint
+            for constraint in Job.__table__.constraints
+            if constraint.name == "uq_jobs_slurm_id"
+        )
+        assert tuple(column.name for column in constraint.columns) == ("slurm_id",)
+
+        with pytest.raises(IntegrityError):
+            job_factory(slurm_id="12345")
+        db.rollback()
+
     def test_job_omits_unneeded_orchestration_fields(self):
         assert {
             "retry_count",
@@ -94,3 +124,26 @@ class TestAssetModel:
             "cancel_requested_at",
             "artifact_manifest",
         }.isdisjoint(Job.__table__.columns.keys())
+
+    def test_structure_stores_required_content_without_a_legacy_location(self):
+        assert "location" not in Structure.__table__.columns
+        assert Structure.__table__.columns["content"].nullable is False
+        assert Structure.__table__.columns["thumbnail"].nullable is False
+        assert Structure.__table__.columns["thumbnail_media_type"].nullable is False
+
+    def test_job_result_is_one_to_one_with_safe_artifact_default(
+        self,
+        user_factory,
+        job_factory,
+        job_result_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(status="completed", is_uploaded=True)
+        result = job_result_factory(job=job, artifacts={"trajectory": "xyz"})
+
+        assert result.job_id == job.job_id
+        assert result.job is job
+        assert job.job_result is result
+        assert result.artifacts == {"trajectory": "xyz"}
+        assert Job.job_result.property.uselist is False
+        assert JobResult.__table__.columns["artifacts"].nullable is False

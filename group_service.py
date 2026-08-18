@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session, selectinload
 from asset_service import list_group_assets
 from models import Asset, Group, Job, Structure, User
 from permissions import (
-    can_demember_group_user,
     can_delete_group,
+    can_demember_group_user,
     can_list_group_users,
     can_update_group,
     can_view_group_owner_metadata,
@@ -27,7 +27,6 @@ from utils import (
     parse_uuid_or_404,
 )
 
-
 AssetModel = TypeVar("AssetModel", bound=Asset)
 
 
@@ -37,8 +36,7 @@ class AssetSerializer(Protocol[AssetModel]):
         asset: AssetModel,
         *,
         include_user_sub: bool,
-    ) -> dict:
-        ...
+    ) -> dict: ...
 
 
 def get_group_or_404(db: Session, group_id: str) -> Group:
@@ -119,7 +117,9 @@ def list_group_users(
 ) -> list[User]:
     require_group_membership(user)
     if not can_list_group_users(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     return (
         db.query(User)
@@ -142,7 +142,9 @@ def demember_group_user(
         selected_user,
     )
     if not can_demember_group_user(acting_user, selected_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     previous_group_id = selected_user.group_id
     if previous_group_id is not None:
@@ -181,7 +183,8 @@ def list_group_assets_for_user(
     return [
         serialize_asset(
             asset,
-            include_user_sub=include_all_owner_metadata or asset.user_sub == user.user_sub,
+            include_user_sub=include_all_owner_metadata
+            or asset.user_sub == user.user_sub,
         )
         for asset in assets
     ]
@@ -194,14 +197,20 @@ def update_group_name(
     group_name: Optional[str],
 ) -> dict:
     if not is_admin_or_group_admin(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     group = get_group_or_404(db, group_id)
     if not can_update_group(user, group):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     if not group_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="No fields to update"
+        )
 
     group.name = group_name
     commit_or_rollback(
@@ -213,7 +222,9 @@ def update_group_name(
 
 def delete_group(db: Session, user: User, group_id: str) -> dict:
     if not can_delete_group(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     group = get_group_or_404(db, group_id)
     users_in_group = (

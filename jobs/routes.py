@@ -1,32 +1,39 @@
-from typing import Optional, List
+from typing import List, Optional
+
 from fastapi import (
     APIRouter,
-    Form,
-    HTTPException,
     Body,
     Depends,
+    Form,
+    HTTPException,
     Query,
-    status,
     Response,
+    status,
 )
 from sqlalchemy.orm import Session
+
 from asset_service import (
     get_asset_or_404,
+    get_available_job_artifacts,
+    get_job_artifact_content,
     list_user_assets,
     require_asset_permission,
+    require_job_result_ready,
     serialize_job,
     set_asset_tags,
     soft_delete_asset,
     update_asset_visibility,
 )
+from auth import verify_token
+from dependencies import get_db
+from enum_types import JobStatus
+from jobs.schemas import JobArtifactListResponse, JobResponse, JobResultResponse
+from models import Job
 from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Job
-from dependencies import get_db
-from auth import verify_token
 from user_service import get_user_or_404
 from utils import (
     DEFAULT_JOB_LIST_LIMIT,
@@ -34,8 +41,6 @@ from utils import (
     commit_or_rollback,
     get_user_sub,
 )
-from enum_types import JobStatus
-from jobs.schemas import JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -67,6 +72,64 @@ def get_all_jobs(
     return [serialize_job(job) for job in jobs]
 
 
+@router.get("/{job_id}/result", response_model=JobResultResponse)
+def get_job_result(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return the parsed result and error stored for an accessible job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    return JobResultResponse(
+        job_id=job.job_id,
+        result=job.job_result.result,
+        error=job.job_result.error,
+    )
+
+
+@router.get("/{job_id}/artifacts", response_model=JobArtifactListResponse)
+def get_job_artifacts(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return the artifact kinds available for an accessible finished job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    return JobArtifactListResponse(
+        job_id=job.job_id,
+        artifacts=get_available_job_artifacts(job),
+    )
+
+
+@router.get("/{job_id}/artifacts/{kind}")
+def get_job_artifact(
+    job_id: str,
+    kind: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_token),
+):
+    """Return one frontend-facing text artifact stored for a finished job."""
+
+    job = get_asset_or_404(db, Job, job_id)
+    user = get_user_or_404(db, get_user_sub(current_user))
+    require_asset_permission(user, job, can_read_asset)
+    require_job_result_ready(job)
+    content, filename, media_type = get_job_artifact_content(job, kind)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job_by_id(
     job_id: str,
@@ -78,8 +141,8 @@ def get_job_by_id(
 
     Allows admins, direct owners, group admins for the job's group_id, and
     current group members when the job is public. Other group members do not
-    receive another user's user_sub. Linked structures retain their location
-    field, while internal orchestration fields are never returned.
+    receive another user's user_sub. Internal orchestration fields are never
+    returned.
 
     :param job_id: ID of the job to retrieve.
     :param db: Database session dependency.

@@ -4,12 +4,10 @@ from unittest.mock import Mock, call
 import pytest
 from sqlalchemy.engine import make_url
 
-import calculation.service as calculation_service
 import orchestration.finalisation_reconciler as finalisation_module
 import orchestration.status_reconciler as status_module
 import orchestration.submission_reconciler as submission_module
 import storage
-import structures.routes as structures_routes
 from main import create_app
 from orchestration.cluster_client import ClusterDispatchClient
 from orchestration.finalisation_reconciler import FinalisationReconciler
@@ -17,11 +15,10 @@ from orchestration.status_reconciler import StatusReconciler
 from orchestration.submission_reconciler import SubmissionReconciler
 from settings import (
     APPLICATION_DEFAULTS,
-    BackendSettings,
     SUPPORTED_ENVIRONMENT_VARIABLES,
+    BackendSettings,
     get_settings,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APPLICATION_DIRECTORIES = (
@@ -112,7 +109,7 @@ def test_auth0_management_settings_are_required_together(monkeypatch):
     assert "AUTH0_CLIENT_SECRET" in str(error.value)
 
 
-def test_s3_consumers_share_one_bucket_and_region(monkeypatch):
+def test_archive_storage_uses_the_configured_bucket_and_region(monkeypatch):
     monkeypatch.setenv("S3_BUCKET_NAME", "shared-bucket")
     monkeypatch.setenv("S3_REGION", "us-west-2")
     calls = []
@@ -128,7 +125,7 @@ def test_s3_consumers_share_one_bucket_and_region(monkeypatch):
 
     monkeypatch.setattr(storage.boto3, "client", client)
 
-    storage.generate_presigned_get_url("objects/result.json")
+    storage.presign_zip_download_url("job-123")
 
     service_name, client_options = calls[0]
     assert service_name == "s3"
@@ -138,12 +135,10 @@ def test_s3_consumers_share_one_bucket_and_region(monkeypatch):
         "ClientMethod": "get_object",
         "Params": {
             "Bucket": "shared-bucket",
-            "Key": "objects/result.json",
+            "Key": "ubchemica/archive/job-123.zip",
         },
         "ExpiresIn": 3600,
     }
-    assert calculation_service.create_s3_client is storage.create_s3_client
-    assert structures_routes.create_s3_client is storage.create_s3_client
 
 
 def test_api_and_reconcilers_use_the_same_settings(
@@ -179,8 +174,7 @@ def test_api_and_reconcilers_use_the_same_settings(
 
     assert app.routes
     assert all(
-        reconciler.settings is settings.orchestration
-        for reconciler in reconcilers
+        reconciler.settings is settings.orchestration for reconciler in reconcilers
     )
     assert cluster_factory.call_args_list == [
         call(settings),
@@ -202,6 +196,8 @@ def test_application_modules_do_not_read_environment_directly():
         source = source_file.read_text(encoding="utf-8")
         for expression in forbidden:
             if expression in source:
-                violations.append(f"{source_file.relative_to(PROJECT_ROOT)}: {expression}")
+                violations.append(
+                    f"{source_file.relative_to(PROJECT_ROOT)}: {expression}"
+                )
 
     assert violations == []

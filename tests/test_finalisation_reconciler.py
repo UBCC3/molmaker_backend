@@ -1,21 +1,25 @@
 from dataclasses import replace
 from datetime import datetime, timezone
+from itertools import count
 from unittest.mock import Mock, call
 
 import pytest
-
-from asset_service import serialize_job
 from conftest import TestingSessionLocal
+
+from asset_service import serialize_job, upsert_job_result
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
 from orchestration.cluster_client import (
     ClusterDispatchClient,
     ClusterServiceError,
+    FinalisationResult,
     JobDispatchError,
 )
 from orchestration.finalisation_reconciler import FinalisationReconciler
 from settings import OrchestrationSettings
 from storage import StorageServiceError
+
+SLURM_IDS = count(10_000)
 
 
 @pytest.fixture
@@ -43,20 +47,19 @@ def make_reconciler(settings, user_factory):
         *,
         client=None,
         current_settings=None,
-        generate_upload_urls=None,
-        required_artifacts_exist=None,
+        generate_upload_url=None,
         sleep=None,
         clock=None,
     ):
-        if required_artifacts_exist is None:
-            required_artifacts_exist = Mock(return_value=False)
+        if client is None:
+            client = Mock(spec=ClusterDispatchClient)
+            client.upload_artifacts.return_value = completed_result()
         return FinalisationReconciler(
             session_factory=TestingSessionLocal,
-            cluster_client=client or Mock(spec=ClusterDispatchClient),
+            cluster_client=client,
             settings=current_settings or settings,
-            generate_upload_urls=generate_upload_urls
-            or Mock(return_value={"zip": "https://upload.test/archive"}),
-            required_artifacts_exist=required_artifacts_exist,
+            generate_upload_url=generate_upload_url
+            or Mock(return_value="https://upload.test/archive"),
             sleep=sleep or Mock(),
             clock=clock or Mock(return_value=0.0),
         )
@@ -73,10 +76,20 @@ def finalising_job(job_factory, **overrides):
     values = {
         "status": JobStatus.finalising.value,
         "terminal_status": JobStatus.completed.value,
-        "slurm_id": "12345",
+        "slurm_id": str(next(SLURM_IDS)),
     }
     values.update(overrides)
     return job_factory(**values)
+
+
+def completed_result(**overrides):
+    values = {
+        "calculation_result": {"energy": -75.2},
+        "calculation_error": None,
+        "artifacts": {},
+    }
+    values.update(overrides)
+    return FinalisationResult(**values)
 
 
 def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
@@ -86,6 +99,7 @@ def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
     settings,
 ):
     client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
     reconciler = make_reconciler(
         client=client,
         current_settings=replace(settings, finalisation_query_limit=2),
@@ -117,8 +131,7 @@ def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
     assert refresh(db, newest).status == JobStatus.finalising.value
     assert refresh(db, ignored).status == JobStatus.running.value
     assert [
-        uploaded.kwargs["job_id"]
-        for uploaded in client.upload_artifacts.call_args_list
+        uploaded.kwargs["job_id"] for uploaded in client.upload_artifacts.call_args_list
     ] == [oldest.job_id, second.job_id]
 
 
@@ -156,7 +169,6 @@ def test_success_publishes_each_terminal_status(
     allow_missing_error,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    reconciler = make_reconciler(client=client)
     job = finalising_job(
         job_factory,
         terminal_status=terminal_status.value,
@@ -164,6 +176,17 @@ def test_success_publishes_each_terminal_status(
         failure_reason=failure_reason,
         failure_message=failure_message,
     )
+    client.upload_artifacts.return_value = completed_result(
+        calculation_result=(
+            {"energy": -75.2} if terminal_status == JobStatus.completed else None
+        ),
+        calculation_error=(
+            {"message": "calculation failed"}
+            if failure_reason == JobFailureReason.calculation_failed.value
+            else None
+        ),
+    )
+    reconciler = make_reconciler(client=client)
 
     reconciler.run_round()
 
@@ -179,12 +202,32 @@ def test_success_publishes_each_terminal_status(
         job_id=job.job_id,
         calculation_type=CalculationType.energy,
         terminal_status=terminal_status,
-        upload_urls={"zip": "https://upload.test/archive"},
+        archive_upload_url="https://upload.test/archive",
         allow_missing_error=allow_missing_error,
     )
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
 
 
-def test_each_retry_uses_fresh_upload_urls_and_stays_publicly_running(
+def test_invalid_calculation_artifacts_are_not_saved_or_acknowledged(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result(artifacts={})
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory, calculation_type="frequency")
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.finalising.value
+    assert saved.attempt_count == 1
+    assert saved.job_result is None
+    client.acknowledge_finalisation.assert_not_called()
+
+
+def test_each_retry_uses_a_fresh_archive_url_and_stays_publicly_running(
     db,
     job_factory,
     make_reconciler,
@@ -192,18 +235,16 @@ def test_each_retry_uses_fresh_upload_urls_and_stays_publicly_running(
     client = Mock(spec=ClusterDispatchClient)
     client.upload_artifacts.side_effect = [
         JobDispatchError("artifact upload failed for this job"),
-        None,
+        completed_result(),
     ]
     generated_urls = [
-        {"zip": "https://upload.test/attempt-one"},
-        {"zip": "https://upload.test/attempt-two"},
+        "https://upload.test/attempt-one",
+        "https://upload.test/attempt-two",
     ]
     generate = Mock(side_effect=generated_urls)
-    verify = Mock(return_value=False)
     reconciler = make_reconciler(
         client=client,
-        generate_upload_urls=generate,
-        required_artifacts_exist=verify,
+        generate_upload_url=generate,
     )
     job = finalising_job(job_factory)
 
@@ -214,7 +255,6 @@ def test_each_retry_uses_fresh_upload_urls_and_stays_publicly_running(
     assert waiting.attempt_count == 1
     assert waiting.is_uploaded is False
     assert serialize_job(waiting)["status"] == JobStatus.running.value
-    assert verify.call_count == 1
 
     reconciler.run_round()
 
@@ -222,30 +262,36 @@ def test_each_retry_uses_fresh_upload_urls_and_stays_publicly_running(
     assert published.status == JobStatus.completed.value
     assert published.attempt_count == 0
     assert generate.call_args_list == [
-        call(str(job.job_id), "energy", "completed"),
-        call(str(job.job_id), "energy", "completed"),
+        call(str(job.job_id)),
+        call(str(job.job_id)),
     ]
     assert [
-        uploaded.kwargs["upload_urls"]
+        uploaded.kwargs["archive_upload_url"]
         for uploaded in client.upload_artifacts.call_args_list
     ] == generated_urls
-    assert verify.call_count == 2
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
 
 
-def test_existing_artifacts_finish_a_job_without_reusing_cluster_scratch(
+def test_saved_result_retries_acknowledgement_without_reuploading(
     db,
     job_factory,
     make_reconciler,
 ):
     client = Mock(spec=ClusterDispatchClient)
     generate = Mock()
-    verify = Mock(return_value=True)
     reconciler = make_reconciler(
         client=client,
-        generate_upload_urls=generate,
-        required_artifacts_exist=verify,
+        generate_upload_url=generate,
     )
     job = finalising_job(job_factory, attempt_count=1)
+    upsert_job_result(
+        db,
+        job,
+        result={"energy": -75.2},
+        error=None,
+        artifacts={},
+    )
+    db.commit()
 
     reconciler.run_round()
 
@@ -253,14 +299,72 @@ def test_existing_artifacts_finish_a_job_without_reusing_cluster_scratch(
     assert saved.status == JobStatus.completed.value
     assert saved.is_uploaded is True
     assert saved.attempt_count == 0
-    verify.assert_called_once_with(
-        str(job.job_id),
-        "energy",
-        "completed",
-        None,
-    )
     generate.assert_not_called()
     client.upload_artifacts.assert_not_called()
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
+
+
+def test_saved_result_is_public_while_acknowledgement_retries(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
+    client.acknowledge_finalisation.side_effect = [
+        ClusterServiceError("cluster unavailable"),
+        None,
+    ]
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory)
+
+    with pytest.raises(ClusterServiceError):
+        reconciler.run_round()
+
+    cleanup_pending = refresh(db, job)
+    assert cleanup_pending.status == JobStatus.finalising.value
+    assert cleanup_pending.is_uploaded is True
+    assert cleanup_pending.completed_at is not None
+    assert cleanup_pending.job_result is not None
+    assert serialize_job(cleanup_pending)["status"] == JobStatus.completed.value
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert client.upload_artifacts.call_count == 1
+    assert client.acknowledge_finalisation.call_count == 2
+
+
+def test_cleanup_failure_stops_retrying_after_the_attempt_limit(
+    db,
+    job_factory,
+    make_reconciler,
+    settings,
+    caplog,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
+    client.acknowledge_finalisation.side_effect = JobDispatchError(
+        "scratch cleanup failed for this job"
+    )
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory)
+
+    for _ in range(settings.max_attempts):
+        assert reconciler.run_round() == 1
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert saved.is_uploaded is True
+    assert saved.job_result is not None
+    assert saved.attempt_count == 0
+    assert client.upload_artifacts.call_count == 1
+    assert client.acknowledge_finalisation.call_count == settings.max_attempts
+    assert "manual cleanup may be required" in caplog.text
+
+    assert reconciler.run_round() == 0
+    assert client.acknowledge_finalisation.call_count == settings.max_attempts
 
 
 def test_finalisation_failure_at_the_attempt_limit_publishes_upload_failure(
@@ -293,7 +397,7 @@ def test_finalisation_failure_at_the_attempt_limit_publishes_upload_failure(
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["url_generation", "cluster_upload", "object_check"],
+    ["url_generation", "cluster_upload", "acknowledgement"],
 )
 def test_shared_outage_stops_the_round_without_incrementing_jobs(
     db,
@@ -302,23 +406,23 @@ def test_shared_outage_stops_the_round_without_incrementing_jobs(
     failure_point,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    generate = Mock(return_value={"zip": "https://upload.test/archive"})
-    verify = Mock(return_value=False)
+    client.upload_artifacts.return_value = completed_result()
+    generate = Mock(return_value="https://upload.test/archive")
     error_type = StorageServiceError
     if failure_point == "url_generation":
         generate.side_effect = StorageServiceError("S3 unavailable")
     elif failure_point == "cluster_upload":
-        client.upload_artifacts.side_effect = ClusterServiceError(
+        client.upload_artifacts.side_effect = ClusterServiceError("cluster unavailable")
+        error_type = ClusterServiceError
+    else:
+        client.acknowledge_finalisation.side_effect = ClusterServiceError(
             "cluster unavailable"
         )
         error_type = ClusterServiceError
-    else:
-        verify.side_effect = StorageServiceError("S3 unavailable")
 
     reconciler = make_reconciler(
         client=client,
-        generate_upload_urls=generate,
-        required_artifacts_exist=verify,
+        generate_upload_url=generate,
     )
     first = finalising_job(
         job_factory,
@@ -334,11 +438,19 @@ def test_shared_outage_stops_the_round_without_incrementing_jobs(
     with pytest.raises(error_type):
         reconciler.run_round()
 
-    assert refresh(db, first).attempt_count == 1
-    assert refresh(db, first).status == JobStatus.finalising.value
+    saved_first = refresh(db, first)
+    expected_attempt_count = 0 if failure_point == "acknowledgement" else 1
+    assert saved_first.attempt_count == expected_attempt_count
+    assert saved_first.status == JobStatus.finalising.value
+    assert saved_first.is_uploaded is (failure_point == "acknowledgement")
+    assert serialize_job(saved_first)["status"] == (
+        JobStatus.completed.value
+        if failure_point == "acknowledgement"
+        else JobStatus.running.value
+    )
     assert refresh(db, second).attempt_count == 2
     assert refresh(db, second).status == JobStatus.finalising.value
-    assert generate.call_count == (0 if failure_point == "object_check" else 1)
+    assert generate.call_count == 1
 
 
 def test_external_calls_run_without_an_open_database_transaction(
@@ -353,20 +465,19 @@ def test_external_calls_run_without_an_open_database_transaction(
 
     def generate_outside_transaction(*_args):
         outside_transaction()
-        return {"zip": "https://upload.test/archive"}
+        return "https://upload.test/archive"
 
     generate = Mock(side_effect=generate_outside_transaction)
 
-    def verify_outside_transaction(*_args):
+    def upload_outside_transaction(*_args, **_kwargs):
         outside_transaction()
-        return False
+        return completed_result()
 
-    verify = Mock(side_effect=verify_outside_transaction)
-    client.upload_artifacts.side_effect = outside_transaction
+    client.upload_artifacts.side_effect = upload_outside_transaction
+    client.acknowledge_finalisation.side_effect = outside_transaction
     reconciler = make_reconciler(
         client=client,
-        generate_upload_urls=generate,
-        required_artifacts_exist=verify,
+        generate_upload_url=generate,
     )
     reconciler.session_factory = lambda: worker_session
     finalising_job(job_factory)
