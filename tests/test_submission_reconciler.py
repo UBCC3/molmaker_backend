@@ -171,6 +171,8 @@ def test_success_commits_attempt_then_submits_the_database_inputs(
             "optimization_type": "ts",
             "input_xyz": "2\n\nH 0 0 0\nH 0 0 1\n",
             "keywords": {"scf_type": "df"},
+            "time_limit_minutes": 15,
+            "memory_mb": 4096,
             "recover_existing": False,
         }
         return "98765"
@@ -214,6 +216,8 @@ def test_retry_uses_one_recovering_submission_request(
         optimization_type=None,
         input_xyz="1\n\nH 0 0 0\n",
         keywords=None,
+        time_limit_minutes=15,
+        memory_mb=4096,
         recover_existing=True,
     )]
 

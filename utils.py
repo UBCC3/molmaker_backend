@@ -5,7 +5,7 @@ from typing import Callable, Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,29 @@ DEFAULT_SAVE_ERROR_DETAIL = "Could not save changes"
 DEFAULT_REFRESH_ERROR_DETAIL = (
     "Changes were saved, but the updated data could not be loaded"
 )
+
+
+def read_bounded_upload(
+    upload: UploadFile,
+    maximum_bytes: int,
+    field_name: str,
+) -> bytes:
+    """Read at most one bounded upload into memory, starting at byte zero."""
+
+    try:
+        upload.file.seek(0)
+        contents = upload.file.read(maximum_bytes + 1)
+    except OSError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read {field_name}",
+        ) from error
+    if len(contents) > maximum_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field_name} is too large",
+        )
+    return contents
 
 
 def _rollback_and_cleanup(

@@ -7,6 +7,9 @@ from conftest import make_auth0_payload
 from models import Structure, Tags
 
 
+PNG_TEST_IMAGE = b"\x89PNG\r\n\x1a\nsaved image content"
+
+
 def _structure_file(filename="input.xyz", content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
     return {"file": (filename, content, "chemical/x-xyz")}
 
@@ -14,11 +17,12 @@ def _structure_file(filename="input.xyz", content=b"2\n\nH 0 0 0\nH 0 0 1\n"):
 def _structure_upload_files(
     filename="input.xyz",
     content=b"2\n\nH 0 0 0\nH 0 0 1\n",
-    image_content=b"image-bytes",
+    image_content=PNG_TEST_IMAGE,
+    image_media_type="image/png",
 ):
     return {
         "file": (filename, content, "chemical/x-xyz"),
-        "image": ("structure.png", image_content, "image/png"),
+        "image": ("structure.png", image_content, image_media_type),
     }
 
 
@@ -703,6 +707,26 @@ class TestStructuresAPI:
         assert response.json()["detail"].startswith("Could not calculate formula:")
         assert not list(tmp_path.glob("temp_*.xyz"))
 
+    def test_formula_rejects_an_oversized_structure_file(
+        self,
+        client,
+        monkeypatch,
+        tmp_path,
+    ):
+        import structures.routes as structures_routes
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(structures_routes, "MAX_STRUCTURE_CONTENT_BYTES", 4)
+
+        response = client.post(
+            "/structures/formula",
+            files=_structure_file(content=b"12345"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "structure file is too large"
+        assert not list(tmp_path.glob("temp_*.xyz"))
+
     def test_create_structure_stores_content_thumbnail_and_links_tags(
         self,
         client,
@@ -729,7 +753,7 @@ class TestStructuresAPI:
             files=_structure_upload_files(
                 filename="../unsafe/input.xyz",
                 content=b"saved structure content",
-                image_content=b"saved image content",
+                image_content=PNG_TEST_IMAGE,
             ),
         )
 
@@ -742,7 +766,7 @@ class TestStructuresAPI:
         assert result["content"] == "saved structure content"
         assert result["thumbnail"] == {
             "media_type": "image/png",
-            "base64": base64.b64encode(b"saved image content").decode("ascii"),
+            "base64": base64.b64encode(PNG_TEST_IMAGE).decode("ascii"),
         }
         assert result["user_sub"] == user.user_sub
         assert result["group_id"] == str(group.group_id)
@@ -756,7 +780,7 @@ class TestStructuresAPI:
         assert structure.formula == "H2O"
         assert structure.notes == "created structure"
         assert structure.content == "saved structure content"
-        assert structure.thumbnail == b"saved image content"
+        assert structure.thumbnail == PNG_TEST_IMAGE
         assert structure.thumbnail_media_type == "image/png"
         assert structure.is_deleted is False
         assert sorted(tag.name for tag in structure.tags) == ["existing", "new"]
@@ -810,6 +834,86 @@ class TestStructuresAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == (
             "Structure file must be valid UTF-8 text"
+        )
+
+    def test_create_structure_rejects_oversized_content(
+        self,
+        client,
+        monkeypatch,
+        user_factory,
+    ):
+        import structures.routes as structures_routes
+
+        user_factory(user_sub="auth0|testuser")
+        monkeypatch.setattr(structures_routes, "MAX_STRUCTURE_CONTENT_BYTES", 4)
+
+        response = client.post(
+            "/structures/",
+            data={"name": "Too large", "formula": "?"},
+            files=_structure_upload_files(content=b"12345"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "structure file is too large"
+
+    def test_create_structure_rejects_oversized_thumbnail(
+        self,
+        client,
+        monkeypatch,
+        user_factory,
+    ):
+        import structures.routes as structures_routes
+
+        user_factory(user_sub="auth0|testuser")
+        monkeypatch.setattr(
+            structures_routes,
+            "MAX_STRUCTURE_THUMBNAIL_BYTES",
+            len(PNG_TEST_IMAGE) - 1,
+        )
+
+        response = client.post(
+            "/structures/",
+            data={"name": "Large thumbnail", "formula": "H"},
+            files=_structure_upload_files(),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "structure thumbnail is too large"
+
+    def test_create_structure_rejects_non_png_thumbnail_media_type(
+        self,
+        client,
+        user_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        response = client.post(
+            "/structures/",
+            data={"name": "JPEG thumbnail", "formula": "H"},
+            files=_structure_upload_files(image_media_type="image/jpeg"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Structure thumbnail must be a PNG image"
+        )
+
+    def test_create_structure_rejects_invalid_png_thumbnail_content(
+        self,
+        client,
+        user_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        response = client.post(
+            "/structures/",
+            data={"name": "Fake PNG", "formula": "H"},
+            files=_structure_upload_files(image_content=b"not really a PNG"),
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Structure thumbnail must contain valid PNG data"
         )
 
     def test_create_structure_rejects_empty_thumbnail(

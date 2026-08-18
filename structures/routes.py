@@ -26,6 +26,7 @@ from utils import (
     MAX_STRUCTURE_LIST_LIMIT,
     commit_or_rollback,
     get_user_sub,
+    read_bounded_upload,
 )
 from datetime import datetime, timezone
 from typing import List
@@ -33,6 +34,12 @@ from ase.io import read
 from pymatgen.core import Molecule
 
 router = APIRouter(prefix="/structures", tags=["structures"])
+
+MAX_STRUCTURE_CONTENT_BYTES = 4 * 1024 * 1024
+MAX_STRUCTURE_THUMBNAIL_BYTES = 8 * 1024 * 1024
+PNG_MEDIA_TYPE = "image/png"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
 
 @router.get("/")
 def get_all_structures(
@@ -69,19 +76,23 @@ def get_all_structures(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/formula")
-async def get_structure_formula(
+def get_structure_formula(
         file: UploadFile = File(...)
 ):
     """
     Calculate molecular formula from uploaded structure file.
-    :param file: Uploaded structure file.
+    :param file: Uploaded structure file, up to 4 MiB.
     :return: Dictionary containing the molecular formula.
     """
     try:
         temp_file = f"temp_{uuid.uuid4()}.xyz"
         try:
             with open(temp_file, "wb") as f:
-                content = await file.read()
+                content = read_bounded_upload(
+                    file,
+                    MAX_STRUCTURE_CONTENT_BYTES,
+                    "structure file",
+                )
                 f.write(content)
 
             # Try reading with ASE first
@@ -99,6 +110,8 @@ async def get_structure_formula(
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -287,11 +300,11 @@ def create_and_upload_structure(
     Ownership is derived from the authenticated user's database record. Users in a
     group always create co-owned structures with user_sub and group_id set.
     :param formula: Chemical formula of the structure.
-    :param image: UploadFile containing the structure image.
+    :param image: PNG structure thumbnail, up to 8 MiB.
     :param tags: Case-insensitive tags to associate with the structure.
     :param notes: Optional notes for the structure.
     :param name: Name of the structure.
-    :param file: File containing the structure data.
+    :param file: UTF-8 structure data, up to 4 MiB.
     :param user: Current user dependency, verified via token.
     :param db: Database session dependency.
     :return: The created structure object.
@@ -300,7 +313,11 @@ def create_and_upload_structure(
         db_user = get_user_or_404(db, get_user_sub(user))
         user_id = db_user.user_sub
         try:
-            structure_content = file.file.read().decode("utf-8")
+            structure_content = read_bounded_upload(
+                file,
+                MAX_STRUCTURE_CONTENT_BYTES,
+                "structure file",
+            ).decode("utf-8")
         except UnicodeDecodeError as error:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -313,11 +330,26 @@ def create_and_upload_structure(
                 detail="Structure file must not be empty",
             )
 
-        thumbnail = image.file.read()
+        if image.content_type != PNG_MEDIA_TYPE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must be a PNG image",
+            )
+
+        thumbnail = read_bounded_upload(
+            image,
+            MAX_STRUCTURE_THUMBNAIL_BYTES,
+            "structure thumbnail",
+        )
         if not thumbnail:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Structure thumbnail must not be empty",
+            )
+        if not thumbnail.startswith(PNG_SIGNATURE):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Structure thumbnail must contain valid PNG data",
             )
 
         structure = Structure(
@@ -329,7 +361,7 @@ def create_and_upload_structure(
             notes=notes,
             content=structure_content,
             thumbnail=thumbnail,
-            thumbnail_media_type=image.content_type or "application/octet-stream",
+            thumbnail_media_type=PNG_MEDIA_TYPE,
             uploaded_at=datetime.now(timezone.utc),
             is_deleted=False,
         )

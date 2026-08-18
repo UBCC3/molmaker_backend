@@ -24,6 +24,8 @@ ORCHESTRATION_DEFAULTS = {
     "MAX_ATTEMPTS": 3,
     "RECONCILER_OUTAGE_INITIAL_BACKOFF_SECONDS": 15,
     "RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS": 300,
+    "SLURM_JOB_TIME_LIMIT_MINUTES": 15,
+    "SLURM_JOB_MEMORY_MB": 4096,
     "SLURM_COMMAND_TIMEOUT_SECONDS": 120,
     "STORAGE_OPERATION_TIMEOUT_SECONDS": 120,
 }
@@ -53,6 +55,10 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 
 MAX_STATUS_BATCH_SIZE = 1_000
+MIN_SLURM_JOB_TIME_LIMIT_MINUTES = 1
+MAX_SLURM_JOB_TIME_LIMIT_MINUTES = 7 * 24 * 60
+MIN_SLURM_JOB_MEMORY_MB = 256
+MAX_SLURM_JOB_MEMORY_MB = 256 * 1024
 
 
 def _optional_text(name: str) -> str | None:
@@ -87,6 +93,18 @@ def _positive_integer(name: str, default: int | None = None) -> int | None:
     return value
 
 
+def _bounded_positive_integer(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = _positive_integer(name, default)
+    if value is None or not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def _required(values: dict[str, object | None]) -> None:
     missing = [name for name, value in values.items() if value is None]
     if missing:
@@ -108,6 +126,10 @@ class OrchestrationSettings:
     outage_max_backoff_seconds: int
     slurm_command_timeout_seconds: int
     storage_operation_timeout_seconds: int
+    slurm_job_time_limit_minutes: int = ORCHESTRATION_DEFAULTS[
+        "SLURM_JOB_TIME_LIMIT_MINUTES"
+    ]
+    slurm_job_memory_mb: int = ORCHESTRATION_DEFAULTS["SLURM_JOB_MEMORY_MB"]
 
 
 @dataclass(frozen=True)
@@ -183,6 +205,18 @@ class BackendSettings:
                 ORCHESTRATION_DEFAULTS[
                     "RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS"
                 ],
+            ),
+            slurm_job_time_limit_minutes=_bounded_positive_integer(
+                "SLURM_JOB_TIME_LIMIT_MINUTES",
+                ORCHESTRATION_DEFAULTS["SLURM_JOB_TIME_LIMIT_MINUTES"],
+                MIN_SLURM_JOB_TIME_LIMIT_MINUTES,
+                MAX_SLURM_JOB_TIME_LIMIT_MINUTES,
+            ),
+            slurm_job_memory_mb=_bounded_positive_integer(
+                "SLURM_JOB_MEMORY_MB",
+                ORCHESTRATION_DEFAULTS["SLURM_JOB_MEMORY_MB"],
+                MIN_SLURM_JOB_MEMORY_MB,
+                MAX_SLURM_JOB_MEMORY_MB,
             ),
             slurm_command_timeout_seconds=_positive_integer(
                 "SLURM_COMMAND_TIMEOUT_SECONDS",

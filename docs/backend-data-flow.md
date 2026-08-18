@@ -11,11 +11,11 @@ endpoint schemas, use Swagger. For access rules, see
 | FastAPI routers | Validate HTTP requests, declare response models, and call shared services. |
 | Auth0 | Issues access tokens and provides the signing keys used to verify them. |
 | Permission and service modules | Apply ownership rules, perform business operations, and serialize responses. |
-| PostgreSQL | Stores users, groups, jobs, structures, tags, orchestration state, and retained calculation inputs. |
+| PostgreSQL | Stores users, groups, jobs, structures, tags, orchestration state, retained calculation inputs, results, and frontend artifacts. |
 | Reconciler processes | Submit jobs, poll Slurm, request cancellation, and finalise artifacts. |
 | Alliance dispatch | Accepts one validated JSON request per cluster operation and provides the restricted boundary to Slurm. |
 | Alliance job directory | Holds the input, script, logs, and results while a calculation is being processed. |
-| S3 | Stores structure objects, result artifacts, and job archives. |
+| S3 | Stores ZIP archives uploaded during job finalisation. The backend exposes only archives paired with verified database results. |
 
 ## Overall Flow
 
@@ -30,10 +30,11 @@ the API commits a job in `submitting` and the reconcilers select jobs by saved
 status. PostgreSQL is therefore the hand-off between separate operating-system
 processes, not an active coordinator.
 
-PostgreSQL is authoritative for identity, ownership, metadata, job state, and
-the exact calculation input. S3 holds durable structure objects and job
-artifacts. Alliance job directories are temporary working storage created from
-a submission request and removed after artifact upload succeeds.
+PostgreSQL is authoritative for identity, ownership, metadata, structures, job
+state, exact calculation inputs, results, and frontend artifacts. S3 stores only
+job ZIP archives. Alliance job directories are temporary working storage
+created from a submission request and removed after the backend saves the
+returned result and acknowledges cleanup.
 
 ## Authentication and Authorization
 
@@ -74,8 +75,8 @@ Both calculation endpoints call `create_calculation_job`:
 1. Validate and normalize calculation metadata.
 2. Require exactly one molecule source: an uploaded XYZ file or an accessible
    stored structure.
-3. Read and validate the bounded XYZ text. For a stored structure, download its
-   current S3 object and keep that exact content as the calculation snapshot.
+3. Read and validate the bounded XYZ text. For a stored structure, read its
+   PostgreSQL content and keep that exact text as the calculation snapshot.
 4. Parse the optional keywords file as a JSON object.
 5. Create the `jobs` row with `status=submitting`, ownership, tags, and at most
    one linked source structure.
@@ -87,9 +88,10 @@ Both calculation endpoints call `create_calculation_job`:
 If the save fails, the transaction rolls back all of those rows. Cluster
 submission and result-upload URL generation never run in the HTTP request.
 
-The database relationship still permits a list of linked structures even
-though calculation creation uses at most one source. Replacing that legacy
-many-to-many relationship with one source-structure field is deferred.
+Calculation creation currently links at most one source Structure, while the
+database relationship intentionally permits a list for future calculations
+that may use multiple structures. `job_inputs.input_xyz` remains the immutable
+prepared input used for the submitted calculation.
 
 ## Asynchronous Calculation Flow
 
@@ -102,26 +104,29 @@ After creation, three processes use the job row as a durable queue:
 3. The status reconciler requests allocation states in batches and stores the
    public status and runtime.
 4. Terminal Slurm outcomes enter the internal `finalising` state.
-5. The finalisation reconciler creates fresh S3 PUT URLs and sends them directly
-   in one JSON upload request.
-6. The cluster uploader sends the archive and available result files to S3;
-   the backend then publishes the terminal status.
-7. Job endpoints return the state in PostgreSQL. Storage endpoints authorize
-   the caller and create fresh S3 download URLs when files are ready.
+5. The finalisation reconciler creates one fresh S3 PUT URL for the ZIP and
+   sends it in a JSON upload request.
+6. The cluster uploads the ZIP and returns parsed results and frontend artifacts
+   through SSH stdout. The backend saves that content in PostgreSQL, makes the
+   external terminal result available, and then acknowledges cluster cleanup.
+7. Job endpoints return state, results, and artifacts from PostgreSQL. The
+   archive endpoint authorizes the caller and creates the only presigned S3
+   download URL.
 
 See [Job Orchestration](job-orchestration.md) for retries, cancellation, and
 recovery.
 
 ## Structure and Artifact Storage
 
-PostgreSQL stores structure metadata and an S3 URI in `structures.location`.
-S3 stores the structure XYZ object and image. Dedicated endpoints create
-short-lived presigned download URLs.
+PostgreSQL stores structure metadata, XYZ content, and thumbnails. Structure
+list responses contain metadata only; a structure detail response contains the
+stored content and thumbnail. Structure text is limited to 4 MiB. Thumbnails
+are limited to 8 MiB and must have both the `image/png` media type and PNG file
+signature before the backend stores them.
 
-Job artifacts use deterministic keys below `S3_BUCKET_ROOT`:
+S3 stores only the deterministic ZIP key below `S3_BUCKET_ROOT`:
 
 ```text
-{S3_BUCKET_ROOT}/jobs/{job_id}/...
 {S3_BUCKET_ROOT}/archive/{job_id}.zip
 ```
 
@@ -131,10 +136,15 @@ chain.
 
 Presigned URLs are short-lived capabilities:
 
-- finalisation creates new PUT URLs for each upload attempt and sends them only
-  through the JSON request body;
-- artifact endpoints create new GET URLs for each download request; and
+- finalisation creates a new archive PUT URL for each transfer attempt and
+  sends it only through the JSON request body;
+- the archive endpoint creates a new GET URL for each download request; and
 - presigned URLs are never written to disk, stored in PostgreSQL, or logged.
+
+An archive can reach S3 before its matching database result is verified. If
+finalisation exhausts its attempts before saving that result, the backend does
+not expose the possibly uploaded ZIP. The archive becomes downloadable only
+after the matching result is validated and saved.
 
 ## Ownership, Tags, and Lists
 

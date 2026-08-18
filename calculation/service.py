@@ -11,7 +11,7 @@ from asset_service import get_asset_or_404, set_asset_tags
 from enum_types import CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
-from utils import commit_or_rollback
+from utils import commit_or_rollback, read_bounded_upload
 
 
 INPUT_FILENAME = "input.xyz"
@@ -83,23 +83,6 @@ def _resolve_source_structure(
     return structure
 
 
-def _read_upload(upload: UploadFile, maximum_bytes: int, field_name: str) -> bytes:
-    try:
-        upload.file.seek(0)
-        contents = upload.file.read(maximum_bytes + 1)
-    except OSError as error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to read {field_name}",
-        ) from error
-    if len(contents) > maximum_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{field_name} is too large",
-        )
-    return contents
-
-
 def _decode_xyz(contents: bytes) -> str:
     try:
         input_xyz = contents.decode("utf-8")
@@ -111,7 +94,11 @@ def _decode_xyz(contents: bytes) -> str:
 
 
 def _read_uploaded_xyz(upload: UploadFile) -> str:
-    contents = _read_upload(upload, MAX_INPUT_XYZ_BYTES, "molecule file")
+    contents = read_bounded_upload(
+        upload,
+        MAX_INPUT_XYZ_BYTES,
+        "molecule file",
+    )
     try:
         return _decode_xyz(contents)
     except ValueError as error:
@@ -124,7 +111,11 @@ def _read_uploaded_xyz(upload: UploadFile) -> str:
 def _read_keywords(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
     if upload is None:
         return None
-    contents = _read_upload(upload, MAX_KEYWORDS_BYTES, "keywords file")
+    contents = read_bounded_upload(
+        upload,
+        MAX_KEYWORDS_BYTES,
+        "keywords file",
+    )
     try:
         keywords = json.loads(contents.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:

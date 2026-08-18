@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from storage import (
 TERMINAL_STATUSES = frozenset(
     {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
 )
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,7 +128,7 @@ class FinalisationReconciler(BaseReconciler):
         try:
             self.cluster_client.acknowledge_finalisation(job.job_id)
         except JobDispatchError as error:
-            self._record_job_failure(db, job, str(error))
+            self._record_cleanup_failure(db, job, terminal_status, str(error))
             return
 
         self._publish_terminal_status(db, job, terminal_status)
@@ -159,6 +161,27 @@ class FinalisationReconciler(BaseReconciler):
             job.failure_message = message
             job.completed_at = datetime.now(timezone.utc)
         self._commit(db)
+
+    def _record_cleanup_failure(
+        self,
+        db: Session,
+        job: Job,
+        terminal_status: JobStatus,
+        message: str,
+    ) -> None:
+        job.attempt_count += 1
+        if job.attempt_count < self.settings.max_attempts:
+            self._commit(db)
+            return
+
+        LOGGER.error(
+            "Cluster scratch cleanup abandoned after %s attempts for job %s; "
+            "manual cleanup may be required: %s",
+            self.settings.max_attempts,
+            job.job_id,
+            message,
+        )
+        self._publish_terminal_status(db, job, terminal_status)
 
     def _publish_terminal_status(
         self,

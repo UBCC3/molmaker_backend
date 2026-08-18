@@ -139,6 +139,8 @@ def test_api_job_moves_through_all_three_reconcilers(
         optimization_type=None,
         input_xyz="1\n\nH 0 0 0\n",
         keywords=None,
+        time_limit_minutes=15,
+        memory_mb=4096,
         recover_existing=False,
     )
     cluster_client.upload_artifacts.assert_called_once_with(

@@ -105,6 +105,11 @@ backend-specific settings.
 Settings are loaded once and cached separately by the API and each reconciler
 process. Restart those processes after changing `.env`.
 
+`SLURM_JOB_TIME_LIMIT_MINUTES` and `SLURM_JOB_MEMORY_MB` control the resources
+the submission reconciler requests for each new Slurm job. The backend passes
+these integer values to cluster dispatch; they are not client API fields. Time
+may be 1–10,080 minutes and memory may be 256–262,144 MiB.
+
 ### 4. Start the API and reconcilers
 
 Start the API in one terminal:
@@ -140,8 +145,8 @@ Deployment requires explicit approval:
 3. Restrict the backend SSH key to this exact no-argument command:
    `python3 /home/thachuk/ubchemica/Cluster-API-QC/runner/dispatch.py`.
 4. Through that restricted connection, smoke-test submission and recovery,
-   batched status checks, cancellation, artifact upload, invalid JSON, and a
-   shared-service failure.
+   batched status checks, cancellation, archive upload with returned result
+   data, acknowledged cleanup, invalid JSON, and a shared-service failure.
 5. If any check fails, check out the recorded previous cluster commit and
    restore the previous allow-list rule. Remove only the smoke-test jobs and
    directories created during these checks.

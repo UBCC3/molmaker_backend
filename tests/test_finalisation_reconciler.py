@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import datetime, timezone
+from itertools import count
 from unittest.mock import Mock, call
 
 import pytest
@@ -17,6 +18,9 @@ from orchestration.cluster_client import (
 from orchestration.finalisation_reconciler import FinalisationReconciler
 from settings import OrchestrationSettings
 from storage import StorageServiceError
+
+
+SLURM_IDS = count(10_000)
 
 
 @pytest.fixture
@@ -73,7 +77,7 @@ def finalising_job(job_factory, **overrides):
     values = {
         "status": JobStatus.finalising.value,
         "terminal_status": JobStatus.completed.value,
-        "slurm_id": "12345",
+        "slurm_id": str(next(SLURM_IDS)),
     }
     values.update(overrides)
     return job_factory(**values)
@@ -334,6 +338,37 @@ def test_saved_result_is_public_while_acknowledgement_retries(
     assert saved.status == JobStatus.completed.value
     assert client.upload_artifacts.call_count == 1
     assert client.acknowledge_finalisation.call_count == 2
+
+
+def test_cleanup_failure_stops_retrying_after_the_attempt_limit(
+    db,
+    job_factory,
+    make_reconciler,
+    settings,
+    caplog,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
+    client.acknowledge_finalisation.side_effect = JobDispatchError(
+        "scratch cleanup failed for this job"
+    )
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory)
+
+    for _ in range(settings.max_attempts):
+        assert reconciler.run_round() == 1
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert saved.is_uploaded is True
+    assert saved.job_result is not None
+    assert saved.attempt_count == 0
+    assert client.upload_artifacts.call_count == 1
+    assert client.acknowledge_finalisation.call_count == settings.max_attempts
+    assert "manual cleanup may be required" in caplog.text
+
+    assert reconciler.run_round() == 0
+    assert client.acknowledge_finalisation.call_count == settings.max_attempts
 
 
 def test_finalisation_failure_at_the_attempt_limit_publishes_upload_failure(

@@ -99,6 +99,8 @@ def submit(client, **overrides):
         "optimization_type": None,
         "input_xyz": "1\n\nH 0 0 0\n",
         "keywords": None,
+        "time_limit_minutes": 90,
+        "memory_mb": 8192,
         "recover_existing": False,
     }
     arguments.update(overrides)
@@ -160,6 +162,8 @@ def test_submit_sends_inputs_and_settings_in_one_json_request(client, run_dispat
         "optimization_type": "ts",
         "input_xyz": "1\n\nH 0 0 0\n",
         "keywords": {"scf_type": "df"},
+        "time_limit_minutes": 90,
+        "memory_mb": 8192,
         "recover_existing": True,
     }
 
@@ -308,16 +312,19 @@ def test_finalisation_rejects_invalid_transport_content(
         )
 
 
-def test_finalisation_rejects_an_oversized_response(client, run_dispatch):
+def test_finalisation_treats_an_oversized_response_as_a_job_failure(
+    client,
+    run_dispatch,
+    monkeypatch,
+):
+    monkeypatch.setattr(cluster_client, "MAX_CLUSTER_RESPONSE_BYTES", 256)
     run_dispatch(
         stdout=finalisation_success(
-            artifacts={
-                "vib": "x" * cluster_client.MAX_CLUSTER_RESPONSE_BYTES
-            }
+            artifacts={"vib": "x" * 256}
         )
     )
 
-    with pytest.raises(ClusterServiceError, match="response is too large"):
+    with pytest.raises(JobDispatchError, match="response is too large"):
         client.upload_artifacts(
             job_id=JOB_ID,
             calculation_type=CalculationType.frequency,

@@ -149,6 +149,7 @@ class Job(Asset):
             "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
             name="ck_jobs_owner_present",
         ),
+        UniqueConstraint("slurm_id", name="uq_jobs_slurm_id"),
         Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
         Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
         Index(

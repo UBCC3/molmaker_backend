@@ -51,8 +51,12 @@ def test_env_example_contains_every_orchestration_default():
 
 
 def test_orchestration_settings_read_environment_overrides(monkeypatch):
-    for position, name in enumerate(SETTING_NAMES, start=1):
-        monkeypatch.setenv(name, str(position))
+    values = {
+        name: position for position, name in enumerate(SETTING_NAMES, start=1)
+    }
+    values["SLURM_JOB_MEMORY_MB"] = 8192
+    for name, value in values.items():
+        monkeypatch.setenv(name, str(value))
 
     settings = BackendSettings.from_env().orchestration
 
@@ -65,8 +69,10 @@ def test_orchestration_settings_read_environment_overrides(monkeypatch):
     assert settings.max_attempts == 7
     assert settings.outage_initial_backoff_seconds == 8
     assert settings.outage_max_backoff_seconds == 9
-    assert settings.slurm_command_timeout_seconds == 10
-    assert settings.storage_operation_timeout_seconds == 11
+    assert settings.slurm_job_time_limit_minutes == 10
+    assert settings.slurm_job_memory_mb == 8192
+    assert settings.slurm_command_timeout_seconds == 12
+    assert settings.storage_operation_timeout_seconds == 13
 
 
 @pytest.mark.parametrize("invalid_value", ["not-a-number", "1.5"])
@@ -112,4 +118,23 @@ def test_status_batch_size_cannot_exceed_dispatch_limit(monkeypatch):
         ValueError,
         match="STATUS_BATCH_SIZE must not exceed 1000",
     ):
+        BackendSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SLURM_JOB_TIME_LIMIT_MINUTES", "10081"),
+        ("SLURM_JOB_MEMORY_MB", "255"),
+        ("SLURM_JOB_MEMORY_MB", "262145"),
+    ],
+)
+def test_slurm_job_resources_must_stay_within_dispatch_bounds(
+    monkeypatch,
+    name,
+    value,
+):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=f"{name} must be between"):
         BackendSettings.from_env()

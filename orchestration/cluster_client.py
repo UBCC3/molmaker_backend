@@ -16,7 +16,7 @@ from settings import BackendSettings
 
 SSH_HOST = "cluster"
 PROTOCOL_VERSION = 1
-MAX_CLUSTER_RESPONSE_BYTES = 5 * 1024 * 1024
+MAX_CLUSTER_RESPONSE_BYTES = 64 * 1024 * 1024
 COMMAND_REJECTION = "Command rejected by allowed_commands.sh"
 INVALID_STATUS_RESPONSE = "Invalid status lookup response from cluster"
 INVALID_FINALISATION_RESPONSE = (
@@ -72,6 +72,10 @@ class ClusterServiceError(ClusterClientError):
     """A shared SSH or cluster service failed; retry after backoff."""
 
 
+class _ClusterResponseTooLargeError(ClusterServiceError):
+    """The cluster response exceeded the bounded transport contract."""
+
+
 @dataclass(frozen=True)
 class SlurmJobStatus:
     slurm_id: str
@@ -110,7 +114,7 @@ def _parse_response(output: str, operation: str) -> dict[str, Any]:
     invalid_message = f"Invalid {operation} response from cluster"
     try:
         if len(output.encode("utf-8")) > MAX_CLUSTER_RESPONSE_BYTES:
-            raise ClusterServiceError(
+            raise _ClusterResponseTooLargeError(
                 f"{operation.capitalize()} response is too large"
             )
         response = json.loads(output, parse_constant=_reject_json_constant)
@@ -247,6 +251,8 @@ class ClusterDispatchClient:
         optimization_type: Literal["ground", "ts"] | None,
         input_xyz: str,
         keywords: dict[str, Any] | None,
+        time_limit_minutes: int,
+        memory_mb: int,
         recover_existing: bool,
     ) -> str:
         """Submit one complete job request, recovering an earlier attempt first."""
@@ -263,6 +269,8 @@ class ClusterDispatchClient:
                 "optimization_type": optimization_type,
                 "input_xyz": input_xyz,
                 "keywords": keywords,
+                "time_limit_minutes": time_limit_minutes,
+                "memory_mb": memory_mb,
                 "recover_existing": recover_existing,
             },
             "job submission",
@@ -431,6 +439,13 @@ class ClusterDispatchClient:
                 raise ClusterServiceError(
                     f"Invalid {operation} response from cluster"
                 )
+        except _ClusterResponseTooLargeError:
+            if command == "upload-artifacts":
+                raise JobDispatchError(
+                    f"Cluster {operation} response is too large"
+                ) from None
+            if completed.returncode == 0 and not submission:
+                raise
         except ClusterServiceError:
             if completed.returncode == 0 and not submission:
                 raise
