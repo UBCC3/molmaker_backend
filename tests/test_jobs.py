@@ -1,9 +1,9 @@
-from datetime import datetime, timedelta, timezone
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from conftest import make_auth0_payload
+
 from models import Tags
 
 
@@ -68,9 +68,9 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
     assert "thumbnail" not in structure_properties
 
     paths = schema["paths"]
-    assert paths["/jobs/"]["get"]["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["items"]["$ref"].endswith("/JobResponse")
+    assert paths["/jobs/"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["items"]["$ref"].endswith("/JobResponse")
     assert paths["/jobs/{job_id}"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"]["$ref"].endswith("/JobResponse")
@@ -147,7 +147,13 @@ class TestJobsAPI:
         assert [job["job_name"] for job in result] == ["newer", "older"]
 
     def test_list_and_detail_include_safe_structures(
-        self, client, group_factory, user_factory, tag_factory, structure_factory, job_factory
+        self,
+        client,
+        group_factory,
+        user_factory,
+        tag_factory,
+        structure_factory,
+        job_factory,
     ):
         """
         Lists and detail should include the serialized linked structures.
@@ -185,7 +191,9 @@ class TestJobsAPI:
         assert linked_structure["name"] == "Water"
         assert linked_structure["formula"] == "H2O"
 
-    def test_get_job_by_id_returns_owned_job(self, client, group_factory, user_factory, job_factory):
+    def test_get_job_by_id_returns_owned_job(
+        self, client, group_factory, user_factory, job_factory
+    ):
         """
         GET /jobs/{job_id} should return a job owned by the authenticated user.
         """
@@ -291,10 +299,7 @@ class TestJobsAPI:
         result = response.json()
         assert result["status"] == "failed"
         assert result["failure_reason"] == "timeout"
-        assert (
-            result["failure_message"]
-            == "The calculation exceeded its time limit."
-        )
+        assert result["failure_message"] == "The calculation exceeded its time limit."
 
     def test_get_job_by_id_returns_public_group_job_to_member(
         self, client, set_auth_user, group_factory, user_factory, job_factory
@@ -305,7 +310,9 @@ class TestJobsAPI:
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=True)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_public=True
+        )
         set_auth_user(make_auth0_payload(viewer.user_sub))
 
         response = client.get(f"/jobs/{job.job_id}")
@@ -325,7 +332,9 @@ class TestJobsAPI:
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_public=False
+        )
         set_auth_user(make_auth0_payload(viewer.user_sub))
 
         response = client.get(f"/jobs/{job.job_id}")
@@ -340,7 +349,9 @@ class TestJobsAPI:
         Group admins can read private group-owned jobs with matching persisted group_id.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         job = job_factory(user_sub=None, group_id=group.group_id, is_public=False)
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
@@ -358,7 +369,9 @@ class TestJobsAPI:
         """
         group = group_factory()
         owner = user_factory(user_sub="auth0|testuser", group_id=None)
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_public=False
+        )
 
         response = client.get(f"/jobs/{job.job_id}")
 
@@ -433,14 +446,20 @@ class TestJobsAPI:
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
         job = job_factory(user_sub=owner.user_sub)
-        set_auth_user(make_auth0_payload(viewer.user_sub, role=viewer.role, group_id=viewer.group_id))
+        set_auth_user(
+            make_auth0_payload(
+                viewer.user_sub, role=viewer.role, group_id=viewer.group_id
+            )
+        )
 
         response = client.get(f"/jobs/{job.job_id}")
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Insufficient permissions"
 
-    def test_owner_can_soft_delete_job(self, client, db, group_factory, user_factory, job_factory):
+    def test_owner_can_soft_delete_job(
+        self, client, db, group_factory, user_factory, job_factory
+    ):
         """
         DELETE /jobs/{job_id} should soft-delete a job owned by the authenticated user.
         """
@@ -464,7 +483,9 @@ class TestJobsAPI:
         owner = user_factory(group=group, user_sub="auth0|owner")
         admin = user_factory(group=group, user_sub="auth0|admin", role="admin")
         job = job_factory(user_sub=owner.user_sub, is_deleted=False)
-        set_auth_user(make_auth0_payload(admin.user_sub, role=admin.role, group_id=admin.group_id))
+        set_auth_user(
+            make_auth0_payload(admin.user_sub, role=admin.role, group_id=admin.group_id)
+        )
 
         response = client.delete(f"/jobs/{job.job_id}")
 
@@ -485,7 +506,9 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_deleted=False)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_deleted=False
+        )
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -510,7 +533,11 @@ class TestJobsAPI:
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
         job = job_factory(user_sub=owner.user_sub, is_deleted=False)
-        set_auth_user(make_auth0_payload(viewer.user_sub, role=viewer.role, group_id=viewer.group_id))
+        set_auth_user(
+            make_auth0_payload(
+                viewer.user_sub, role=viewer.role, group_id=viewer.group_id
+            )
+        )
 
         response = client.delete(f"/jobs/{job.job_id}")
 
@@ -768,7 +795,9 @@ class TestJobsAPI:
         user = user_factory(group=group, user_sub="auth0|testuser")
         job = job_factory(user_sub=user.user_sub, is_public=False)
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 200
         assert response.json()["job_id"] == str(job.job_id)
@@ -786,9 +815,13 @@ class TestJobsAPI:
         owner = user_factory(group=group, user_sub="auth0|owner")
         admin = user_factory(group=group, user_sub="auth0|admin", role="admin")
         job = job_factory(user_sub=owner.user_sub, is_public=False)
-        set_auth_user(make_auth0_payload(admin.user_sub, role=admin.role, group_id=admin.group_id))
+        set_auth_user(
+            make_auth0_payload(admin.user_sub, role=admin.role, group_id=admin.group_id)
+        )
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 200
         db.refresh(job)
@@ -807,7 +840,9 @@ class TestJobsAPI:
             user_sub="auth0|group-admin",
             role="group_admin",
         )
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_public=False
+        )
         set_auth_user(
             make_auth0_payload(
                 group_admin.user_sub,
@@ -816,7 +851,9 @@ class TestJobsAPI:
             )
         )
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 200
         db.refresh(job)
@@ -830,9 +867,13 @@ class TestJobsAPI:
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|testuser")
-        job = job_factory(user_sub=owner.user_sub, group_id=group.group_id, is_public=False)
+        job = job_factory(
+            user_sub=owner.user_sub, group_id=group.group_id, is_public=False
+        )
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Insufficient permissions"
@@ -849,9 +890,15 @@ class TestJobsAPI:
         owner = user_factory(group=group, user_sub="auth0|owner")
         viewer = user_factory(group=group, user_sub="auth0|viewer")
         job = job_factory(user_sub=owner.user_sub, is_public=False)
-        set_auth_user(make_auth0_payload(viewer.user_sub, role=viewer.role, group_id=viewer.group_id))
+        set_auth_user(
+            make_auth0_payload(
+                viewer.user_sub, role=viewer.role, group_id=viewer.group_id
+            )
+        )
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Insufficient permissions"
@@ -862,7 +909,9 @@ class TestJobsAPI:
         """
         PATCH /jobs/{job_id}/visibility should return 404 when no job exists for the ID.
         """
-        response = client.patch(f"/jobs/{uuid.uuid4()}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{uuid.uuid4()}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Job not found"
@@ -882,7 +931,9 @@ class TestJobsAPI:
 
         monkeypatch.setattr(db, "commit", fail_commit)
 
-        response = client.patch(f"/jobs/{job.job_id}/visibility", data={"is_public": "true"})
+        response = client.patch(
+            f"/jobs/{job.job_id}/visibility", data={"is_public": "true"}
+        )
 
         assert response.status_code == 500
         assert response.json()["detail"] == "Could not save changes"

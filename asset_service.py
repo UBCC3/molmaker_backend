@@ -9,12 +9,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from enum_types import AssetOwnership, CalculationType, JobFailureReason, JobStatus
-from permissions import (
-    can_change_asset_visibility,
-    can_delete_asset,
-    can_transfer_asset_ownership,
-    is_admin,
-)
 from models import (
     Asset,
     Group,
@@ -25,13 +19,18 @@ from models import (
     User,
     normalize_tag_name,
 )
+from permissions import (
+    can_change_asset_visibility,
+    can_delete_asset,
+    can_transfer_asset_ownership,
+    is_admin,
+)
 from utils import (
     DEFAULT_JOB_LIST_LIMIT,
     DEFAULT_STRUCTURE_LIST_LIMIT,
     commit_or_rollback,
     parse_uuid_or_404,
 )
-
 
 AssetModel = TypeVar("AssetModel", bound=Asset)
 PermissionCheck = Callable[[User, Asset], bool]
@@ -115,9 +114,7 @@ JOB_RESULT_ARTIFACTS_BY_CALCULATION = {
     CalculationType.geometry.value: frozenset({"trajectory"}),
     CalculationType.transition.value: frozenset({"trajectory"}),
     CalculationType.irc.value: frozenset({"trajectory"}),
-    CalculationType.standard.value: frozenset(
-        {"trajectory", "vib", "molden", "esp"}
-    ),
+    CalculationType.standard.value: frozenset({"trajectory", "vib", "molden", "esp"}),
 }
 
 
@@ -163,8 +160,7 @@ def get_available_job_artifacts(job: Job) -> List[str]:
     available.extend(
         kind
         for kind in ARTIFACT_FILES
-        if kind != "input"
-        and isinstance(job.job_result.artifacts.get(kind), str)
+        if kind != "input" and isinstance(job.job_result.artifacts.get(kind), str)
     )
     return available
 
@@ -724,10 +720,7 @@ def set_asset_tags(
         if normalized_tag_name:
             requested_tag_names.add(normalized_tag_name)
 
-    linked_tag_names = {
-        normalize_tag_name(tag.name)
-        for tag in asset.tags
-    }
+    linked_tag_names = {normalize_tag_name(tag.name) for tag in asset.tags}
     tag_names_to_link = requested_tag_names - linked_tag_names
 
     if not tag_names_to_link:

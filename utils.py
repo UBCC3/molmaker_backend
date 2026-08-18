@@ -2,10 +2,9 @@ import logging
 import uuid
 from typing import Callable, Optional
 
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-from fastapi import HTTPException, UploadFile, status
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +73,10 @@ def _rollback_and_cleanup(
 def parse_uuid_or_404(value: str, detail: str) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=detail
+        ) from error
 
 
 def commit_or_rollback(

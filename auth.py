@@ -1,26 +1,25 @@
 import requests
-from jose import jwt
 from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import jwt
 
 from settings import get_settings
 
 http_bearer = HTTPBearer()
 
+
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)):
     token = credentials.credentials
     # print(token)
     try:
-        auth0_domain, api_audience, algorithms = (
-            get_settings().auth0_verification()
-        )
+        auth0_domain, api_audience, algorithms = get_settings().auth0_verification()
         jwks_url = f"https://{auth0_domain}/.well-known/jwks.json"
         jwks = requests.get(jwks_url).json()
         unverified_header = jwt.get_unverified_header(token)
 
         rsa_key = next(
             (key for key in jwks["keys"] if key["kid"] == unverified_header["kid"]),
-            None
+            None,
         )
 
         if rsa_key:
@@ -31,16 +30,16 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer
                     "kid": rsa_key["kid"],
                     "use": rsa_key["use"],
                     "n": rsa_key["n"],
-                    "e": rsa_key["e"]
+                    "e": rsa_key["e"],
                 },
                 algorithms=algorithms,
                 audience=api_audience,
-                issuer=f"https://{auth0_domain}/"
+                issuer=f"https://{auth0_domain}/",
             )
             return payload
 
     except Exception as e:
         print(f"Token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid access token")
+        raise HTTPException(status_code=401, detail="Invalid access token") from e
 
     raise HTTPException(status_code=401, detail="Authorization failed")

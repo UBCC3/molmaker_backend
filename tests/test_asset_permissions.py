@@ -31,7 +31,9 @@ class TestAssetPermissionPredicates:
 
         assert is_group_admin_for_group(group_admin, group.group_id) is True
 
-    def test_identifies_matching_group_member(self, group_factory, user_factory, asset_factory):
+    def test_identifies_matching_group_member(
+        self, group_factory, user_factory, asset_factory
+    ):
         group = group_factory()
         member = user_factory(group=group)
         asset = asset_factory(user_sub=None, group_id=group.group_id)
@@ -101,7 +103,9 @@ class TestAssetReadPermissions:
         asset_group = group_factory()
         admin_group = group_factory()
         group_admin = user_factory(group=admin_group, role="group_admin")
-        asset = asset_factory(user_sub=None, group_id=asset_group.group_id, is_public=False)
+        asset = asset_factory(
+            user_sub=None, group_id=asset_group.group_id, is_public=False
+        )
 
         assert can_read_asset(group_admin, asset) is False
 
@@ -253,9 +257,7 @@ class TestAssetOwnershipTransferPermissions:
 
         assert can_transfer_asset_ownership(group_admin, asset) is False
 
-    def test_admin_can_transfer_user_only_asset(
-        self, user_factory, asset_factory
-    ):
+    def test_admin_can_transfer_user_only_asset(self, user_factory, asset_factory):
         admin = user_factory(role="admin")
         owner = user_factory(user_sub="auth0|owner")
         asset = asset_factory(user_sub=owner.user_sub, group_id=None)

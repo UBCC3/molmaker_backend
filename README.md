@@ -221,6 +221,22 @@ python -m pytest -q
 Each run creates a uniquely named schema inside that database and drops it at
 the end. Pull requests run the full suite against PostgreSQL only.
 
+## Code quality
+
+Ruff checks, sorts, and formats the Python code. Install the Git hook once per
+checkout so the same checks run automatically before each commit:
+
+```zsh
+python -m pip install -r requirements-dev.txt
+python -m pre_commit install
+```
+
+Run every check manually with:
+
+```zsh
+python -m pre_commit run --all-files
+```
+
 ## Database Schema
 
 The SQLAlchemy models are the authoritative schema. This repository does not

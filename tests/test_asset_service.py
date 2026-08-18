@@ -1,10 +1,9 @@
-from datetime import datetime, timedelta, timezone
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
 
-from permissions import can_write_asset
 from asset_service import (
     get_asset_or_404,
     list_group_assets,
@@ -17,7 +16,7 @@ from asset_service import (
     update_asset_visibility,
 )
 from models import Job, Structure, Tags
-
+from permissions import can_write_asset
 
 ASSET_CASES = [
     (Job, "job_factory"),
@@ -509,15 +508,9 @@ def test_set_asset_tags_deduplicates_input_and_existing_links(
 
     assert sorted(tag.name for tag in asset.tags) == ["existing", "new"]
     assert (
-        db.query(Tags)
-        .filter_by(user_sub=owner.user_sub, name="existing")
-        .count()
+        db.query(Tags).filter_by(user_sub=owner.user_sub, name="existing").count()
     ) == 1
-    assert (
-        db.query(Tags)
-        .filter_by(user_sub=owner.user_sub, name="new")
-        .count()
-    ) == 1
+    assert (db.query(Tags).filter_by(user_sub=owner.user_sub, name="new").count()) == 1
 
 
 @pytest.mark.parametrize("model,factory_name", ASSET_CASES)

@@ -28,7 +28,6 @@ from storage import (
     generate_archive_upload_url,
 )
 
-
 TERMINAL_STATUSES = frozenset(
     {JobStatus.completed, JobStatus.failed, JobStatus.cancelled}
 )
@@ -147,8 +146,7 @@ class FinalisationReconciler(BaseReconciler):
             archive_upload_url=archive_upload_url,
             allow_missing_error=(
                 terminal_status in {JobStatus.failed, JobStatus.cancelled}
-                and job.failure_reason
-                != JobFailureReason.calculation_failed.value
+                and job.failure_reason != JobFailureReason.calculation_failed.value
             ),
         )
 

@@ -1,7 +1,7 @@
+from conftest import engine
 from sqlalchemy import inspect
 
 import database
-from conftest import engine
 
 
 def test_init_db_creates_the_current_schema(db, monkeypatch):

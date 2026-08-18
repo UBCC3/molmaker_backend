@@ -4,9 +4,9 @@ from itertools import count
 from unittest.mock import Mock, call
 
 import pytest
+from conftest import TestingSessionLocal
 
 from asset_service import serialize_job, upsert_job_result
-from conftest import TestingSessionLocal
 from enum_types import CalculationType, JobFailureReason, JobStatus
 from models import Job
 from orchestration.cluster_client import (
@@ -18,7 +18,6 @@ from orchestration.cluster_client import (
 from orchestration.finalisation_reconciler import FinalisationReconciler
 from settings import OrchestrationSettings
 from storage import StorageServiceError
-
 
 SLURM_IDS = count(10_000)
 
@@ -132,8 +131,7 @@ def test_round_selects_oldest_jobs_with_a_limit_and_includes_soft_deleted_jobs(
     assert refresh(db, newest).status == JobStatus.finalising.value
     assert refresh(db, ignored).status == JobStatus.running.value
     assert [
-        uploaded.kwargs["job_id"]
-        for uploaded in client.upload_artifacts.call_args_list
+        uploaded.kwargs["job_id"] for uploaded in client.upload_artifacts.call_args_list
     ] == [oldest.job_id, second.job_id]
 
 
@@ -180,9 +178,7 @@ def test_success_publishes_each_terminal_status(
     )
     client.upload_artifacts.return_value = completed_result(
         calculation_result=(
-            {"energy": -75.2}
-            if terminal_status == JobStatus.completed
-            else None
+            {"energy": -75.2} if terminal_status == JobStatus.completed else None
         ),
         calculation_error=(
             {"message": "calculation failed"}
@@ -416,9 +412,7 @@ def test_shared_outage_stops_the_round_without_incrementing_jobs(
     if failure_point == "url_generation":
         generate.side_effect = StorageServiceError("S3 unavailable")
     elif failure_point == "cluster_upload":
-        client.upload_artifacts.side_effect = ClusterServiceError(
-            "cluster unavailable"
-        )
+        client.upload_artifacts.side_effect = ClusterServiceError("cluster unavailable")
         error_type = ClusterServiceError
     else:
         client.acknowledge_finalisation.side_effect = ClusterServiceError(

@@ -15,11 +15,10 @@ from orchestration.status_reconciler import StatusReconciler
 from orchestration.submission_reconciler import SubmissionReconciler
 from settings import (
     APPLICATION_DEFAULTS,
-    BackendSettings,
     SUPPORTED_ENVIRONMENT_VARIABLES,
+    BackendSettings,
     get_settings,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APPLICATION_DIRECTORIES = (
@@ -175,8 +174,7 @@ def test_api_and_reconcilers_use_the_same_settings(
 
     assert app.routes
     assert all(
-        reconciler.settings is settings.orchestration
-        for reconciler in reconcilers
+        reconciler.settings is settings.orchestration for reconciler in reconcilers
     )
     assert cluster_factory.call_args_list == [
         call(settings),
@@ -198,6 +196,8 @@ def test_application_modules_do_not_read_environment_directly():
         source = source_file.read_text(encoding="utf-8")
         for expression in forbidden:
             if expression in source:
-                violations.append(f"{source_file.relative_to(PROJECT_ROOT)}: {expression}")
+                violations.append(
+                    f"{source_file.relative_to(PROJECT_ROOT)}: {expression}"
+                )
 
     assert violations == []

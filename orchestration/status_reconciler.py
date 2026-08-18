@@ -25,7 +25,6 @@ from orchestration.cluster_client import (
 )
 from settings import OrchestrationSettings, get_settings
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -122,9 +121,7 @@ class StatusReconciler(BaseReconciler):
     """Check every submitted or running job in temporary Slurm batches."""
 
     shared_service_errors = (ClusterServiceError, SQLAlchemyError)
-    shared_service_error_message = (
-        "Status round stopped by a shared service problem"
-    )
+    shared_service_error_message = "Status round stopped by a shared service problem"
     reconciler_name = "status"
 
     session_factory: Callable[[], Session]
@@ -168,9 +165,7 @@ class StatusReconciler(BaseReconciler):
 
     def _process_batch(self, db: Session, jobs: Sequence[Job]) -> None:
         slurm_ids = [str(job.slurm_id) for job in jobs]
-        slurm_job_status_by_id = self.cluster_client.get_slurm_job_statuses(
-            slurm_ids
-        )
+        slurm_job_status_by_id = self.cluster_client.get_slurm_job_statuses(slurm_ids)
         self._request_cancellations(jobs, slurm_job_status_by_id)
         now = datetime.now(timezone.utc)
         updates = [
@@ -267,9 +262,7 @@ class StatusReconciler(BaseReconciler):
             "runtime": runtime,
             "attempt_count": 0,
             "terminal_status": (
-                transition.terminal_status.value
-                if transition.terminal_status
-                else None
+                transition.terminal_status.value if transition.terminal_status else None
             ),
             "failure_reason": (
                 transition.failure_reason.value if transition.failure_reason else None

@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-
 from conftest import make_auth0_payload
+
 from enum_types import JobStatus
 
 

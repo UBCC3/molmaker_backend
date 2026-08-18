@@ -11,7 +11,6 @@ from asset_service import (
 from enum_types import JobFailureReason, JobStatus
 from models import Job, JobResult
 
-
 COMPLETED_RESULTS = [
     ("energy", {}),
     ("frequency", {"vib": "vibration data"}),

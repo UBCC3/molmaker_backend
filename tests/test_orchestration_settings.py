@@ -3,11 +3,10 @@ from pathlib import Path
 import pytest
 
 from settings import (
-    BackendSettings,
     ORCHESTRATION_DEFAULTS,
+    BackendSettings,
     OrchestrationSettings,
 )
-
 
 SETTING_NAMES = tuple(ORCHESTRATION_DEFAULTS)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,15 +44,12 @@ def test_env_example_contains_every_orchestration_default():
             example_values[name] = value
 
     assert example_values == {
-        name: str(default)
-        for name, default in ORCHESTRATION_DEFAULTS.items()
+        name: str(default) for name, default in ORCHESTRATION_DEFAULTS.items()
     }
 
 
 def test_orchestration_settings_read_environment_overrides(monkeypatch):
-    values = {
-        name: position for position, name in enumerate(SETTING_NAMES, start=1)
-    }
+    values = {name: position for position, name in enumerate(SETTING_NAMES, start=1)}
     values["SLURM_JOB_MEMORY_MB"] = 8192
     for name, value in values.items():
         monkeypatch.setenv(name, str(value))

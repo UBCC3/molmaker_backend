@@ -9,13 +9,19 @@ from permissions import can_create_invite_request, is_admin_or_group_admin
 from request_service import (
     DEFAULT_EXPIRES_IN_DAYS,
     DEFAULT_RECENT_DAYS,
-    approve_request as approve_request_by_id,
-    cancel_request as cancel_request_by_id,
     create_demember_request,
     create_invite_request,
     create_join_request,
     list_received_requests,
     list_sent_requests,
+)
+from request_service import (
+    approve_request as approve_request_by_id,
+)
+from request_service import (
+    cancel_request as cancel_request_by_id,
+)
+from request_service import (
     reject_request as reject_request_by_id,
 )
 from user_service import get_user_by_email_or_404, get_user_or_404
@@ -148,7 +154,9 @@ def send_invite_request(
     """
     user = get_user_or_404(db, get_user_sub(current_user))
     if not is_admin_or_group_admin(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
     if not can_create_invite_request(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

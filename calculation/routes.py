@@ -24,7 +24,6 @@ from jobs.schemas import JobResponse
 from user_service import get_user_or_404
 from utils import get_user_sub
 
-
 router = APIRouter(prefix="/calculation", tags=["calculation"])
 
 
@@ -75,8 +74,7 @@ def submit_custom_calculation(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Use /calculation/workflow/standard_analysis for standard "
-                "analysis"
+                "Use /calculation/workflow/standard_analysis for standard analysis"
             ),
         )
 

@@ -2,9 +2,9 @@ import subprocess
 import uuid
 
 import pytest
+from conftest import make_auth0_payload
 
 import storage
-from conftest import make_auth0_payload
 from models import Job, JobInput, Tags
 
 
@@ -51,21 +51,19 @@ def test_openapi_documents_durable_calculation_submission_contract(client):
         "/calculation/workflow/standard_analysis",
     ):
         operation = schema["paths"][path]["post"]
-        response_schema = operation["responses"]["201"]["content"][
-            "application/json"
-        ]["schema"]
+        response_schema = operation["responses"]["201"]["content"]["application/json"][
+            "schema"
+        ]
         assert response_schema["$ref"].endswith("/JobResponse")
         assert "processed asynchronously" in operation["description"]
         assert "Slurm" not in operation["description"]
 
-        request_schema = operation["requestBody"]["content"][
-            "multipart/form-data"
-        ]["schema"]
+        request_schema = operation["requestBody"]["content"]["multipart/form-data"][
+            "schema"
+        ]
         request_schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
         request_properties = components[request_schema_name]["properties"]
-        assert {"file", "structure_id", "job_name"}.issubset(
-            request_properties
-        )
+        assert {"file", "structure_id", "job_name"}.issubset(request_properties)
 
 
 @pytest.mark.parametrize(
@@ -172,12 +170,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert existing_tag in job.tags
     assert job.job_input.input_xyz == "custom xyz input"
     assert job.job_input.keywords == {"scf": "tight"}
-    assert (
-        db.query(Tags)
-        .filter_by(user_sub=user.user_sub, name="new")
-        .count()
-        == 1
-    )
+    assert db.query(Tags).filter_by(user_sub=user.user_sub, name="new").count() == 1
 
 
 def test_standard_submission_uses_workflow_defaults(
@@ -188,7 +181,7 @@ def test_standard_submission_uses_workflow_defaults(
 ):
     """The standard workflow should persist its fixed method and basis set."""
     _forbid_cluster_and_upload_url_calls(monkeypatch)
-    user = user_factory(user_sub="auth0|testuser")
+    user_factory(user_sub="auth0|testuser")
 
     response = client.post(
         "/calculation/workflow/standard_analysis",
@@ -255,9 +248,7 @@ def test_submission_saves_a_snapshot_of_a_readable_stored_structure(
     assert result["user_sub"] == submitter.user_sub
     assert result["group_id"] == str(group.group_id)
     assert result["tags"] == ["shared"]
-    assert result["structures"][0]["structure_id"] == str(
-        structure.structure_id
-    )
+    assert result["structures"][0]["structure_id"] == str(structure.structure_id)
     job = db.query(Job).filter_by(job_id=job_id).one()
     assert job.job_input.input_xyz == "stored structure content"
     assert [linked.structure_id for linked in job.structures] == [
@@ -326,9 +317,7 @@ def test_submission_hides_an_inaccessible_structure(
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == (
-        "Structure not found or not accessible"
-    )
+    assert response.json()["detail"] == ("Structure not found or not accessible")
     assert db.query(Job).count() == 0
     assert db.query(JobInput).count() == 0
 

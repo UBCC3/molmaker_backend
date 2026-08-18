@@ -1,4 +1,5 @@
 from conftest import make_auth0_payload
+
 from models import Job, Request, Structure, Tags, User
 
 
@@ -56,7 +57,9 @@ class TestUsersAPI:
         assert user.role == "group_admin"
         assert user.group_id == group.group_id
 
-    def test_read_or_create_me_rejects_auth_payload_without_sub(self, client, set_auth_user):
+    def test_read_or_create_me_rejects_auth_payload_without_sub(
+        self, client, set_auth_user
+    ):
         """
         POST /users/me should reject auth payloads that do not identify a user.
         """
@@ -99,7 +102,9 @@ class TestUsersAPI:
         Group admins can look up users in their own group.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         user = user_factory(
             group=group,
             user_sub="auth0|target",
@@ -136,7 +141,9 @@ class TestUsersAPI:
             user.role_or_group_updated_at.isoformat()
         )
 
-    def test_member_cannot_get_other_user_by_email(self, client, group_factory, user_factory):
+    def test_member_cannot_get_other_user_by_email(
+        self, client, group_factory, user_factory
+    ):
         """
         Normal members cannot use email lookup to discover other users.
         """
@@ -156,7 +163,9 @@ class TestUsersAPI:
         Group admins cannot look up ungrouped or other-group users by email.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         user_factory(user_sub="auth0|target", email="target@test.com", group_id=None)
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
@@ -212,7 +221,9 @@ class TestUsersAPI:
             auth0_delete_calls.append((url, headers))
             return type("Response", (), {"status_code": 204, "text": ""})()
 
-        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(
+            user_service, "get_auth0_management_token", lambda: "management-token"
+        )
         monkeypatch.setattr(user_service.requests, "delete", fake_auth0_delete)
         monkeypatch.setenv("AUTH0_DOMAIN", "auth.example.com")
 
@@ -266,7 +277,10 @@ class TestUsersAPI:
         response = client.delete(f"/users/{target.user_sub}")
 
         assert response.status_code == 200
-        assert response.json()["detail"] == "User and all associated data deleted successfully"
+        assert (
+            response.json()["detail"]
+            == "User and all associated data deleted successfully"
+        )
         assert db.query(User).filter_by(user_sub=admin.user_sub).one()
         assert db.query(User).filter_by(user_sub=target.user_sub).first() is None
         db.refresh(job)
@@ -284,22 +298,32 @@ class TestUsersAPI:
             resolved_request.request_id,
         ]
         affected_requests = (
-            db.query(Request)
-            .filter(Request.request_id.in_(affected_request_ids))
-            .all()
+            db.query(Request).filter(Request.request_id.in_(affected_request_ids)).all()
         )
         assert len(affected_requests) == 4
         affected_by_id = {request.request_id: request for request in affected_requests}
         assert affected_by_id[sent_request.request_id].status == "cancelled"
         assert affected_by_id[sent_request.request_id].sender_sub is None
-        assert affected_by_id[sent_request.request_id].sender_email_snapshot == target.email
+        assert (
+            affected_by_id[sent_request.request_id].sender_email_snapshot
+            == target.email
+        )
         assert affected_by_id[received_request.request_id].receiver_sub is None
-        assert affected_by_id[received_request.request_id].receiver_email_snapshot == target.email
+        assert (
+            affected_by_id[received_request.request_id].receiver_email_snapshot
+            == target.email
+        )
         assert affected_by_id[created_request.request_id].created_by_sub is None
-        assert affected_by_id[created_request.request_id].created_by_email_snapshot == target.email
+        assert (
+            affected_by_id[created_request.request_id].created_by_email_snapshot
+            == target.email
+        )
         assert affected_by_id[resolved_request.request_id].status == "rejected"
         assert affected_by_id[resolved_request.request_id].resolved_by_sub is None
-        assert affected_by_id[resolved_request.request_id].resolved_by_email_snapshot == target.email
+        assert (
+            affected_by_id[resolved_request.request_id].resolved_by_email_snapshot
+            == target.email
+        )
         assert db.query(Tags).filter_by(tag_id=tag.tag_id).first() is None
         db.refresh(co_owned_job)
         db.refresh(co_owned_structure)
@@ -352,7 +376,9 @@ class TestUsersAPI:
         def fake_auth0_delete(_url, headers):
             return type("Response", (), {"status_code": 500, "text": "auth0 failed"})()
 
-        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(
+            user_service, "get_auth0_management_token", lambda: "management-token"
+        )
         monkeypatch.setattr(user_service.requests, "delete", fake_auth0_delete)
         monkeypatch.setenv("AUTH0_DOMAIN", "auth.example.com")
 
@@ -366,7 +392,10 @@ class TestUsersAPI:
         response = client.delete(f"/users/{target.user_sub}")
 
         assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to delete user from Auth0: auth0 failed"
+        assert (
+            response.json()["detail"]
+            == "Failed to delete user from Auth0: auth0 failed"
+        )
         assert db.query(User).filter_by(user_sub=target.user_sub).one()
         assert db.query(Job).filter_by(job_id=job.job_id).one()
         assert db.query(Structure).filter_by(structure_id=structure.structure_id).one()
@@ -381,7 +410,9 @@ class TestUsersAPI:
         import user_service
 
         user_factory(user_sub="auth0|testuser", role="admin")
-        monkeypatch.setattr(user_service, "get_auth0_management_token", lambda: "management-token")
+        monkeypatch.setattr(
+            user_service, "get_auth0_management_token", lambda: "management-token"
+        )
 
         response = client.delete("/users/auth0|missing")
 

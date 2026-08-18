@@ -2,21 +2,25 @@ from typing import List, Optional
 
 from fastapi import (
     APIRouter,
-    Form,
     Depends,
+    Form,
     Query,
 )
 from sqlalchemy.orm import Session
 
-from enum_types import AssetOwnership, RequestStatus, RequestType
-from dependencies import get_db
-from auth import verify_token
-from request_service import (
-    DEFAULT_RECENT_DAYS,
-    list_group_requests,
+from asset_service import (
+    get_asset_or_404,
+    serialize_job,
+    serialize_structure,
+    transfer_asset_ownership,
 )
+from auth import verify_token
+from dependencies import get_db
+from enum_types import AssetOwnership, RequestStatus, RequestType
 from group_service import (
     delete_group as delete_group_by_id,
+)
+from group_service import (
     demember_group_user,
     get_group_or_404,
     list_group_assets_for_user,
@@ -24,14 +28,12 @@ from group_service import (
     serialize_group,
     update_group_name,
 )
-from asset_service import (
-    get_asset_or_404,
-    serialize_job,
-    serialize_structure,
-    transfer_asset_ownership,
-)
 from jobs.schemas import JobResponse
 from models import Job, Structure
+from request_service import (
+    DEFAULT_RECENT_DAYS,
+    list_group_requests,
+)
 from user_service import get_user_or_404, serialize_user_profile
 from utils import (
     DEFAULT_JOB_LIST_LIMIT,
@@ -46,6 +48,7 @@ from utils import (
 )
 
 router = APIRouter(prefix="/group", tags=["group"])
+
 
 @router.get("/jobs", response_model=List[JobResponse])
 def get_all_jobs(
@@ -116,6 +119,7 @@ def update_job_ownership(
 
     return serialize_job(job)
 
+
 @router.get("/structures")
 def get_all_structures(
     limit: int = Query(
@@ -150,6 +154,7 @@ def get_all_structures(
         limit=limit,
         offset=offset,
     )
+
 
 @router.patch("/structures/{structure_id}")
 def update_structure_ownership(
@@ -193,6 +198,7 @@ def update_structure_ownership(
 
     return serialize_structure(structure, include_user_sub=True)
 
+
 @router.get("/users")
 def get_all_users(
     limit: int = Query(DEFAULT_USER_LIST_LIMIT, ge=1, le=MAX_USER_LIST_LIMIT),
@@ -221,6 +227,7 @@ def get_all_users(
             offset=offset,
         )
     ]
+
 
 @router.delete("/users/{selected_user_sub}")
 def remove_group_user(
@@ -285,6 +292,7 @@ def get_group_requests(
         offset=offset,
     )
 
+
 @router.patch("/{group_id}")
 def update_group(
     group_id: str,
@@ -303,6 +311,7 @@ def update_group(
     user = get_user_or_404(db, get_user_sub(current_user))
     return update_group_name(db, user, group_id, group_name)
 
+
 @router.get("/{group_id}")
 def get_group(
     group_id: str,
@@ -319,6 +328,7 @@ def get_group(
     get_user_or_404(db, get_user_sub(current_user))
 
     return serialize_group(get_group_or_404(db, group_id))
+
 
 @router.delete("/{group_id}")
 def delete_group(

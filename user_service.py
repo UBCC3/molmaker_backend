@@ -15,7 +15,6 @@ from request_service import (
 from settings import get_settings
 from utils import DEFAULT_USER_LIST_LIMIT, commit_or_rollback, get_user_sub
 
-
 VALID_USER_ROLES = {"admin", "group_admin", "member"}
 
 
@@ -58,7 +57,9 @@ def read_or_create_current_user(
 def get_user_by_email_or_404(db: Session, email: str) -> User:
     user = db.query(User).filter_by(email=email).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
     return user
 
 
@@ -75,7 +76,9 @@ def serialize_user_profile(user: User) -> dict:
 def lookup_user_by_email_for_user(db: Session, actor: User, email: str) -> dict:
     target = get_user_by_email_or_404(db, email)
     if not can_view_user_profile(actor, target):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     return serialize_user_profile(target)
 
@@ -104,7 +107,9 @@ def update_user_role_and_group(
     updated_by_sub: Optional[str] = None,
 ) -> dict:
     if role not in VALID_USER_ROLES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role"
+        )
 
     if role == "group_admin" and not group:
         raise HTTPException(
@@ -132,9 +137,7 @@ def update_user_role_and_group(
 
 def get_auth0_management_token() -> Optional[str]:
     try:
-        auth0_domain, client_id, client_secret = (
-            get_settings().auth0_management()
-        )
+        auth0_domain, client_id, client_secret = get_settings().auth0_management()
         response = requests.post(
             f"https://{auth0_domain}/oauth/token",
             json={
@@ -208,4 +211,4 @@ def delete_user_from_auth0(user_sub: str, token: str, db: Session) -> None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Auth0 deletion error: {str(error)}",
-        )
+        ) from error

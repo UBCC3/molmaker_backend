@@ -13,15 +13,12 @@ from uuid import UUID
 from enum_types import CalculationType, JobStatus
 from settings import BackendSettings
 
-
 SSH_HOST = "cluster"
 PROTOCOL_VERSION = 1
 MAX_CLUSTER_RESPONSE_BYTES = 64 * 1024 * 1024
 COMMAND_REJECTION = "Command rejected by allowed_commands.sh"
 INVALID_STATUS_RESPONSE = "Invalid status lookup response from cluster"
-INVALID_FINALISATION_RESPONSE = (
-    "Invalid artifact finalisation response from cluster"
-)
+INVALID_FINALISATION_RESPONSE = "Invalid artifact finalisation response from cluster"
 JOB_ERROR_EXIT_CODE = 10
 SUBMISSION_OUTCOME_UNKNOWN_EXIT_CODE = 11
 SERVICE_ERROR_EXIT_CODE = 12
@@ -327,9 +324,7 @@ class ClusterDispatchClient:
             "job cancellation",
         )
         if result["slurm_id"] != slurm_id or result["cancel_requested"] is not True:
-            raise ClusterServiceError(
-                "Invalid job cancellation response from cluster"
-            )
+            raise ClusterServiceError("Invalid job cancellation response from cluster")
 
     def upload_artifacts(
         self,
@@ -369,10 +364,7 @@ class ClusterDispatchClient:
             "finalisation acknowledgement",
             timeout_seconds=self.storage_timeout_seconds,
         )
-        if (
-            result["job_id"] != normalized_job_id
-            or result["cleaned"] is not True
-        ):
+        if result["job_id"] != normalized_job_id or result["cleaned"] is not True:
             raise ClusterServiceError(
                 "Invalid finalisation acknowledgement from cluster"
             )
@@ -436,9 +428,7 @@ class ClusterDispatchClient:
             if response["ok"] is True and (
                 set(response["result"]) != expected_result_fields
             ):
-                raise ClusterServiceError(
-                    f"Invalid {operation} response from cluster"
-                )
+                raise ClusterServiceError(f"Invalid {operation} response from cluster")
         except _ClusterResponseTooLargeError:
             if command == "upload-artifacts":
                 raise JobDispatchError(

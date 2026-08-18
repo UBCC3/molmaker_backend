@@ -1,11 +1,11 @@
 import base64
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-import uuid
 
 from conftest import make_auth0_payload
-from models import Structure, Tags
 
+from models import Structure, Tags
 
 PNG_TEST_IMAGE = b"\x89PNG\r\n\x1a\nsaved image content"
 
@@ -99,8 +99,7 @@ class TestStructuresAPI:
         structure_query = next(
             statement
             for statement in sql_statements
-            if "FROM structures" in statement
-            and "structures.user_sub" in statement
+            if "FROM structures" in statement and "structures.user_sub" in statement
         )
         assert "structures.content" not in structure_query
         assert "structures.thumbnail" not in structure_query
@@ -282,7 +281,9 @@ class TestStructuresAPI:
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         structure = structure_factory(
             user_sub=owner.user_sub,
             group_id=group.group_id,
@@ -362,7 +363,9 @@ class TestStructuresAPI:
         assert structure.notes == "after"
         assert sorted(tag.name for tag in structure.tags) == ["existing", "new"]
 
-        existing_tags = db.query(Tags).filter_by(user_sub="auth0|testuser", name="existing").all()
+        existing_tags = (
+            db.query(Tags).filter_by(user_sub="auth0|testuser", name="existing").all()
+        )
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
         assert db.query(Tags).filter_by(user_sub="auth0|testuser", name="new").one()
 
@@ -445,7 +448,9 @@ class TestStructuresAPI:
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         owner_tag = tag_factory(user_sub=owner.user_sub, name="keep")
         structure = structure_factory(
             user_sub=owner.user_sub,
@@ -477,7 +482,9 @@ class TestStructuresAPI:
         Direct owners can change visibility for user-only structures.
         """
         user_factory(user_sub="auth0|testuser")
-        structure = structure_factory(user_sub="auth0|testuser", group_id=None, is_public=False)
+        structure = structure_factory(
+            user_sub="auth0|testuser", group_id=None, is_public=False
+        )
 
         response = client.patch(
             f"/structures/{structure.structure_id}/visibility",
@@ -521,7 +528,9 @@ class TestStructuresAPI:
         """
         group = group_factory()
         owner = user_factory(group=group, user_sub="auth0|owner")
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         structure = structure_factory(
             user_sub=owner.user_sub,
             group_id=group.group_id,
@@ -785,7 +794,9 @@ class TestStructuresAPI:
         assert structure.is_deleted is False
         assert sorted(tag.name for tag in structure.tags) == ["existing", "new"]
 
-        existing_tags = db.query(Tags).filter_by(user_sub=user.user_sub, name="existing").all()
+        existing_tags = (
+            db.query(Tags).filter_by(user_sub=user.user_sub, name="existing").all()
+        )
         assert [tag.tag_id for tag in existing_tags] == [existing_tag.tag_id]
         assert db.query(Tags).filter_by(user_sub=user.user_sub, name="new").one()
 
@@ -816,7 +827,10 @@ class TestStructuresAPI:
         assert response.status_code == 500
         assert "Could not create structure" in response.json()["detail"]
         assert db.query(Structure).count() == 0
-        assert db.query(Tags).filter_by(user_sub="auth0|testuser", name="new").first() is None
+        assert (
+            db.query(Tags).filter_by(user_sub="auth0|testuser", name="new").first()
+            is None
+        )
 
     def test_create_structure_rejects_non_utf8_content(
         self,
@@ -832,9 +846,7 @@ class TestStructuresAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == (
-            "Structure file must be valid UTF-8 text"
-        )
+        assert response.json()["detail"] == ("Structure file must be valid UTF-8 text")
 
     def test_create_structure_rejects_oversized_content(
         self,
@@ -894,9 +906,7 @@ class TestStructuresAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == (
-            "Structure thumbnail must be a PNG image"
-        )
+        assert response.json()["detail"] == ("Structure thumbnail must be a PNG image")
 
     def test_create_structure_rejects_invalid_png_thumbnail_content(
         self,
@@ -930,6 +940,4 @@ class TestStructuresAPI:
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == (
-            "Structure thumbnail must not be empty"
-        )
+        assert response.json()["detail"] == ("Structure thumbnail must not be empty")

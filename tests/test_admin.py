@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from conftest import make_auth0_payload
+
 from models import Group
 
 
@@ -79,14 +80,18 @@ class TestAdminAPI:
             expected_user.user_sub
         ]
 
-    def test_admin_can_list_groups_with_users(self, client, group_factory, user_factory):
+    def test_admin_can_list_groups_with_users(
+        self, client, group_factory, user_factory
+    ):
         """
         GET /admin/groups should return groups and their users for admins.
         """
         admin_group = group_factory(name="Admins")
         chemistry_group = group_factory(name="Chemistry")
         admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        member = user_factory(group=chemistry_group, user_sub="auth0|member", role="member")
+        member = user_factory(
+            group=chemistry_group, user_sub="auth0|member", role="member"
+        )
 
         response = client.get("/admin/groups")
 
@@ -172,7 +177,9 @@ class TestAdminAPI:
         research_group = group_factory(name="Research")
         owner_current_group = group_factory(name="Owner Current Group")
         admin = user_factory(group=admin_group, user_sub="auth0|testuser", role="admin")
-        owner = user_factory(group=owner_current_group, user_sub="auth0|owner", role="member")
+        owner = user_factory(
+            group=owner_current_group, user_sub="auth0|owner", role="member"
+        )
         older_job = job_factory(
             user_sub=admin.user_sub,
             group_id=admin_group.group_id,
@@ -247,9 +254,7 @@ class TestAdminAPI:
         response = client.get("/admin/jobs?limit=1&offset=1")
 
         assert response.status_code == 200
-        assert [job["job_id"] for job in response.json()] == [
-            str(expected_job.job_id)
-        ]
+        assert [job["job_id"] for job in response.json()] == [str(expected_job.job_id)]
 
     def test_admin_job_list_uses_fixed_number_of_queries(
         self,
@@ -298,7 +303,9 @@ class TestAdminAPI:
         group = db.query(Group).filter_by(name="New Group").one()
         assert result["group_id"] == str(group.group_id)
 
-    def test_create_group_rejects_duplicate_name(self, client, group_factory, user_factory):
+    def test_create_group_rejects_duplicate_name(
+        self, client, group_factory, user_factory
+    ):
         """
         POST /admin/groups should reject duplicate group names.
         """
@@ -413,7 +420,9 @@ class TestAdminAPI:
             request_type="demember_request",
         )
 
-        response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
+        response = client.put(
+            f"/admin/users/{target.user_sub}", data={"role": "member"}
+        )
 
         assert response.status_code == 200
         assert response.json()["group_id"] is None
@@ -503,11 +512,15 @@ class TestAdminAPI:
         PUT /admin/users/{user_sub} should be overall-admin-only.
         """
         group = group_factory()
-        group_admin = user_factory(group=group, user_sub="auth0|group-admin", role="group_admin")
+        group_admin = user_factory(
+            group=group, user_sub="auth0|group-admin", role="group_admin"
+        )
         target = user_factory(group=group, user_sub="auth0|target", role="member")
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
-        response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
+        response = client.put(
+            f"/admin/users/{target.user_sub}", data={"role": "member"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
@@ -531,7 +544,9 @@ class TestAdminAPI:
         target = user_factory(group=target_group, user_sub="auth0|target")
         set_auth_user(make_auth0_payload(group_admin.user_sub))
 
-        response = client.put(f"/admin/users/{target.user_sub}", data={"role": "member"})
+        response = client.put(
+            f"/admin/users/{target.user_sub}", data={"role": "member"}
+        )
 
         assert response.status_code == 403
         assert response.json()["detail"] == "Permission denied"
@@ -548,7 +563,9 @@ class TestAdminAPI:
         assert response.status_code == 400
         assert response.json()["detail"] == "Invalid role"
 
-    def test_update_user_role_returns_404_for_missing_selected_user(self, client, user_factory):
+    def test_update_user_role_returns_404_for_missing_selected_user(
+        self, client, user_factory
+    ):
         """
         PUT /admin/users/{user_sub} should return 404 when the selected user is missing.
         """
@@ -559,9 +576,7 @@ class TestAdminAPI:
         assert response.status_code == 404
         assert response.json()["detail"] == "Selected user not found"
 
-    def test_update_user_role_returns_404_for_missing_group(
-        self, client, user_factory
-    ):
+    def test_update_user_role_returns_404_for_missing_group(self, client, user_factory):
         """
         PUT /admin/users/{user_sub} should return 404 when group_id does not exist.
         """

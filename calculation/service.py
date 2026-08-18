@@ -13,7 +13,6 @@ from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
 from utils import commit_or_rollback, read_bounded_upload
 
-
 INPUT_FILENAME = "input.xyz"
 STANDARD_ANALYSIS_METHOD = "mp2"
 STANDARD_ANALYSIS_BASIS_SET = "6-311+G(2d,p)"
@@ -216,9 +215,7 @@ def create_calculation_job(
     user_sub = user.user_sub
     group_id = user.group_id
     source_structure_id = structure.structure_id if structure is not None else None
-    source_structure_content = (
-        structure.content if structure is not None else None
-    )
+    source_structure_content = structure.content if structure is not None else None
 
     # End the permission-check transaction before reading an uploaded file.
     db.rollback()

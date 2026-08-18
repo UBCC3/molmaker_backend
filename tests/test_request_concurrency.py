@@ -2,10 +2,10 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from conftest import TestingSessionLocal
 from fastapi import HTTPException
 
 import request_service
-from conftest import TestingSessionLocal
 from enum_types import RequestStatus, RequestType
 from models import Group, Request, User
 

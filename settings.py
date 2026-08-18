@@ -10,7 +10,6 @@ from pathlib import PurePosixPath
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
 
-
 load_dotenv()
 
 
@@ -108,9 +107,7 @@ def _bounded_positive_integer(
 def _required(values: dict[str, object | None]) -> None:
     missing = [name for name, value in values.items() if value is None]
     if missing:
-        raise EnvironmentError(
-            f"Missing required settings: {', '.join(missing)}"
-        )
+        raise EnvironmentError(f"Missing required settings: {', '.join(missing)}")
 
 
 @dataclass(frozen=True)
@@ -196,15 +193,11 @@ class BackendSettings:
             ),
             outage_initial_backoff_seconds=_positive_integer(
                 "RECONCILER_OUTAGE_INITIAL_BACKOFF_SECONDS",
-                ORCHESTRATION_DEFAULTS[
-                    "RECONCILER_OUTAGE_INITIAL_BACKOFF_SECONDS"
-                ],
+                ORCHESTRATION_DEFAULTS["RECONCILER_OUTAGE_INITIAL_BACKOFF_SECONDS"],
             ),
             outage_max_backoff_seconds=_positive_integer(
                 "RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS",
-                ORCHESTRATION_DEFAULTS[
-                    "RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS"
-                ],
+                ORCHESTRATION_DEFAULTS["RECONCILER_OUTAGE_MAX_BACKOFF_SECONDS"],
             ),
             slurm_job_time_limit_minutes=_bounded_positive_integer(
                 "SLURM_JOB_TIME_LIMIT_MINUTES",

@@ -85,8 +85,7 @@ class SubmissionReconciler(BaseReconciler):
             return
 
         if job.attempt_count and (
-            job.cancel_requested
-            or job.attempt_count >= self.settings.max_attempts
+            job.cancel_requested or job.attempt_count >= self.settings.max_attempts
         ):
             recovered_slurm_id = self._find_existing_submission(job)
             if recovered_slurm_id:

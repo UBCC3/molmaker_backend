@@ -18,12 +18,9 @@ from orchestration.cluster_client import (
 )
 from settings import BackendSettings
 
-
 JOB_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 WORK_DIR = PurePosixPath("/home/test/molmaker")
-REMOTE_COMMAND = (
-    "python3 /home/test/molmaker/Cluster-API-QC/runner/dispatch.py"
-)
+REMOTE_COMMAND = "python3 /home/test/molmaker/Cluster-API-QC/runner/dispatch.py"
 
 
 def success(result):
@@ -133,9 +130,7 @@ def test_client_reads_cluster_settings(monkeypatch):
 
 
 def test_submit_sends_inputs_and_settings_in_one_json_request(client, run_dispatch):
-    calls = run_dispatch(
-        stdout=success({"slurm_id": "12345", "recovered": False})
-    )
+    calls = run_dispatch(stdout=success({"slurm_id": "12345", "recovered": False}))
 
     result = submit(
         client,
@@ -210,9 +205,7 @@ def test_status_batch_returns_typed_rows_and_allows_missing_jobs(
 
     result = client.get_slurm_job_statuses(["12345", "67890"])
 
-    assert result == {
-        "12345": SlurmJobStatus("12345", "CANCELLED+", "0:15", 62, False)
-    }
+    assert result == {"12345": SlurmJobStatus("12345", "CANCELLED+", "0:15", 62, False)}
     assert sent_request(calls) == {
         "protocol_version": 1,
         "command": "status-batch",
@@ -265,9 +258,7 @@ def test_finalisation_acknowledges_only_the_matching_job(
     client,
     run_dispatch,
 ):
-    calls = run_dispatch(
-        stdout=success({"job_id": str(JOB_ID), "cleaned": True})
-    )
+    calls = run_dispatch(stdout=success({"job_id": str(JOB_ID), "cleaned": True}))
 
     client.acknowledge_finalisation(JOB_ID)
 
@@ -281,9 +272,7 @@ def test_finalisation_acknowledges_only_the_matching_job(
 @pytest.mark.parametrize(
     "response",
     [
-        finalisation_success(
-            job_id="22222222-2222-4222-8222-222222222222"
-        ),
+        finalisation_success(job_id="22222222-2222-4222-8222-222222222222"),
         finalisation_success(archive_uploaded=False),
         finalisation_success(calculation_result=[]),
         finalisation_success(calculation_error=[]),
@@ -318,11 +307,7 @@ def test_finalisation_treats_an_oversized_response_as_a_job_failure(
     monkeypatch,
 ):
     monkeypatch.setattr(cluster_client, "MAX_CLUSTER_RESPONSE_BYTES", 256)
-    run_dispatch(
-        stdout=finalisation_success(
-            artifacts={"vib": "x" * 256}
-        )
-    )
+    run_dispatch(stdout=finalisation_success(artifacts={"vib": "x" * 256}))
 
     with pytest.raises(JobDispatchError, match="response is too large"):
         client.upload_artifacts(
@@ -445,9 +430,7 @@ def test_result_shapes_are_checked(client, run_dispatch):
     with pytest.raises(SubmissionOutcomeUnknownError):
         submit(client)
 
-    run_dispatch(
-        stdout=success({"slurm_id": "12345", "cancel_requested": 1})
-    )
+    run_dispatch(stdout=success({"slurm_id": "12345", "cancel_requested": 1}))
     with pytest.raises(ClusterServiceError):
         client.cancel_slurm_job("12345")
 

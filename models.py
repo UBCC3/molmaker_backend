@@ -1,4 +1,8 @@
 # models.py
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import ClassVar
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -25,58 +29,55 @@ from sqlalchemy.orm import (
 )
 
 from database import Base
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import ClassVar
 
 jobs_structures = Table(
-    'jobs_structures',
+    "jobs_structures",
     Base.metadata,
     Column(
-        'job_id',
+        "job_id",
         UUID(as_uuid=True),
-        ForeignKey('jobs.job_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'structure_id',
+        "structure_id",
         UUID(as_uuid=True),
-        ForeignKey('structures.structure_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("structures.structure_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
 
 structures_tags = Table(
-    'structures_tags',
+    "structures_tags",
     Base.metadata,
     Column(
-        'structure_id',
+        "structure_id",
         UUID(as_uuid=True),
-        ForeignKey('structures.structure_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("structures.structure_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'tag_id',
+        "tag_id",
         UUID(as_uuid=True),
-        ForeignKey('tags.tag_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("tags.tag_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
 
 jobs_tags = Table(
-    'jobs_tags',
+    "jobs_tags",
     Base.metadata,
     Column(
-        'job_id',
+        "job_id",
         UUID(as_uuid=True),
-        ForeignKey('jobs.job_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
     Column(
-        'tag_id',
+        "tag_id",
         UUID(as_uuid=True),
-        ForeignKey('tags.tag_id', ondelete='CASCADE'),
-        primary_key=True
+        ForeignKey("tags.tag_id", ondelete="CASCADE"),
+        primary_key=True,
     ),
 )
 
@@ -102,8 +103,8 @@ class Asset(Base):
             default=uuid.uuid4,
         )
 
-    user_sub = Column(String, ForeignKey('users.user_sub'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    user_sub = Column(String, ForeignKey("users.user_sub"), nullable=True)
+    group_id = Column(UUID(as_uuid=True), ForeignKey("groups.group_id"), nullable=True)
     is_deleted = Column(Boolean, nullable=False)
     is_public = Column(Boolean, nullable=False, default=False)
 
@@ -150,8 +151,12 @@ class Job(Asset):
             name="ck_jobs_owner_present",
         ),
         UniqueConstraint("slurm_id", name="uq_jobs_slurm_id"),
-        Index("idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"),
-        Index("idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"),
+        Index(
+            "idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"
+        ),
+        Index(
+            "idx_jobs_group_active_submitted", "group_id", "is_deleted", "submitted_at"
+        ),
         Index(
             "idx_jobs_orchestration_active",
             "status",
@@ -212,10 +217,10 @@ class Job(Asset):
     )
 
     structures = relationship(
-        'Structure',
+        "Structure",
         secondary=jobs_structures,
-        back_populates='jobs',
-        cascade="all, delete"
+        back_populates="jobs",
+        cascade="all, delete",
     )
 
 
@@ -273,8 +278,18 @@ class Structure(Asset):
             "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
             name="ck_structures_owner_present",
         ),
-        Index("idx_structures_user_active_uploaded", "user_sub", "is_deleted", "uploaded_at"),
-        Index("idx_structures_group_active_uploaded", "group_id", "is_deleted", "uploaded_at"),
+        Index(
+            "idx_structures_user_active_uploaded",
+            "user_sub",
+            "is_deleted",
+            "uploaded_at",
+        ),
+        Index(
+            "idx_structures_group_active_uploaded",
+            "group_id",
+            "is_deleted",
+            "uploaded_at",
+        ),
     )
 
     structure_id = synonym("id")
@@ -292,11 +307,8 @@ class Structure(Asset):
         group="structure_data",
     )
 
-    jobs = relationship(
-        'Job',
-        secondary=jobs_structures,
-        back_populates='structures'
-    )
+    jobs = relationship("Job", secondary=jobs_structures, back_populates="structures")
+
 
 class Tags(Base):
     __tablename__ = "tags"
@@ -315,17 +327,12 @@ class Tags(Base):
             raise ValueError("Tag name must not be blank")
         return normalized_name
 
-    jobs = relationship(
-        'Job',
-        secondary=jobs_tags,
-        back_populates='tags'
-    )
+    jobs = relationship("Job", secondary=jobs_tags, back_populates="tags")
 
     structures = relationship(
-        'Structure',
-        secondary=structures_tags,
-        back_populates='tags'
+        "Structure", secondary=structures_tags, back_populates="tags"
     )
+
 
 class Group(Base):
     __tablename__ = "groups"
@@ -339,16 +346,17 @@ class Group(Base):
     structures = relationship("Structure", back_populates="group")
     requests = relationship("Request", back_populates="group")
 
+
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (
-        Index("idx_users_group_role", "group_id", "role"),
-    )
+    __table_args__ = (Index("idx_users_group_role", "group_id", "role"),)
 
     user_sub = Column(String, primary_key=True)  # From Auth0
     email = Column(String, nullable=False, unique=True)
-    role = Column(String, nullable=False, default='member')  # 'admin', 'group_admin', or 'member'
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id'), nullable=True)
+    role = Column(
+        String, nullable=False, default="member"
+    )  # 'admin', 'group_admin', or 'member'
+    group_id = Column(UUID(as_uuid=True), ForeignKey("groups.group_id"), nullable=True)
     role_or_group_updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -370,6 +378,7 @@ class User(Base):
         back_populates="receiver",
     )
 
+
 class Request(Base):
     __tablename__ = "requests"
     __table_args__ = (
@@ -383,9 +392,7 @@ class Request(Base):
             "group_id",
             "receiver_sub",
             unique=True,
-            postgresql_where=text(
-                "status = 'pending' AND request_type = 'invite'"
-            ),
+            postgresql_where=text("status = 'pending' AND request_type = 'invite'"),
         ),
         Index(
             "uq_requests_pending_join",
@@ -408,8 +415,8 @@ class Request(Base):
     )
 
     request_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    status = Column(String, nullable=False, default='pending')
-    request_type = Column(String, nullable=False, default='invite')
+    status = Column(String, nullable=False, default="pending")
+    request_type = Column(String, nullable=False, default="invite")
     requested_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -421,19 +428,35 @@ class Request(Base):
         default=lambda: datetime.now(timezone.utc) + timedelta(days=7),
     )
     resolved_at = Column(DateTime(timezone=True), nullable=True)
-    sender_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    receiver_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    created_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    resolved_by_sub = Column(String, ForeignKey('users.user_sub', ondelete='SET NULL'), nullable=True)
-    group_id = Column(UUID(as_uuid=True), ForeignKey('groups.group_id', ondelete='SET NULL'), nullable=True)
+    sender_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    receiver_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    created_by_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    resolved_by_sub = Column(
+        String, ForeignKey("users.user_sub", ondelete="SET NULL"), nullable=True
+    )
+    group_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("groups.group_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     sender_email_snapshot = Column(String, nullable=True)
     receiver_email_snapshot = Column(String, nullable=True)
     created_by_email_snapshot = Column(String, nullable=True)
     resolved_by_email_snapshot = Column(String, nullable=True)
     group_name_snapshot = Column(String, nullable=True)
 
-    sender = relationship("User", foreign_keys=[sender_sub], back_populates="sent_requests")
-    receiver = relationship("User", foreign_keys=[receiver_sub], back_populates="received_requests")
+    sender = relationship(
+        "User", foreign_keys=[sender_sub], back_populates="sent_requests"
+    )
+    receiver = relationship(
+        "User", foreign_keys=[receiver_sub], back_populates="received_requests"
+    )
     created_by = relationship("User", foreign_keys=[created_by_sub])
     resolved_by = relationship("User", foreign_keys=[resolved_by_sub])
     group = relationship("Group", back_populates="requests")

@@ -54,5 +54,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
+      - name: Run lint and formatting checks
+        run: python -m pre_commit run --all-files --show-diff-on-failure
+
       - name: Run full test suite
         run: python -m pytest -q

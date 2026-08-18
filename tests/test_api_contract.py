@@ -1,6 +1,5 @@
 import json
 
-
 LEGACY_OPERATIONS = {
     ("/jobs/", "post"),
     ("/jobs/advanced_analysis", "post"),

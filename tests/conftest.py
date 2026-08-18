@@ -25,6 +25,7 @@ def clear_backend_settings_cache():
     yield
     get_settings.cache_clear()
 
+
 # --- Test database ---
 
 SQLALCHEMY_TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -58,9 +59,7 @@ def isolated_postgresql_schema():
     finally:
         engine.dispose()
         with schema_engine.begin() as connection:
-            connection.exec_driver_sql(
-                f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE'
-            )
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE')
         schema_engine.dispose()
 
 
@@ -145,6 +144,7 @@ def set_auth_user(app):
     """
     Replace the authenticated user payload inside a test.
     """
+
     def _set_auth_user(payload):
         app.dependency_overrides[verify_token] = lambda: payload
         return payload
@@ -157,6 +157,7 @@ def client(app, db, auth_user):
     """
     Test client with DB and auth dependencies overridden.
     """
+
     def override_get_db():
         yield db
 
@@ -171,6 +172,7 @@ def group_factory(db):
     """
     Factory for persisted Group rows with overridable fields.
     """
+
     def create_group(**overrides):
         values = {
             "group_id": uuid.uuid4(),
@@ -187,6 +189,7 @@ def user_factory(db):
     """
     Factory for persisted User rows, optionally attached to a Group.
     """
+
     def create_user(group=None, **overrides):
         user_sub = overrides.pop("user_sub", f"auth0|{uuid.uuid4().hex}")
         values = {
@@ -207,6 +210,7 @@ def tag_factory(db):
     """
     Factory for persisted Tags rows.
     """
+
     def create_tag(**overrides):
         values = {
             "tag_id": uuid.uuid4(),
@@ -224,6 +228,7 @@ def structure_factory(db):
     """
     Factory for persisted Structure rows, with optional tag relationships.
     """
+
     def create_structure(tags=None, **overrides):
         values = {
             "structure_id": uuid.uuid4(),
@@ -251,6 +256,7 @@ def job_factory(db):
     """
     Factory for persisted Job rows, with optional structure and tag relationships.
     """
+
     def create_job(
         structures=None,
         tags=None,
@@ -321,6 +327,7 @@ def request_factory(db):
     """
     Factory for persisted Request rows between two users and a group.
     """
+
     def create_request(sender, receiver, group, **overrides):
         sender_sub = sender.user_sub if hasattr(sender, "user_sub") else sender
         receiver_sub = receiver.user_sub if hasattr(receiver, "user_sub") else receiver

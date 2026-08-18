@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
+from conftest import make_auth0_payload
 
 import storage
-from conftest import make_auth0_payload
 from enum_types import JobStatus
 from settings import get_settings
 

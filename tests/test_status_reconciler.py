@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, call
 
 import pytest
+from conftest import TestingSessionLocal
 
 from enum_types import JobFailureReason, JobStatus
 from models import Job
@@ -12,7 +13,6 @@ from orchestration.cluster_client import (
     JobDispatchError,
     SlurmJobStatus,
 )
-from settings import OrchestrationSettings
 from orchestration.status_reconciler import (
     ACTIVE_SLURM_STATES,
     FAILURE_REASON_BY_SLURM_STATE,
@@ -22,8 +22,7 @@ from orchestration.status_reconciler import (
     StatusTransition,
     _transition_for_state,
 )
-from conftest import TestingSessionLocal
-
+from settings import OrchestrationSettings
 
 EXPECTED_QUEUED_STATES = {
     "CONFIGURING",
@@ -218,8 +217,7 @@ def test_round_batches_every_active_job_in_stable_order_and_uses_one_update_each
     def status_batch(slurm_ids):
         assert worker_session.in_transaction() is False
         return {
-            slurm_id: slurm_job_status(slurm_id, "RUNNING")
-            for slurm_id in slurm_ids
+            slurm_id: slurm_job_status(slurm_id, "RUNNING") for slurm_id in slurm_ids
         }
 
     client.get_slurm_job_statuses.side_effect = status_batch
@@ -301,10 +299,13 @@ def test_batch_saves_runtime_and_hands_terminal_jobs_to_finalisation(
     assert saved_cancelled.status == JobStatus.finalising.value
     assert saved_cancelled.terminal_status == JobStatus.cancelled.value
     assert saved_cancelled.failure_reason is None
-    assert sum(
-        record.message == "Slurm job reached a terminal state"
-        for record in caplog.records
-    ) == 3
+    assert (
+        sum(
+            record.message == "Slurm job reached a terminal state"
+            for record in caplog.records
+        )
+        == 3
+    )
 
 
 def test_failed_job_uses_result_error_to_identify_a_calculation_failure(
@@ -614,9 +615,7 @@ def test_shared_batch_failure_stops_the_round_without_changing_jobs(
     settings,
 ):
     client = Mock(spec=ClusterDispatchClient)
-    client.get_slurm_job_statuses.side_effect = ClusterServiceError(
-        "sacct unavailable"
-    )
+    client.get_slurm_job_statuses.side_effect = ClusterServiceError("sacct unavailable")
     reconciler = make_reconciler(
         client=client,
         current_settings=replace(settings, status_batch_size=1),

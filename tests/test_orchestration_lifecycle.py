@@ -2,6 +2,7 @@ from unittest.mock import Mock
 from uuid import UUID
 
 from conftest import TestingSessionLocal
+
 from enum_types import CalculationType, JobStatus
 from models import Job, JobInput, JobResult
 from orchestration.cluster_client import (
@@ -10,9 +11,9 @@ from orchestration.cluster_client import (
     SlurmJobStatus,
 )
 from orchestration.finalisation_reconciler import FinalisationReconciler
-from settings import OrchestrationSettings
 from orchestration.status_reconciler import StatusReconciler
 from orchestration.submission_reconciler import SubmissionReconciler
+from settings import OrchestrationSettings
 
 
 def _settings():

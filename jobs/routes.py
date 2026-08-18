@@ -1,18 +1,20 @@
-from typing import Optional, List
+from typing import List, Optional
+
 from fastapi import (
     APIRouter,
-    Form,
-    HTTPException,
     Body,
     Depends,
+    Form,
+    HTTPException,
     Query,
-    status,
     Response,
+    status,
 )
 from sqlalchemy.orm import Session
+
 from asset_service import (
-    get_available_job_artifacts,
     get_asset_or_404,
+    get_available_job_artifacts,
     get_job_artifact_content,
     list_user_assets,
     require_asset_permission,
@@ -22,14 +24,16 @@ from asset_service import (
     soft_delete_asset,
     update_asset_visibility,
 )
+from auth import verify_token
+from dependencies import get_db
+from enum_types import JobStatus
+from jobs.schemas import JobArtifactListResponse, JobResponse, JobResultResponse
+from models import Job
 from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Job
-from dependencies import get_db
-from auth import verify_token
 from user_service import get_user_or_404
 from utils import (
     DEFAULT_JOB_LIST_LIMIT,
@@ -37,8 +41,6 @@ from utils import (
     commit_or_rollback,
     get_user_sub,
 )
-from enum_types import JobStatus
-from jobs.schemas import JobArtifactListResponse, JobResponse, JobResultResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 

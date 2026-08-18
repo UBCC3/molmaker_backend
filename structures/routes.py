@@ -1,26 +1,42 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query, status
-from sqlalchemy.orm import Session
+import os
+import uuid
+from datetime import datetime, timezone
+from typing import List
+
+from ase.io import read
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
+from pymatgen.core import Molecule
+from sqlalchemy.orm import Session
+
 from asset_service import (
     get_asset_or_404,
     list_user_assets,
     require_asset_permission,
-    serialize_tag_names,
     serialize_structure,
+    serialize_tag_names,
     set_asset_tags,
     soft_delete_asset,
     update_asset_visibility,
 )
+from auth import verify_token
+from dependencies import get_db
+from models import Structure, Tags
 from permissions import (
     can_read_asset,
     can_view_asset_user_owner,
     can_write_asset,
 )
-from models import Structure, Tags
-from dependencies import get_db
-from auth import verify_token
 from user_service import get_user_or_404
-import os, uuid
 from utils import (
     DEFAULT_STRUCTURE_LIST_LIMIT,
     MAX_STRUCTURE_LIST_LIMIT,
@@ -28,10 +44,6 @@ from utils import (
     get_user_sub,
     read_bounded_upload,
 )
-from datetime import datetime, timezone
-from typing import List
-from ase.io import read
-from pymatgen.core import Molecule
 
 router = APIRouter(prefix="/structures", tags=["structures"])
 
@@ -50,7 +62,7 @@ def get_all_structures(
     ),
     offset: int = Query(0, ge=0),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     List non-deleted structures directly owned by the authenticated user.
@@ -73,12 +85,11 @@ def get_all_structures(
         )
         return [serialize_structure(structure) for structure in structures]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.post("/formula")
-def get_structure_formula(
-        file: UploadFile = File(...)
-):
+def get_structure_formula(file: UploadFile = File(...)):
     """
     Calculate molecular formula from uploaded structure file.
     :param file: Uploaded structure file, up to 4 MiB.
@@ -99,7 +110,7 @@ def get_structure_formula(
             try:
                 atoms = read(temp_file)
                 chemical_formula = atoms.get_chemical_formula()
-            except:
+            except Exception:
                 # If ASE fails, try with Pymatgen
                 mol = Molecule.from_file(temp_file)
                 chemical_formula = mol.composition.reduced_formula
@@ -115,15 +126,12 @@ def get_structure_formula(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not calculate formula: {str(e)}"
-        )
+            detail=f"Could not calculate formula: {str(e)}",
+        ) from e
 
 
 @router.get("/tags")
-def get_user_tags(
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
-):
+def get_user_tags(user=Depends(verify_token), db: Session = Depends(get_db)):
     """
     Get the authenticated user's normalized, case-insensitive tag names.
     :param user: Current user dependency, verified via token.
@@ -132,18 +140,15 @@ def get_user_tags(
     """
     try:
         user_id = get_user_sub(user)
-        tags = (db.query(Tags)
-                .filter(Tags.user_sub == user_id)
-                .all())
+        tags = db.query(Tags).filter(Tags.user_sub == user_id).all()
         return serialize_tag_names(tags)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.get("/{structure_id}")
 def get_structure_by_id(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    structure_id: str, user=Depends(verify_token), db: Session = Depends(get_db)
 ):
     """
     Retrieve one structure when the authenticated user has read access.
@@ -166,17 +171,18 @@ def get_structure_by_id(
                 include_content=True,
             )
         }
-    except HTTPException: 
+    except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.patch("/{structure_id}/visibility", status_code=status.HTTP_200_OK)
 def update_structure_visibility(
     structure_id: str,
     is_public: bool = Form(...),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update public/private visibility for one structure.
@@ -204,6 +210,7 @@ def update_structure_visibility(
         "message": "Structure visibility updated successfully.",
     }
 
+
 @router.patch("/{structure_id}")
 def update_structure(
     structure_id: str,
@@ -213,7 +220,7 @@ def update_structure(
     tags: List[str] = Form([]),
     replace_tags: bool = Form(False),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update an existing structure when the authenticated user has write access.
@@ -262,13 +269,12 @@ def update_structure(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @router.delete("/{structure_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_structure(
-    structure_id: str,
-    user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    structure_id: str, user=Depends(verify_token), db: Session = Depends(get_db)
 ):
     """
     Soft-delete one structure when the authenticated user has delete access.
@@ -284,6 +290,7 @@ def delete_structure(
 
     return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
 
+
 @router.post("/")
 def create_and_upload_structure(
     name: str = Form(...),
@@ -293,7 +300,7 @@ def create_and_upload_structure(
     tags: List[str] = Form([]),
     image: UploadFile = File(...),
     user=Depends(verify_token),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create a new structure with its structure file and thumbnail in PostgreSQL.
@@ -386,4 +393,4 @@ def create_and_upload_structure(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

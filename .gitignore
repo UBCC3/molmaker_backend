@@ -10,4 +10,5 @@
 /jobs/*/input.xyz
 /jobs/*/urls.json
 **/__pycache__
+.ruff_cache/
 venv

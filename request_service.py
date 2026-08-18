@@ -22,7 +22,6 @@ from permissions import (
 )
 from utils import DEFAULT_REQUEST_LIST_LIMIT, commit_or_rollback, parse_uuid_or_404
 
-
 DEFAULT_EXPIRES_IN_DAYS = 7
 MIN_EXPIRES_IN_DAYS = 1
 MAX_EXPIRES_IN_DAYS = 30
@@ -110,7 +109,9 @@ def lock_users_for_membership_change(
         (user.user_sub for user in users),
     )
     if len(locked_users) != len({user.user_sub for user in users}):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     return tuple(locked_users[user.user_sub] for user in users)
 
@@ -205,14 +206,11 @@ def cancel_pending_demember_requests_for_group(
     resolved_by_sub: Optional[str],
     exclude_request_id: Optional[object] = None,
 ) -> None:
-    requests = (
-        db.query(Request)
-        .filter_by(
-            status=RequestStatus.pending.value,
-            request_type=RequestType.demember_request.value,
-            sender_sub=user.user_sub,
-            group_id=group_id,
-        )
+    requests = db.query(Request).filter_by(
+        status=RequestStatus.pending.value,
+        request_type=RequestType.demember_request.value,
+        sender_sub=user.user_sub,
+        group_id=group_id,
     )
     if exclude_request_id is not None:
         requests = requests.filter(Request.request_id != exclude_request_id)
@@ -305,9 +303,15 @@ def _snapshot_deleted_user_request(request: Request, user: User) -> None:
         request.sender_email_snapshot = user.email
     if request.receiver_sub == user.user_sub and not request.receiver_email_snapshot:
         request.receiver_email_snapshot = user.email
-    if request.created_by_sub == user.user_sub and not request.created_by_email_snapshot:
+    if (
+        request.created_by_sub == user.user_sub
+        and not request.created_by_email_snapshot
+    ):
         request.created_by_email_snapshot = user.email
-    if request.resolved_by_sub == user.user_sub and not request.resolved_by_email_snapshot:
+    if (
+        request.resolved_by_sub == user.user_sub
+        and not request.resolved_by_email_snapshot
+    ):
         request.resolved_by_email_snapshot = user.email
 
 
@@ -325,7 +329,9 @@ def serialize_request(
         "expires_at": request.expires_at.isoformat(),
         "resolved_at": request.resolved_at.isoformat() if request.resolved_at else None,
         "group_id": str(request.group_id) if request.group_id else None,
-        "group_name": request.group.name if request.group else request.group_name_snapshot,
+        "group_name": request.group.name
+        if request.group
+        else request.group_name_snapshot,
     }
 
     if include_user_metadata:
@@ -374,7 +380,9 @@ def get_request_or_404(
         query = query.with_for_update()
     request = query.populate_existing().first()
     if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
+        )
     return request
 
 
@@ -397,7 +405,9 @@ def _lock_request_and_users(
     users_by_sub = _lock_users_by_sub(db, user_subs)
     locked_user = users_by_sub.get(user.user_sub)
     if not locked_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     request = get_request_or_404(db, request_id, for_update=True)
     return request, locked_user, users_by_sub
@@ -586,7 +596,9 @@ def list_group_requests(
             detail="User is not part of a group",
         )
     if not can_list_group_requests(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     expire_pending_requests(db)
     query = db.query(Request).filter(Request.group_id == user.group_id)
@@ -598,7 +610,9 @@ def list_group_requests(
 def _require_group_request_manager(user: User, group_id: object) -> None:
     if can_manage_group_requests(user, group_id):
         return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+    )
 
 
 def _pending_request_exists(
@@ -609,13 +623,10 @@ def _pending_request_exists(
     sender_sub: Optional[str] = None,
     receiver_sub: Optional[str] = None,
 ) -> bool:
-    query = (
-        db.query(Request)
-        .filter_by(
-            request_type=request_type.value,
-            group_id=group_id,
-            status=RequestStatus.pending.value,
-        )
+    query = db.query(Request).filter_by(
+        request_type=request_type.value,
+        group_id=group_id,
+        status=RequestStatus.pending.value,
     )
     if sender_sub is not None:
         query = query.filter_by(sender_sub=sender_sub)
@@ -681,9 +692,8 @@ def _build_request(
         receiver_sub=receiver_sub,
         created_by_sub=created_by_sub,
         requested_at=requested_at,
-        expires_at=requested_at + timedelta(
-            days=_validate_expires_in_days(expires_in_days)
-        ),
+        expires_at=requested_at
+        + timedelta(days=_validate_expires_in_days(expires_in_days)),
     )
 
 
@@ -736,7 +746,9 @@ def create_invite_request(
     user, receiver = lock_users_for_membership_change(db, user, receiver)
 
     if not is_admin_or_group_admin(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
     if not can_create_invite_request(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -862,14 +874,13 @@ def _approve_invite(
     locked_users: dict[str, User],
 ) -> None:
     if not can_approve_invite_request(user, request):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
+        )
 
     receiver = locked_users.get(request.receiver_sub)
     group = (
-        db.query(Group)
-        .filter_by(group_id=request.group_id)
-        .populate_existing()
-        .first()
+        db.query(Group).filter_by(group_id=request.group_id).populate_existing().first()
     )
     if not receiver or not group or receiver.group_id:
         _cancel_invalid_request(db, request, user)
@@ -899,10 +910,7 @@ def _approve_join_request(
 
     sender = locked_users.get(request.sender_sub)
     group = (
-        db.query(Group)
-        .filter_by(group_id=request.group_id)
-        .populate_existing()
-        .first()
+        db.query(Group).filter_by(group_id=request.group_id).populate_existing().first()
     )
     if not sender or not group or sender.group_id:
         _cancel_invalid_request(db, request, user)
@@ -933,7 +941,9 @@ def _approve_demember_request(
         _cancel_invalid_request(db, request, user)
 
     if not can_demember_group_user(user, sender):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+        )
 
     cancel_pending_demember_requests_for_group(
         db,
@@ -970,9 +980,13 @@ def _require_reject_permission(request: Request, user: User) -> None:
         return
 
     if request.request_type == RequestType.invite.value:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
+        )
 
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+    )
 
 
 def cancel_request(db: Session, request_id: str, user: User) -> dict:
@@ -981,7 +995,9 @@ def cancel_request(db: Session, request_id: str, user: User) -> dict:
     _require_pending_request(request)
 
     if not can_cancel_request(user, request):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Request not found"
+        )
 
     _resolve_request(
         db,
