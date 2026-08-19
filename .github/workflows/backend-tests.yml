@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   postgresql:
-    name: PostgreSQL 11.22 full test suite
+    name: PostgreSQL 16 full test suite
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -23,7 +23,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:11.22-bullseye
+        image: postgres:16-bookworm
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
