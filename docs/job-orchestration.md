@@ -57,6 +57,12 @@ On the cluster, `dispatch.py`:
 3. writes `input.xyz`, optional `keywords.json`, and `slurm.sh`; and
 4. runs `sbatch --parsable` and returns the Slurm ID.
 
+For `calculation_type=scan`, the required keywords object is the validated scan
+specification with a backend-generated explicit `values` list. Dispatch stages
+it as `keywords.json` and invokes the cluster's bond/angle/dihedral scan runner
+with the job's saved method and basis set. The cluster consumes that list
+directly, so it does not independently expand `steps` or `spacing` ranges.
+
 The backend saves that ID and changes the job to `submitted`. If `sbatch` may
 have succeeded but its response was lost, the next attempt searches first and
 does not create a duplicate when the existing job is found.
@@ -122,6 +128,8 @@ being treated as a shared cluster outage.
 The archive keeps available inputs, outputs, Slurm logs, and partial results.
 The result and artifact endpoints serve the verified PostgreSQL data directly,
 while the archive endpoint creates the only presigned S3 download URL.
+Completed scan jobs expose their parsed point data through the normal result
+endpoint and their multi-frame geometry through the `scan` artifact endpoint.
 
 The ZIP upload happens before the backend validates and saves the returned
 data. If validation or persistence repeatedly fails until `MAX_ATTEMPTS`, the

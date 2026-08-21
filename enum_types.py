@@ -6,6 +6,7 @@ class CalculationType(str, Enum):
     geometry = "optimization"
     orbitals = "orbitals"
     frequency = "frequency"
+    scan = "scan"
     standard = "standard"
     transition = "transition"
     irc = "irc"
@@ -58,6 +59,7 @@ calculation_types = {
     "Geometric Optimization": "optimization",
     "Vibrational Frequency": "frequency",
     "Molecular Orbitals": "orbitals",
+    "Bond/Angle Scan": "scan",
     "Standard Analysis": "standard",
     "Transition State Optimization": "transition",
     "Intrinsic Reaction Coordinate": "irc",

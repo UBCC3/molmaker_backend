@@ -1,4 +1,5 @@
 from enum_types import (
+    CalculationType,
     JobFailureReason,
     JobStatus,
     basis_sets,
@@ -20,6 +21,11 @@ def test_job_status_values_match_the_orchestration_contract():
         "failed",
         "cancelled",
     }
+
+
+def test_calculation_types_include_scan():
+    assert CalculationType.scan.value == "scan"
+    assert calculation_types["Bond/Angle Scan"] == "scan"
 
 
 def test_job_failure_reason_values_are_separate_from_statuses():

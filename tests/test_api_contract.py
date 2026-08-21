@@ -18,6 +18,7 @@ LEGACY_OPERATIONS = {
 REPLACEMENT_OPERATIONS = {
     ("/calculation/custom", "post"),
     ("/calculation/workflow/standard_analysis", "post"),
+    ("/calculation/workflow/bond_angle_scan", "post"),
     ("/jobs/", "get"),
     ("/jobs/{job_id}", "get"),
     ("/jobs/{job_id}/cancel", "post"),

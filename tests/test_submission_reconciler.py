@@ -190,6 +190,37 @@ def test_success_commits_attempt_then_submits_the_database_inputs(
     client.submit_job.assert_called_once()
 
 
+def test_scan_submission_passes_the_stored_scan_specification(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.submit_job.return_value = "45678"
+    reconciler = make_reconciler(client=client)
+    scan_spec = {
+        "coordinate": "bond",
+        "atoms": [1, 2],
+        "relax": False,
+        "values": [0.9, 1.0, 1.1],
+    }
+    job = job_factory(
+        calculation_type=CalculationType.scan.value,
+        method="ccsd(t)",
+        basis_set="6-311+G(2d,p)",
+        input_xyz="2\nscan molecule\nH 0 0 0\nH 0 0 1\n",
+        keywords=scan_spec,
+    )
+
+    reconciler.run_round()
+
+    assert refresh(db, job).status == JobStatus.submitted.value
+    assert client.submit_job.call_args.kwargs["calculation_type"] == (
+        CalculationType.scan
+    )
+    assert client.submit_job.call_args.kwargs["keywords"] == scan_spec
+
+
 def test_retry_uses_one_recovering_submission_request(
     db,
     job_factory,

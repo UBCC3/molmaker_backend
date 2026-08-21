@@ -15,6 +15,7 @@ from orchestration.status_reconciler import StatusReconciler
 from orchestration.submission_reconciler import SubmissionReconciler
 from settings import (
     APPLICATION_DEFAULTS,
+    CALCULATION_DEFAULTS,
     SUPPORTED_ENVIRONMENT_VARIABLES,
     BackendSettings,
     get_settings,
@@ -50,6 +51,22 @@ def test_env_example_lists_every_supported_backend_setting():
     assert set(example_values) == SUPPORTED_ENVIRONMENT_VARIABLES
     for name, default in APPLICATION_DEFAULTS.items():
         assert example_values[name] == default
+    for name, default in CALCULATION_DEFAULTS.items():
+        assert example_values[name] == str(default)
+
+
+def test_scan_point_limit_is_configurable(monkeypatch):
+    monkeypatch.setenv("MAX_SCAN_POINTS", "321")
+
+    assert BackendSettings.from_env().max_scan_points == 321
+
+
+@pytest.mark.parametrize("invalid_limit", ["invalid", "0", "1", "10001"])
+def test_scan_point_limit_is_bounded(monkeypatch, invalid_limit):
+    monkeypatch.setenv("MAX_SCAN_POINTS", invalid_limit)
+
+    with pytest.raises(ValueError, match="MAX_SCAN_POINTS"):
+        BackendSettings.from_env()
 
 
 def test_database_settings_build_a_safe_url(monkeypatch):

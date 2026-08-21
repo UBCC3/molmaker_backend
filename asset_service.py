@@ -106,6 +106,7 @@ ARTIFACT_FILES = {
     "vib": ("vib.xyz", "chemical/x-xyz"),
     "molden": ("orbitals.molden", "text/plain"),
     "esp": ("ESP.cube", "text/plain"),
+    "scan": ("scan.xyz", "chemical/x-xyz"),
 }
 JOB_RESULT_ARTIFACTS_BY_CALCULATION = {
     CalculationType.energy.value: frozenset(),
@@ -114,6 +115,7 @@ JOB_RESULT_ARTIFACTS_BY_CALCULATION = {
     CalculationType.geometry.value: frozenset({"trajectory"}),
     CalculationType.transition.value: frozenset({"trajectory"}),
     CalculationType.irc.value: frozenset({"trajectory"}),
+    CalculationType.scan.value: frozenset({"scan"}),
     CalculationType.standard.value: frozenset({"trajectory", "vib", "molden", "esp"}),
 }
 

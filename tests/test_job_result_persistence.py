@@ -18,6 +18,7 @@ COMPLETED_RESULTS = [
     ("optimization", {"trajectory": "trajectory data"}),
     ("transition", {"trajectory": "trajectory data"}),
     ("irc", {"trajectory": "trajectory data"}),
+    ("scan", {"scan": "scan trajectory data"}),
     (
         "standard",
         {

@@ -8,14 +8,18 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from asset_service import get_asset_or_404, set_asset_tags
+from calculation.scan_spec import ScanSpecValidationError, validate_scan_spec
 from enum_types import CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
+from settings import get_settings
 from utils import commit_or_rollback, read_bounded_upload
 
 INPUT_FILENAME = "input.xyz"
 STANDARD_ANALYSIS_METHOD = "mp2"
 STANDARD_ANALYSIS_BASIS_SET = "6-311+G(2d,p)"
+SCAN_WORKFLOW_METHOD = "ccsd(t)"
+SCAN_WORKFLOW_BASIS_SET = STANDARD_ANALYSIS_BASIS_SET
 MAX_INPUT_XYZ_BYTES = 4 * 1024 * 1024
 MAX_KEYWORDS_BYTES = 256 * 1024
 
@@ -107,21 +111,7 @@ def _read_uploaded_xyz(upload: UploadFile) -> str:
         ) from error
 
 
-def _read_keywords(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
-    if upload is None:
-        return None
-    contents = read_bounded_upload(
-        upload,
-        MAX_KEYWORDS_BYTES,
-        "keywords file",
-    )
-    try:
-        keywords = json.loads(contents.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Keywords file must contain a valid JSON object",
-        ) from error
+def _validate_keyword_values(keywords: Any) -> dict[str, Any]:
     if not isinstance(keywords, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,6 +134,24 @@ def _read_keywords(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
             detail="keywords file is too large",
         )
     return keywords
+
+
+def _read_keywords_file(upload: Optional[UploadFile]) -> Optional[dict[str, Any]]:
+    if upload is None:
+        return None
+    contents = read_bounded_upload(
+        upload,
+        MAX_KEYWORDS_BYTES,
+        "keywords file",
+    )
+    try:
+        keywords = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Keywords file must contain a valid JSON object",
+        ) from error
+    return _validate_keyword_values(keywords)
 
 
 def _load_input_xyz(
@@ -176,7 +184,8 @@ def create_calculation_job(
     *,
     source_file: Optional[UploadFile],
     structure_id: Optional[str],
-    keywords: Optional[UploadFile],
+    keywords_file: Optional[UploadFile],
+    keyword_values: Optional[dict[str, Any]] = None,
     job_name: str,
     job_notes: Optional[str],
     tags: Iterable[str],
@@ -205,9 +214,14 @@ def create_calculation_job(
         source_file,
         structure_id,
     )
-    if keywords is not None:
+    if keywords_file is not None and keyword_values is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide keywords as either a file or an object, not both",
+        )
+    if keywords_file is not None:
         _validate_upload_name(
-            keywords,
+            keywords_file,
             extension=".json",
             detail="Invalid keywords file format. Only .json files are allowed.",
         )
@@ -224,7 +238,28 @@ def create_calculation_job(
         source_file=source_file,
         structure_content=source_structure_content,
     )
-    keyword_values = _read_keywords(keywords)
+    if keyword_values is None:
+        keyword_values = _read_keywords_file(keywords_file)
+    else:
+        keyword_values = _validate_keyword_values(keyword_values)
+
+    if calculation_type == CalculationType.scan:
+        if keyword_values is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scan calculations require a scan specification in keywords",
+            )
+        try:
+            keyword_values = validate_scan_spec(
+                keyword_values,
+                input_xyz=input_xyz,
+                max_points=get_settings().max_scan_points,
+            )
+        except ScanSpecValidationError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid scan specification: {error}",
+            ) from error
 
     # Persist the job, its exact inputs, and its relationships together.
     linked_structure = None

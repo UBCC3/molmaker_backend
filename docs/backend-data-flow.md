@@ -70,7 +70,7 @@ add owner email and group name for context.
 
 ## Calculation Creation
 
-Both calculation endpoints call `create_calculation_job`:
+All calculation endpoints call `create_calculation_job`:
 
 1. Validate and normalize calculation metadata.
 2. Require exactly one molecule source: an uploaded XYZ file or an accessible
@@ -84,6 +84,16 @@ Both calculation endpoints call `create_calculation_job`:
    `keywords`.
 7. Commit the job, inputs, tags, and relationship together, then return
    `201 Created`.
+
+`POST /calculation/workflow/bond_angle_scan` accepts the scan specification as
+a JSON multipart field. The backend validates its coordinate, 1-based atom
+indices, relaxation flag, value range, and XYZ atom rows. It enforces the
+backend-configured `MAX_SCAN_POINTS` limit and normalizes every range form to
+one explicit `values` list before storing it in `job_inputs.keywords`. The
+dedicated workflow fixes the level of theory at CCSD(T)/6-311+G(2d,p). A custom
+calculation may also use `calculation_type=scan`; in that case the scan
+specification comes from its required keywords JSON file and the caller-selected
+method and basis set are retained.
 
 If the save fails, the transaction rolls back all of those rows. Cluster
 submission and result-upload URL generation never run in the HTTP request.
@@ -109,6 +119,7 @@ After creation, three processes use the job row as a durable queue:
 6. The cluster uploads the ZIP and returns parsed results and frontend artifacts
    through SSH stdout. The backend saves that content in PostgreSQL, makes the
    external terminal result available, and then acknowledges cluster cleanup.
+   Scan jobs require the multi-frame `scan.xyz` artifact.
 7. Job endpoints return state, results, and artifacts from PostgreSQL. The
    archive endpoint authorizes the caller and creates the only presigned S3
    download URL.
@@ -179,7 +190,7 @@ the information needed for the next process or restarted worker to continue.
 | `auth.py` | Verifies Auth0 access tokens. |
 | `permissions.py` | Contains reusable permission predicates. |
 | `asset_service.py` | Lists, serializes, tags, transfers, and soft-deletes assets. |
-| `calculation/service.py` | Validates calculation inputs and saves jobs with `job_inputs`. |
+| `calculation/job_creation_service.py` | Validates calculation inputs and saves jobs with `job_inputs`. |
 | `jobs/routes.py` | Reads, edits, cancels, and soft-deletes jobs. |
 | `s3/routes.py` and `storage.py` | Authorize and create artifact URLs. |
 | `database.py` and `models.py` | Configure SQLAlchemy and define persistent data. |

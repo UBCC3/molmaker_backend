@@ -36,6 +36,10 @@ APPLICATION_DEFAULTS = {
     "S3_BUCKET_ROOT": "ubchemica",
 }
 
+CALCULATION_DEFAULTS = {
+    "MAX_SCAN_POINTS": 200,
+}
+
 SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
     {
         "DATABASE_USER",
@@ -49,11 +53,13 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
         "AUTH0_CLIENT_SECRET",
         "CLUSTER_WORK_DIR",
         *APPLICATION_DEFAULTS,
+        *CALCULATION_DEFAULTS,
         *ORCHESTRATION_DEFAULTS,
     }
 )
 
 MAX_STATUS_BATCH_SIZE = 1_000
+MAX_CONFIGURED_SCAN_POINTS = 10_000
 MIN_SLURM_JOB_TIME_LIMIT_MINUTES = 1
 MAX_SLURM_JOB_TIME_LIMIT_MINUTES = 7 * 24 * 60
 MIN_SLURM_JOB_MEMORY_MB = 256
@@ -145,6 +151,7 @@ class BackendSettings:
     s3_bucket_name: str
     s3_region: str
     s3_bucket_root: str
+    max_scan_points: int
     orchestration: OrchestrationSettings
 
     @classmethod
@@ -161,6 +168,13 @@ class BackendSettings:
         s3_bucket_root = _text_with_default("S3_BUCKET_ROOT").strip("/")
         if not s3_bucket_root:
             raise ValueError("S3_BUCKET_ROOT must not be empty")
+
+        max_scan_points = _bounded_positive_integer(
+            "MAX_SCAN_POINTS",
+            CALCULATION_DEFAULTS["MAX_SCAN_POINTS"],
+            2,
+            MAX_CONFIGURED_SCAN_POINTS,
+        )
 
         orchestration = OrchestrationSettings(
             submission_poll_interval_seconds=_positive_integer(
@@ -250,6 +264,7 @@ class BackendSettings:
             s3_bucket_name=_text_with_default("S3_BUCKET_NAME"),
             s3_region=_text_with_default("S3_REGION"),
             s3_bucket_root=s3_bucket_root,
+            max_scan_points=max_scan_points,
             orchestration=orchestration,
         )
 
