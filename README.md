@@ -100,12 +100,21 @@ Set the matching database values in `.env`, then create the current schema:
 python -m database
 ```
 
-`.env.example` is the complete backend settings reference. AWS credentials are
-loaded through boto3's standard credential provider chain rather than stored in
-backend-specific settings.
+`.env.example` is the complete backend settings reference. Set
+`BACKEND_ENV_FILE` in the process launcher to select an absolute env-file path;
+when it is unset, the repository `.env` is loaded if present. Process
+environment values take precedence over file values. `BACKEND_ENV_FILE` cannot
+be placed inside the file it selects.
+
+AWS credentials are loaded through boto3's standard credential provider chain
+rather than stored in backend-specific settings. New archive uploads do not
+need AWS credentials when `ARCHIVE_UPLOAD_ENABLED=false`. This setting is the
+deployment-wide master switch. Each calculation submission may also set the
+optional multipart field `upload_archive=false`; it defaults to `true`, but
+cannot override a disabled master switch.
 
 Settings are loaded once and cached separately by the API and each reconciler
-process. Restart those processes after changing `.env`.
+process. Restart those processes after changing their environment configuration.
 
 `SLURM_JOB_TIME_LIMIT_MINUTES` and `SLURM_JOB_MEMORY_MB` control the resources
 the submission reconciler requests for each new Slurm job. The backend passes
@@ -131,9 +140,16 @@ Before enabling the reconcilers, deploy the complete, reviewed
 /home/thachuk/ubchemica/Cluster-API-QC
 ```
 
-Set `CLUSTER_WORK_DIR=/home/thachuk/ubchemica` in the backend environment. The
-backend sends one versioned JSON request to
-`Cluster-API-QC/runner/dispatch.py` over SSH stdin for each cluster operation.
+Set the exact SSH host and remote dispatcher path in the backend environment:
+
+```dotenv
+CLUSTER_SSH_HOST=cluster
+CLUSTER_DISPATCH_PATH=/home/thachuk/ubchemica/Cluster-API-QC/runner/dispatch.py
+```
+
+The backend sends one versioned JSON request to that path over SSH stdin for
+each cluster operation. It does not derive a repository path from a shared work
+directory.
 The supported operations and security boundary are described in
 [Restricted Alliance Dispatch](docs/job-orchestration.md#restricted-alliance-dispatch).
 
@@ -147,8 +163,9 @@ Deployment requires explicit approval:
 3. Restrict the backend SSH key to this exact no-argument command:
    `python3 /home/thachuk/ubchemica/Cluster-API-QC/runner/dispatch.py`.
 4. Through that restricted connection, smoke-test submission and recovery,
-   batched status checks, cancellation, archive upload with returned result
-   data, acknowledged cleanup, invalid JSON, and a shared-service failure.
+   batched status checks, cancellation, enabled and disabled archive upload
+   with returned result data, acknowledged cleanup, invalid JSON, and a
+   shared-service failure.
 5. If any check fails, check out the recorded previous cluster commit and
    restore the previous allow-list rule. Remove only the smoke-test jobs and
    directories created during these checks.
@@ -159,7 +176,9 @@ cluster release.
 
 #### Install the reconciler services
 
-On the server, ensure the environment file is available at `/home/backend/.env`.
+On the server, install the environment file at
+`/etc/molmaker/backend.env`. The provided service selects it with
+`BACKEND_ENV_FILE`; it does not load a second hard-coded environment file.
 Then install and start the `systemd` services for the first time from the
 repository root:
 
@@ -202,7 +221,7 @@ sudo journalctl -u molmaker-reconciler@status.service -f
 
 When diagnosing one job, inspect its saved status, attempt count, failure
 fields, and Slurm ID. If many jobs pause together, first check for a shared
-PostgreSQL, SSH, Slurm, or S3 outage.
+PostgreSQL, SSH, Slurm, or, when archive upload is enabled, S3 outage.
 
 Restarting a reconciler is safe because PostgreSQL retains the job state and
 calculation inputs, while cluster job directories and S3 artifacts use stable
@@ -241,6 +260,8 @@ python -m pre_commit run --all-files
 
 ## Database Schema
 
-The SQLAlchemy models are the authoritative schema. This repository does not
-carry historical database dumps or migrations. Start with an empty database
-and run `python -m database` before starting the API or reconcilers.
+The SQLAlchemy models are the authoritative schema. This change assumes the
+database will be reset rather than migrated. Stop the API and reconcilers,
+recreate the empty database using the deployment procedure, and run
+`python -m database` before restarting them. No data migration or backfill is
+included.

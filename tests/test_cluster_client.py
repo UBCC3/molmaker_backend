@@ -19,8 +19,9 @@ from orchestration.cluster_client import (
 from settings import BackendSettings
 
 JOB_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
-WORK_DIR = PurePosixPath("/home/test/molmaker")
-REMOTE_COMMAND = "python3 /home/test/molmaker/Cluster-API-QC/runner/dispatch.py"
+SSH_HOST = "cluster-test"
+DISPATCH_PATH = PurePosixPath("/home/test/cluster/runner/dispatch.py")
+REMOTE_COMMAND = f"python3 {DISPATCH_PATH}"
 
 
 def success(result):
@@ -58,7 +59,8 @@ def finalisation_success(**overrides):
 @pytest.fixture
 def client():
     return ClusterDispatchClient(
-        WORK_DIR,
+        SSH_HOST,
+        DISPATCH_PATH,
         timeout_seconds=37,
         storage_timeout_seconds=41,
     )
@@ -107,7 +109,7 @@ def submit(client, **overrides):
 def sent_request(calls, *, timeout=37):
     assert len(calls) == 1
     command, options = calls[0]
-    assert command == ["ssh", "cluster", REMOTE_COMMAND]
+    assert command == ["ssh", SSH_HOST, REMOTE_COMMAND]
     assert options["check"] is False
     assert options["capture_output"] is True
     assert options["text"] is True
@@ -118,13 +120,22 @@ def sent_request(calls, *, timeout=37):
 
 
 def test_client_reads_cluster_settings(monkeypatch):
-    monkeypatch.setenv("CLUSTER_WORK_DIR", "/remote/molmaker")
+    monkeypatch.setenv("CLUSTER_SSH_HOST", "remote-cluster")
+    monkeypatch.setenv(
+        "CLUSTER_DISPATCH_PATH",
+        "/remote/molmaker/cluster-runtime/dispatch.py",
+    )
     monkeypatch.setenv("SLURM_COMMAND_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("STORAGE_OPERATION_TIMEOUT_SECONDS", "46")
 
-    client = ClusterDispatchClient.from_settings(BackendSettings.from_env())
+    client = ClusterDispatchClient.from_settings(
+        BackendSettings.from_env().orchestration
+    )
 
-    assert client.cluster_work_dir == PurePosixPath("/remote/molmaker")
+    assert client.ssh_host == "remote-cluster"
+    assert client.dispatch_path == PurePosixPath(
+        "/remote/molmaker/cluster-runtime/dispatch.py"
+    )
     assert client.timeout_seconds == 45
     assert client.storage_timeout_seconds == 46
 
@@ -238,6 +249,7 @@ def test_finalisation_sends_one_archive_url_and_returns_database_content(
     )
 
     assert result == FinalisationResult(
+        archive_uploaded=True,
         calculation_result={"energy": -75.2},
         calculation_error=None,
         artifacts={"vib": "vibration data"},
@@ -252,6 +264,60 @@ def test_finalisation_sends_one_archive_url_and_returns_database_content(
         "archive_upload_url": secret_url,
         "allow_missing_error": False,
     }
+
+
+def test_finalisation_without_an_archive_returns_results_and_sends_null(
+    client,
+    run_dispatch,
+):
+    calls = run_dispatch(stdout=finalisation_success(archive_uploaded=False))
+
+    result = client.upload_artifacts(
+        job_id=JOB_ID,
+        calculation_type=CalculationType.energy,
+        terminal_status=JobStatus.completed,
+        archive_upload_url=None,
+    )
+
+    assert result.archive_uploaded is False
+    assert result.calculation_result == {"energy": -75.2}
+    assert sent_request(calls, timeout=41)["archive_upload_url"] is None
+
+
+def test_finalisation_accepts_an_unavailable_requested_archive(
+    client,
+    run_dispatch,
+):
+    calls = run_dispatch(stdout=finalisation_success(archive_uploaded=False))
+    archive_url = "https://storage.example/archive"
+
+    result = client.upload_artifacts(
+        job_id=JOB_ID,
+        calculation_type=CalculationType.energy,
+        terminal_status=JobStatus.completed,
+        archive_upload_url=archive_url,
+    )
+
+    assert result.archive_uploaded is False
+    assert sent_request(calls, timeout=41)["archive_upload_url"] == archive_url
+
+
+def test_finalisation_rejects_an_upload_reported_without_a_destination(
+    client,
+    run_dispatch,
+):
+    run_dispatch(stdout=finalisation_success(archive_uploaded=True))
+
+    with pytest.raises(
+        ClusterServiceError,
+        match="Invalid artifact finalisation response",
+    ):
+        client.upload_artifacts(
+            job_id=JOB_ID,
+            calculation_type=CalculationType.energy,
+            terminal_status=JobStatus.completed,
+            archive_upload_url=None,
+        )
 
 
 def test_finalisation_acknowledges_only_the_matching_job(
@@ -273,7 +339,7 @@ def test_finalisation_acknowledges_only_the_matching_job(
     "response",
     [
         finalisation_success(job_id="22222222-2222-4222-8222-222222222222"),
-        finalisation_success(archive_uploaded=False),
+        finalisation_success(archive_uploaded="yes"),
         finalisation_success(calculation_result=[]),
         finalisation_success(calculation_error=[]),
         finalisation_success(artifacts=[]),

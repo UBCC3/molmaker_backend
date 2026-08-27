@@ -100,6 +100,12 @@ class TestJobResultEndpoints:
                 "trajectory.xyz",
             ),
             ("vib", "vibration text", "chemical/x-xyz", "vib.xyz"),
+            (
+                "scan",
+                "2\nscan point\nH 0 0 0\nH 0 0 1\n",
+                "chemical/x-xyz",
+                "scan.xyz",
+            ),
             ("molden", "[Molden Format]", "text/plain", "orbitals.molden"),
             ("esp", "cube text", "text/plain", "ESP.cube"),
         ],

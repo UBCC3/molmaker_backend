@@ -40,6 +40,9 @@ def test_openapi_documents_job_response_and_metadata_patch(client):
         "cancel_requested",
         "failure_reason",
         "failure_message",
+        "upload_archive",
+        "archive_uploaded",
+        "archive_upload_status",
         "structures",
     }.issubset(response_properties)
     assert {

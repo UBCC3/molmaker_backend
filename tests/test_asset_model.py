@@ -69,6 +69,24 @@ class TestAssetModel:
         assert job.failure_reason is None
         assert job.failure_message is None
         assert job.optimization_type is None
+        assert job.archive_upload_requested is True
+        assert job.archive_uploaded is False
+        assert job.archive_upload_status == "pending"
+
+    def test_archive_upload_fields_must_remain_consistent(
+        self,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        with pytest.raises(IntegrityError):
+            job_factory(
+                archive_uploaded=True,
+                archive_upload_status="unavailable",
+            )
+        db.rollback()
 
     def test_job_has_partial_active_orchestration_index(self):
         index = next(

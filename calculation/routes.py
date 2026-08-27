@@ -13,11 +13,15 @@ from sqlalchemy.orm import Session
 
 from asset_service import serialize_job
 from auth import verify_token
-from calculation.service import (
+from calculation.job_creation_service import (
+    MAX_KEYWORDS_BYTES,
+    SCAN_WORKFLOW_BASIS_SET,
+    SCAN_WORKFLOW_METHOD,
     STANDARD_ANALYSIS_BASIS_SET,
     STANDARD_ANALYSIS_METHOD,
     create_calculation_job,
 )
+from calculation.scan_spec import ScanSpecValidationError, parse_scan_spec
 from dependencies import get_db
 from enum_types import CalculationType
 from jobs.schemas import JobResponse
@@ -45,6 +49,7 @@ def submit_custom_calculation(
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -68,6 +73,7 @@ def submit_custom_calculation(
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
     :return: The created job.
     """
     if calculation_type == CalculationType.standard:
@@ -84,10 +90,11 @@ def submit_custom_calculation(
         user,
         source_file=file,
         structure_id=structure_id,
-        keywords=keywords,
+        keywords_file=keywords,
         job_name=job_name,
         job_notes=job_notes,
         tags=tags,
+        upload_archive=upload_archive,
         calculation_type=calculation_type,
         method=method,
         basis_set=basis_set,
@@ -113,6 +120,7 @@ def submit_standard_analysis(
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -131,6 +139,7 @@ def submit_standard_analysis(
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
     :return: The created job.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
@@ -139,16 +148,85 @@ def submit_standard_analysis(
         user,
         source_file=file,
         structure_id=structure_id,
-        keywords=None,
+        keywords_file=None,
         job_name=job_name,
         job_notes=job_notes,
         tags=tags,
+        upload_archive=upload_archive,
         calculation_type=CalculationType.standard,
         method=STANDARD_ANALYSIS_METHOD,
         basis_set=STANDARD_ANALYSIS_BASIS_SET,
         charge=charge,
         multiplicity=multiplicity,
         optimization_type=optimization_type,
+    )
+
+    return serialize_job(job)
+
+
+@router.post(
+    "/workflow/bond_angle_scan",
+    response_model=JobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_bond_angle_scan(
+    scan: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    structure_id: Optional[str] = Form(None),
+    charge: int = Form(...),
+    multiplicity: int = Form(..., ge=1, le=4),
+    job_name: str = Form(...),
+    job_notes: Optional[str] = Form(None),
+    tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
+    current_user=Depends(verify_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a bond, angle, or dihedral scan workflow job.
+
+    Provide exactly one molecule source: an XYZ file or an accessible
+    structure ID. `scan` is a JSON object describing the coordinate, its
+    1-based atom indices, whether other coordinates should relax, and either
+    explicit values or a min/max range with steps or spacing. The created job
+    is returned with `submitting` status and is processed asynchronously.
+
+    :param scan: JSON scan specification.
+    :param file: Molecule in XYZ format.
+    :param structure_id: ID of a stored molecule.
+    :param charge: Molecule charge.
+    :param multiplicity: Molecule multiplicity from 1 to 4.
+    :param job_name: Display name for the job.
+    :param job_notes: Notes for the job.
+    :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
+    :return: The created job.
+    """
+    try:
+        scan_spec = parse_scan_spec(scan, max_bytes=MAX_KEYWORDS_BYTES)
+    except ScanSpecValidationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid scan specification: {error}",
+        ) from error
+
+    user = get_user_or_404(db, get_user_sub(current_user))
+    job = create_calculation_job(
+        db,
+        user,
+        source_file=file,
+        structure_id=structure_id,
+        keywords_file=None,
+        keyword_values=scan_spec,
+        job_name=job_name,
+        job_notes=job_notes,
+        tags=tags,
+        upload_archive=upload_archive,
+        calculation_type=CalculationType.scan,
+        method=SCAN_WORKFLOW_METHOD,
+        basis_set=SCAN_WORKFLOW_BASIS_SET,
+        charge=charge,
+        multiplicity=multiplicity,
     )
 
     return serialize_job(job)

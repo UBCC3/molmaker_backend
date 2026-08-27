@@ -15,7 +15,7 @@ endpoint schemas, use Swagger. For access rules, see
 | Reconciler processes | Submit jobs, poll Slurm, request cancellation, and finalise artifacts. |
 | Alliance dispatch | Accepts one validated JSON request per cluster operation and provides the restricted boundary to Slurm. |
 | Alliance job directory | Holds the input, script, logs, and results while a calculation is being processed. |
-| S3 | Stores ZIP archives uploaded during job finalisation. The backend exposes only archives paired with verified database results. |
+| S3 | Optionally stores ZIP archives uploaded during job finalisation. The backend exposes only archives explicitly recorded as uploaded. |
 
 ## Overall Flow
 
@@ -31,10 +31,11 @@ status. PostgreSQL is therefore the hand-off between separate operating-system
 processes, not an active coordinator.
 
 PostgreSQL is authoritative for identity, ownership, metadata, structures, job
-state, exact calculation inputs, results, and frontend artifacts. S3 stores only
-job ZIP archives. Alliance job directories are temporary working storage
-created from a submission request and removed after the backend saves the
-returned result and acknowledges cleanup.
+state, exact calculation inputs, results, frontend artifacts, and archive
+availability. When enabled, S3 stores only job ZIP archives. Alliance job
+directories are temporary working storage created from a submission request
+and removed after the backend saves the returned result and acknowledges
+cleanup.
 
 ## Authentication and Authorization
 
@@ -70,7 +71,7 @@ add owner email and group name for context.
 
 ## Calculation Creation
 
-Both calculation endpoints call `create_calculation_job`:
+All calculation endpoints call `create_calculation_job`:
 
 1. Validate and normalize calculation metadata.
 2. Require exactly one molecule source: an uploaded XYZ file or an accessible
@@ -78,12 +79,24 @@ Both calculation endpoints call `create_calculation_job`:
 3. Read and validate the bounded XYZ text. For a stored structure, read its
    PostgreSQL content and keep that exact text as the calculation snapshot.
 4. Parse the optional keywords file as a JSON object.
-5. Create the `jobs` row with `status=submitting`, ownership, tags, and at most
-   one linked source structure.
+5. Create the `jobs` row with `status=submitting`, the requested archive
+   preference, archive status `pending`, ownership, tags, and at most one
+   linked source structure. The optional multipart field `upload_archive`
+   defaults to `true`.
 6. Create the one-to-one `job_inputs` row with `input_xyz` and optional
    `keywords`.
 7. Commit the job, inputs, tags, and relationship together, then return
    `201 Created`.
+
+`POST /calculation/workflow/bond_angle_scan` accepts the scan specification as
+a JSON multipart field. The backend validates its coordinate, 1-based atom
+indices, relaxation flag, value range, and XYZ atom rows. It enforces the
+backend-configured `MAX_SCAN_POINTS` limit and normalizes every range form to
+one explicit `values` list before storing it in `job_inputs.keywords`. The
+dedicated workflow fixes the level of theory at CCSD(T)/6-311+G(2d,p). A custom
+calculation may also use `calculation_type=scan`; in that case the scan
+specification comes from its required keywords JSON file and the caller-selected
+method and basis set are retained.
 
 If the save fails, the transaction rolls back all of those rows. Cluster
 submission and result-upload URL generation never run in the HTTP request.
@@ -104,11 +117,14 @@ After creation, three processes use the job row as a durable queue:
 3. The status reconciler requests allocation states in batches and stores the
    public status and runtime.
 4. Terminal Slurm outcomes enter the internal `finalising` state.
-5. The finalisation reconciler creates one fresh S3 PUT URL for the ZIP and
-   sends it in a JSON upload request.
-6. The cluster uploads the ZIP and returns parsed results and frontend artifacts
-   through SSH stdout. The backend saves that content in PostgreSQL, makes the
-   external terminal result available, and then acknowledges cluster cleanup.
+5. The finalisation reconciler sends one fresh S3 PUT URL only when the global
+   archive switch is enabled and the job requested an archive. Otherwise it
+   sends JSON null.
+6. The cluster optionally uploads the ZIP and always returns parsed results and
+   frontend artifacts through SSH stdout. The backend saves that content and
+   the archive outcome in PostgreSQL, makes the external terminal result
+   available, and then acknowledges cluster cleanup.
+   Scan jobs require the multi-frame `scan.xyz` artifact.
 7. Job endpoints return state, results, and artifacts from PostgreSQL. The
    archive endpoint authorizes the caller and creates the only presigned S3
    download URL.
@@ -124,7 +140,7 @@ stored content and thumbnail. Structure text is limited to 4 MiB. Thumbnails
 are limited to 8 MiB and must have both the `image/png` media type and PNG file
 signature before the backend stores them.
 
-S3 stores only the deterministic ZIP key below `S3_BUCKET_ROOT`:
+When enabled, S3 stores only the deterministic ZIP key below `S3_BUCKET_ROOT`:
 
 ```text
 {S3_BUCKET_ROOT}/archive/{job_id}.zip
@@ -132,7 +148,9 @@ S3 stores only the deterministic ZIP key below `S3_BUCKET_ROOT`:
 
 The API and reconcilers use the same S3 bucket settings. AWS credentials are
 not copied into backend settings; boto3 uses its standard credential provider
-chain.
+chain. With `ARCHIVE_UPLOAD_ENABLED=false` or `upload_archive=false`,
+finalisation does not instantiate an S3 client, create a URL, ZIP files, or
+perform an HTTP upload.
 
 Presigned URLs are short-lived capabilities:
 
@@ -144,7 +162,10 @@ Presigned URLs are short-lived capabilities:
 An archive can reach S3 before its matching database result is verified. If
 finalisation exhausts its attempts before saving that result, the backend does
 not expose the possibly uploaded ZIP. The archive becomes downloadable only
-after the matching result is validated and saved.
+after the matching result is validated and saved with
+`archive_uploaded=true`. Archive-disabled jobs still expose their saved result
+and frontend artifacts; their job response reports `archive_upload_status` as
+`disabled`, and the archive endpoint reports it unavailable.
 
 ## Ownership, Tags, and Lists
 
@@ -165,7 +186,8 @@ The complete permission matrix is in
 ## Process and Configuration Boundary
 
 The API, submission reconciler, status reconciler, and finalisation reconciler
-are four separate processes. Each imports `settings.py` and caches its own
+are four separate processes. Each loads the file selected by
+`BACKEND_ENV_FILE` (or the repository `.env` fallback) and caches its own
 validated `BackendSettings`, so environment changes require a restart.
 
 There is no in-memory queue or shared configuration process. PostgreSQL retains
@@ -179,7 +201,7 @@ the information needed for the next process or restarted worker to continue.
 | `auth.py` | Verifies Auth0 access tokens. |
 | `permissions.py` | Contains reusable permission predicates. |
 | `asset_service.py` | Lists, serializes, tags, transfers, and soft-deletes assets. |
-| `calculation/service.py` | Validates calculation inputs and saves jobs with `job_inputs`. |
+| `calculation/job_creation_service.py` | Validates calculation inputs and saves jobs with `job_inputs`. |
 | `jobs/routes.py` | Reads, edits, cancels, and soft-deletes jobs. |
 | `s3/routes.py` and `storage.py` | Authorize and create artifact URLs. |
 | `database.py` and `models.py` | Configure SQLAlchemy and define persistent data. |

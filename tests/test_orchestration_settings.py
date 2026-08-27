@@ -9,12 +9,17 @@ from settings import (
 )
 
 SETTING_NAMES = tuple(ORCHESTRATION_DEFAULTS)
+ORCHESTRATION_ENVIRONMENT_NAMES = (
+    "CLUSTER_SSH_HOST",
+    "CLUSTER_DISPATCH_PATH",
+    *SETTING_NAMES,
+)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
 def clear_orchestration_environment(monkeypatch):
-    for name in SETTING_NAMES:
+    for name in ORCHESTRATION_ENVIRONMENT_NAMES:
         monkeypatch.delenv(name, raising=False)
 
 

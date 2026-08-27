@@ -8,7 +8,7 @@ from asset_service import (
     publish_job_result,
     upsert_job_result,
 )
-from enum_types import JobFailureReason, JobStatus
+from enum_types import ArchiveUploadStatus, JobFailureReason, JobStatus
 from models import Job, JobResult
 
 COMPLETED_RESULTS = [
@@ -18,6 +18,7 @@ COMPLETED_RESULTS = [
     ("optimization", {"trajectory": "trajectory data"}),
     ("transition", {"trajectory": "trajectory data"}),
     ("irc", {"trajectory": "trajectory data"}),
+    ("scan", {"scan": "scan trajectory data"}),
     (
         "standard",
         {
@@ -65,6 +66,8 @@ def test_publishes_completed_result_and_job_together(
     assert saved_result.artifacts == artifacts
     assert saved_job.status == JobStatus.completed.value
     assert saved_job.is_uploaded is True
+    assert saved_job.archive_uploaded is False
+    assert saved_job.archive_upload_status == ArchiveUploadStatus.unavailable.value
     assert saved_job.completed_at is not None
     assert saved_job.attempt_count == 0
 
@@ -88,6 +91,48 @@ def test_stages_an_upsert_without_publishing_the_job(db, job_factory):
     assert db.get(JobResult, job.job_id) is job_result
     assert job.status == JobStatus.finalising.value
     assert job.is_uploaded is False
+    assert job.archive_upload_status == ArchiveUploadStatus.pending.value
+
+
+def test_publishes_uploaded_archive_outcome_with_the_result(db, job_factory):
+    job = job_factory(
+        status=JobStatus.finalising.value,
+        terminal_status=JobStatus.completed.value,
+    )
+
+    publish_job_result(
+        db,
+        job,
+        result={"success": True},
+        error=None,
+        artifacts={},
+        archive_uploaded=True,
+        archive_upload_status=ArchiveUploadStatus.uploaded,
+    )
+
+    assert job.archive_uploaded is True
+    assert job.archive_upload_status == ArchiveUploadStatus.uploaded.value
+
+
+def test_rejects_an_inconsistent_archive_outcome(db, job_factory):
+    job = job_factory(
+        status=JobStatus.finalising.value,
+        terminal_status=JobStatus.completed.value,
+    )
+
+    with pytest.raises(
+        JobResultValidationError,
+        match="Archive upload outcome is inconsistent",
+    ):
+        publish_job_result(
+            db,
+            job,
+            result={"success": True},
+            error=None,
+            artifacts={},
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.disabled,
+        )
 
 
 def test_retry_updates_the_same_result_row_and_keeps_completion_time(

@@ -29,6 +29,7 @@ from sqlalchemy.orm import (
 )
 
 from database import Base
+from enum_types import ArchiveUploadStatus
 
 jobs_structures = Table(
     "jobs_structures",
@@ -150,6 +151,12 @@ class Job(Asset):
             "is_deleted OR user_sub IS NOT NULL OR group_id IS NOT NULL",
             name="ck_jobs_owner_present",
         ),
+        CheckConstraint(
+            "archive_upload_status IN "
+            "('pending', 'disabled', 'uploaded', 'unavailable') "
+            "AND archive_uploaded = (archive_upload_status = 'uploaded')",
+            name="ck_jobs_archive_upload_state",
+        ),
         UniqueConstraint("slurm_id", name="uq_jobs_slurm_id"),
         Index(
             "idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"
@@ -183,6 +190,24 @@ class Job(Asset):
     slurm_id = Column(String, nullable=True)
     runtime = Column(Interval, nullable=True)
     is_uploaded = Column(Boolean, nullable=False)
+    archive_upload_requested = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    archive_uploaded = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    archive_upload_status = Column(
+        String,
+        nullable=False,
+        default=ArchiveUploadStatus.pending.value,
+        server_default=text("'pending'"),
+    )
     attempt_count = Column(
         Integer,
         nullable=False,

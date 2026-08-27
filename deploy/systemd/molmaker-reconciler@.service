@@ -9,7 +9,7 @@ Type=simple
 User=backend
 Group=backend
 WorkingDirectory=/home/backend/molmaker_backend
-EnvironmentFile=/home/backend/.env
+Environment=BACKEND_ENV_FILE=/etc/molmaker/backend.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/backend/env/bin/python -m orchestration.%i_reconciler
 Restart=on-failure

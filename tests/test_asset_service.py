@@ -216,6 +216,9 @@ class TestSerializeJob:
         assert result["group_id"] is None
         assert result["failure_reason"] is None
         assert result["failure_message"] is None
+        assert result["upload_archive"] is True
+        assert result["archive_uploaded"] is False
+        assert result["archive_upload_status"] == "pending"
         assert "slurm_id" not in result
 
     def test_maps_internal_status_and_returns_stored_failure_details(

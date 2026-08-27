@@ -6,7 +6,7 @@ from botocore.exceptions import EndpointConnectionError
 from conftest import make_auth0_payload
 
 import storage
-from enum_types import JobStatus
+from enum_types import ArchiveUploadStatus, JobStatus
 from settings import get_settings
 
 
@@ -130,6 +130,8 @@ class TestJobArchiveEndpoint:
             is_public=access == "public_group_member",
             status=JobStatus.completed.value,
             is_uploaded=True,
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.uploaded.value,
         )
         job_result_factory(job=job)
         set_auth_user(make_auth0_payload(actor.user_sub))
@@ -221,7 +223,30 @@ class TestJobArchiveEndpoint:
         response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 409
-        assert response.json()["detail"] == "Job files are not ready"
+        assert response.json()["detail"] == "Job archive is not ready"
+        assert mock_archive_url == []
+
+    def test_saved_results_do_not_imply_that_an_archive_exists(
+        self,
+        client,
+        user_factory,
+        job_factory,
+        job_result_factory,
+        mock_archive_url,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            status=JobStatus.completed.value,
+            is_uploaded=True,
+            archive_uploaded=False,
+            archive_upload_status=ArchiveUploadStatus.disabled.value,
+        )
+        job_result_factory(job=job)
+
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Job archive is unavailable"
         assert mock_archive_url == []
 
     @pytest.mark.parametrize(
@@ -242,7 +267,12 @@ class TestJobArchiveEndpoint:
         job_status,
     ):
         user_factory(user_sub="auth0|testuser")
-        job = job_factory(status=job_status, is_uploaded=True)
+        job = job_factory(
+            status=job_status,
+            is_uploaded=True,
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.uploaded.value,
+        )
         job_result_factory(job=job)
 
         response = client.get(f"/storage/jobs/{job.job_id}/archive")
@@ -267,6 +297,8 @@ class TestJobArchiveEndpoint:
             terminal_status=JobStatus.completed.value,
             completed_at=datetime.now(timezone.utc),
             is_uploaded=True,
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.uploaded.value,
         )
         job_result_factory(job=job)
 
@@ -286,6 +318,8 @@ class TestJobArchiveEndpoint:
         job = job_factory(
             status=JobStatus.completed.value,
             is_uploaded=True,
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.uploaded.value,
         )
         job_result_factory(job=job)
 

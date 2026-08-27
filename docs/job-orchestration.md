@@ -21,7 +21,7 @@ use Swagger. For the surrounding backend components, see
 
 *Figure 1. PostgreSQL retains the job state and calculation inputs. The cluster
 stages its own job directory from the submission request, Slurm runs the
-calculation, and finalisation sends fresh upload URLs directly in JSON.*
+calculation, and finalisation sends an archive URL or JSON null directly.*
 
 ## Job States
 
@@ -30,8 +30,8 @@ calculation, and finalisation sends fresh upload URLs directly in JSON.*
 | `submitting` | `submitting` | The job and its database-backed inputs exist, but no accepted Slurm job is saved. |
 | `submitted` | `submitted` | Slurm accepted the job and it is waiting to run. |
 | `running` | `running` | Slurm reports an active state. |
-| `finalising` | `running` | Slurm finished and its files are being uploaded. |
-| `completed` | `completed` | Successful files are ready. |
+| `finalising` | `running` | Slurm finished and results are being collected; archive upload and cleanup may still be pending. |
+| `completed` | `completed` | Successful result data is ready. |
 | `failed` | `failed` | The calculation, cluster, or orchestration failed. |
 | `cancelled` | `cancelled` | Cancellation was confirmed and finalisation finished. |
 
@@ -56,6 +56,12 @@ On the cluster, `dispatch.py`:
 2. creates `jobs/{job_id}` through a temporary directory;
 3. writes `input.xyz`, optional `keywords.json`, and `slurm.sh`; and
 4. runs `sbatch --parsable` and returns the Slurm ID.
+
+For `calculation_type=scan`, the required keywords object is the validated scan
+specification with a backend-generated explicit `values` list. Dispatch stages
+it as `keywords.json` and invokes the cluster's bond/angle/dihedral scan runner
+with the job's saved method and basis set. The cluster consumes that list
+directly, so it does not independently expand `steps` or `spacing` ranges.
 
 The backend saves that ID and changes the job to `submitted`. If `sbatch` may
 have succeeded but its response was lost, the next attempt searches first and
@@ -98,15 +104,18 @@ terminal.
 
 ### 3. Finalisation
 
-The finalisation reconciler creates one fresh presigned PUT URL for the job's
-deterministic ZIP key and sends it in an `upload-artifacts` JSON request. The
-cluster builds and uploads the ZIP, then returns parsed result/error data and
-the required frontend artifacts through SSH stdout. Those returned files are
-stored in PostgreSQL; only the ZIP is stored in S3.
+`ARCHIVE_UPLOAD_ENABLED` is the deployment-wide master switch. Each submission
+also accepts optional multipart field `upload_archive`, which defaults to
+`true` and is saved with the job. The finalisation reconciler creates one fresh
+presigned PUT URL only when both values are true. Otherwise it does not create
+an S3 client or URL and sends JSON null. The cluster always returns parsed
+result/error data and required frontend artifacts through SSH stdout. It
+creates and uploads the ZIP only when it receives a URL.
 
 The cluster keeps the Alliance job directory until the backend validates and
-commits the complete `job_results` row. The backend then marks the result data
-and external terminal status available, sends `ack-finalisation`, and replaces
+commits the complete `job_results` row and archive outcome. The backend then
+marks the result data and external terminal status available, sends
+`ack-finalisation`, and replaces
 the internal `finalising` state with the terminal state after cleanup succeeds.
 If acknowledgement fails, the next attempt retries cleanup without
 transferring or saving the result again. A job-specific cleanup failure is
@@ -119,24 +128,29 @@ The complete cluster response is limited to 64 MiB. Exceeding that bound is a
 job-specific failure, so it consumes this job's attempt budget instead of
 being treated as a shared cluster outage.
 
-The archive keeps available inputs, outputs, Slurm logs, and partial results.
-The result and artifact endpoints serve the verified PostgreSQL data directly,
-while the archive endpoint creates the only presigned S3 download URL.
+`is_uploaded` continues to mean that structured PostgreSQL results are ready.
+The job response's `upload_archive` value reports the saved request.
+`archive_uploaded` independently records whether the ZIP exists, while
+`archive_upload_status` is `pending`, `disabled`, `uploaded`, or `unavailable`.
+The result and artifact endpoints depend only on the saved result. The archive
+endpoint requires `archive_uploaded=true` before creating a presigned download
+URL.
+Completed scan jobs expose their parsed point data through the normal result
+endpoint and their multi-frame geometry through the `scan` artifact endpoint.
 
 The ZIP upload happens before the backend validates and saves the returned
 data. If validation or persistence repeatedly fails until `MAX_ATTEMPTS`, the
 job becomes `failed` with `result_upload_failed`. The backend does not expose a
 possibly uploaded ZIP from that incomplete attempt because no verified result
-was saved. Not every terminal job therefore has a downloadable archive; jobs
-cancelled before submission and jobs whose archive upload fails also do not.
-Until verified result data is ready, result, artifact, and archive endpoints
-return `409`.
+was saved. Disabling archive upload does not change a job's completed, failed,
+or cancelled calculation outcome. Result and artifact endpoints remain
+available, while the archive endpoint returns `409` without contacting S3.
 
 ## Retries, Outages, and Cancellation
 
 - A job-specific retryable failure increments that job's `attempt_count`; a
   successful stage resets it. Invalid job data can fail immediately.
-- A shared PostgreSQL, SSH, Slurm, or S3 failure stops the round without
+- A shared PostgreSQL, SSH, Slurm, or enabled-S3 failure stops the round without
   consuming attempts for every affected job. The process exponentially backs
   off up to the configured maximum and resets after recovery.
 - Polling intervals are measured from the start of one round to the next, and
@@ -157,21 +171,26 @@ itself should stop.
 
 ## Configuration and Deployment
 
-[`.env.example`](../.env.example) is the backend settings reference. Each API
-or reconciler process caches its own validated settings, so restart affected
-processes after an environment change.
+[`.env.example`](../.env.example) is the backend settings reference.
+`BACKEND_ENV_FILE` may select an absolute file from the process launcher; the
+repository `.env` is the fallback. Each API or reconciler process caches its
+own validated settings, so restart affected processes after a change.
 
 The backend runs exactly one submission, status, and finalisation process.
-Installation, migration, deployment, and operational commands are in the
+Installation, database reset, deployment, and operational commands are in the
 [README](../README.md#4-start-the-api-and-reconcilers).
 
 ## Restricted Alliance Dispatch
 
-The backend connects through the `cluster` SSH alias. Its key can invoke only
-the fixed no-argument `dispatch.py` command; the requested operation is inside
-validated JSON, not in the remote shell command. The canonical cluster sources
-are the files in the reviewed `Cluster-API-QC` repository checkout, including
-the dispatch runner, protocol, calculation code, and artifact uploader.
+The backend connects through `CLUSTER_SSH_HOST` and invokes the exact
+`CLUSTER_DISPATCH_PATH`. Its key can invoke only that no-argument dispatcher;
+the requested operation is inside validated JSON, not in the remote shell
+command. That restricted command's Python runs the dispatcher and uploader.
+Each generated Slurm script separately activates
+`SLURM_ENV_ACTIVATION_COMMAND` and invokes plain `python`, so calculations use
+the activated environment. The canonical cluster sources are the files in the
+reviewed `Cluster-API-QC` repository checkout, including the dispatch runner,
+protocol, calculation code, and artifact uploader.
 
 | JSON command | Cluster action |
 |---|---|
@@ -179,7 +198,7 @@ the dispatch runner, protocol, calculation code, and artifact uploader.
 | `find-submission` | Search exact job names with `squeue`, then the last 24 hours of `sacct`; never submit. |
 | `status-batch` | Run one allocation-only `sacct` query for a batch of Slurm IDs. |
 | `cancel` | Run repeat-safe `scancel --quiet`. |
-| `upload-artifacts` | Pass one fresh archive PUT URL, upload the ZIP, and return database-bound result data without deleting scratch. |
+| `upload-artifacts` | Pass an archive PUT URL or null, optionally upload the ZIP, and always return database-bound result data without deleting scratch. |
 | `ack-finalisation` | Delete the validated job directory after the backend has saved the result. |
 
 The matching repository commit must be deployed before the reconcilers are

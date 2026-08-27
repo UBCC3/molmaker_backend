@@ -1,4 +1,6 @@
 from enum_types import (
+    ArchiveUploadStatus,
+    CalculationType,
     JobFailureReason,
     JobStatus,
     basis_sets,
@@ -8,6 +10,15 @@ from enum_types import (
     optimization_types,
     wave_functional_theories,
 )
+
+
+def test_archive_upload_status_values_match_the_database_contract():
+    assert {status.value for status in ArchiveUploadStatus} == {
+        "pending",
+        "disabled",
+        "uploaded",
+        "unavailable",
+    }
 
 
 def test_job_status_values_match_the_orchestration_contract():
@@ -20,6 +31,11 @@ def test_job_status_values_match_the_orchestration_contract():
         "failed",
         "cancelled",
     }
+
+
+def test_calculation_types_include_scan():
+    assert CalculationType.scan.value == "scan"
+    assert calculation_types["Bond/Angle Scan"] == "scan"
 
 
 def test_job_failure_reason_values_are_separate_from_statuses():

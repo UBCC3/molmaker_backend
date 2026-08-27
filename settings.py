@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
 
-load_dotenv()
-
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
+ENV_FILE_VARIABLE = "BACKEND_ENV_FILE"
 
 ORCHESTRATION_DEFAULTS = {
     "SUBMISSION_POLL_INTERVAL_SECONDS": 5,
@@ -31,9 +33,14 @@ ORCHESTRATION_DEFAULTS = {
 
 APPLICATION_DEFAULTS = {
     "ALGORITHMS": "RS256",
+    "ARCHIVE_UPLOAD_ENABLED": "true",
     "S3_BUCKET_NAME": "ubchemica-bucket-1",
     "S3_REGION": "ca-central-1",
     "S3_BUCKET_ROOT": "ubchemica",
+}
+
+CALCULATION_DEFAULTS = {
+    "MAX_SCAN_POINTS": 200,
 }
 
 SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
@@ -47,17 +54,50 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
         "API_AUDIENCE",
         "AUTH0_CLIENT_ID",
         "AUTH0_CLIENT_SECRET",
-        "CLUSTER_WORK_DIR",
+        "CLUSTER_SSH_HOST",
+        "CLUSTER_DISPATCH_PATH",
         *APPLICATION_DEFAULTS,
+        *CALCULATION_DEFAULTS,
         *ORCHESTRATION_DEFAULTS,
     }
 )
 
 MAX_STATUS_BATCH_SIZE = 1_000
+MAX_CONFIGURED_SCAN_POINTS = 10_000
 MIN_SLURM_JOB_TIME_LIMIT_MINUTES = 1
 MAX_SLURM_JOB_TIME_LIMIT_MINUTES = 7 * 24 * 60
 MIN_SLURM_JOB_MEMORY_MB = 256
 MAX_SLURM_JOB_MEMORY_MB = 256 * 1024
+
+
+class BackendConfigurationError(ValueError):
+    """Backend configuration is missing or invalid."""
+
+
+def _configured_env_file(environ: Mapping[str, str]) -> Path | None:
+    configured = environ.get(ENV_FILE_VARIABLE)
+    if configured is None:
+        return DEFAULT_ENV_FILE if DEFAULT_ENV_FILE.is_file() else None
+    if not configured.strip():
+        raise BackendConfigurationError(f"{ENV_FILE_VARIABLE} must not be empty")
+
+    path = Path(configured.strip())
+    if not path.is_absolute():
+        raise BackendConfigurationError(f"{ENV_FILE_VARIABLE} must be absolute")
+    if not path.is_file():
+        raise BackendConfigurationError(
+            f"{ENV_FILE_VARIABLE} must identify an existing regular file"
+        )
+    return path.resolve()
+
+
+def load_backend_environment() -> Path | None:
+    """Load the selected dotenv file without replacing process values."""
+
+    env_file = _configured_env_file(os.environ)
+    if env_file is not None:
+        load_dotenv(dotenv_path=env_file, override=False)
+    return env_file
 
 
 def _optional_text(name: str) -> str | None:
@@ -77,6 +117,40 @@ def _text_with_default(name: str) -> str:
     if not value:
         raise ValueError(f"{name} must not be empty")
     return value
+
+
+def _boolean(name: str, default: str) -> bool:
+    value = os.getenv(name, default).strip().lower()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _cluster_ssh_host() -> str | None:
+    host = _optional_text("CLUSTER_SSH_HOST")
+    if host is None:
+        return None
+    if (
+        host.startswith("-")
+        or "\x00" in host
+        or any(character.isspace() for character in host)
+    ):
+        raise ValueError("CLUSTER_SSH_HOST is invalid")
+    return host
+
+
+def _cluster_dispatch_path() -> PurePosixPath | None:
+    value = _optional_text("CLUSTER_DISPATCH_PATH")
+    if value is None:
+        return None
+    if "\x00" in value:
+        raise ValueError("CLUSTER_DISPATCH_PATH is invalid")
+    path = PurePosixPath(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("CLUSTER_DISPATCH_PATH must be an absolute path")
+    return path
 
 
 def _positive_integer(name: str, default: int | None = None) -> int | None:
@@ -127,6 +201,17 @@ class OrchestrationSettings:
         "SLURM_JOB_TIME_LIMIT_MINUTES"
     ]
     slurm_job_memory_mb: int = ORCHESTRATION_DEFAULTS["SLURM_JOB_MEMORY_MB"]
+    cluster_ssh_host: str | None = None
+    cluster_dispatch_path: PurePosixPath | None = None
+
+    def require_cluster_dispatch(self) -> tuple[str, PurePosixPath]:
+        _required(
+            {
+                "CLUSTER_SSH_HOST": self.cluster_ssh_host,
+                "CLUSTER_DISPATCH_PATH": self.cluster_dispatch_path,
+            }
+        )
+        return self.cluster_ssh_host, self.cluster_dispatch_path
 
 
 @dataclass(frozen=True)
@@ -141,10 +226,11 @@ class BackendSettings:
     algorithms: tuple[str, ...]
     auth0_client_id: str | None
     auth0_client_secret: str | None
-    cluster_work_dir: PurePosixPath | None
+    archive_upload_enabled: bool
     s3_bucket_name: str
     s3_region: str
     s3_bucket_root: str
+    max_scan_points: int
     orchestration: OrchestrationSettings
 
     @classmethod
@@ -157,10 +243,16 @@ class BackendSettings:
         if not algorithms:
             raise ValueError("ALGORITHMS must include at least one algorithm")
 
-        cluster_work_dir = _optional_text("CLUSTER_WORK_DIR")
         s3_bucket_root = _text_with_default("S3_BUCKET_ROOT").strip("/")
         if not s3_bucket_root:
             raise ValueError("S3_BUCKET_ROOT must not be empty")
+
+        max_scan_points = _bounded_positive_integer(
+            "MAX_SCAN_POINTS",
+            CALCULATION_DEFAULTS["MAX_SCAN_POINTS"],
+            2,
+            MAX_CONFIGURED_SCAN_POINTS,
+        )
 
         orchestration = OrchestrationSettings(
             submission_poll_interval_seconds=_positive_integer(
@@ -219,6 +311,8 @@ class BackendSettings:
                 "STORAGE_OPERATION_TIMEOUT_SECONDS",
                 ORCHESTRATION_DEFAULTS["STORAGE_OPERATION_TIMEOUT_SECONDS"],
             ),
+            cluster_ssh_host=_cluster_ssh_host(),
+            cluster_dispatch_path=_cluster_dispatch_path(),
         )
         if (
             orchestration.outage_initial_backoff_seconds
@@ -244,12 +338,14 @@ class BackendSettings:
             algorithms=algorithms,
             auth0_client_id=_optional_text("AUTH0_CLIENT_ID"),
             auth0_client_secret=_optional_secret("AUTH0_CLIENT_SECRET"),
-            cluster_work_dir=(
-                PurePosixPath(cluster_work_dir) if cluster_work_dir else None
+            archive_upload_enabled=_boolean(
+                "ARCHIVE_UPLOAD_ENABLED",
+                APPLICATION_DEFAULTS["ARCHIVE_UPLOAD_ENABLED"],
             ),
             s3_bucket_name=_text_with_default("S3_BUCKET_NAME"),
             s3_region=_text_with_default("S3_REGION"),
             s3_bucket_root=s3_bucket_root,
+            max_scan_points=max_scan_points,
             orchestration=orchestration,
         )
 
@@ -292,13 +388,10 @@ class BackendSettings:
         _required({"AUTH0_DOMAIN": self.auth0_domain})
         return self.auth0_domain
 
-    def require_cluster_work_dir(self) -> PurePosixPath:
-        _required({"CLUSTER_WORK_DIR": self.cluster_work_dir})
-        return self.cluster_work_dir
-
 
 @cache
 def get_settings() -> BackendSettings:
     """Return one validated settings object for the current process."""
 
+    load_backend_environment()
     return BackendSettings.from_env()
