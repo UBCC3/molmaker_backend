@@ -49,6 +49,7 @@ def submit_custom_calculation(
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -72,6 +73,7 @@ def submit_custom_calculation(
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
     :return: The created job.
     """
     if calculation_type == CalculationType.standard:
@@ -92,6 +94,7 @@ def submit_custom_calculation(
         job_name=job_name,
         job_notes=job_notes,
         tags=tags,
+        upload_archive=upload_archive,
         calculation_type=calculation_type,
         method=method,
         basis_set=basis_set,
@@ -117,6 +120,7 @@ def submit_standard_analysis(
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -135,6 +139,7 @@ def submit_standard_analysis(
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
     :return: The created job.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
@@ -147,6 +152,7 @@ def submit_standard_analysis(
         job_name=job_name,
         job_notes=job_notes,
         tags=tags,
+        upload_archive=upload_archive,
         calculation_type=CalculationType.standard,
         method=STANDARD_ANALYSIS_METHOD,
         basis_set=STANDARD_ANALYSIS_BASIS_SET,
@@ -172,6 +178,7 @@ def submit_bond_angle_scan(
     job_name: str = Form(...),
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
+    upload_archive: bool = Form(True),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -192,6 +199,7 @@ def submit_bond_angle_scan(
     :param job_name: Display name for the job.
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
+    :param upload_archive: Whether to request a ZIP archive for this job.
     :return: The created job.
     """
     try:
@@ -213,6 +221,7 @@ def submit_bond_angle_scan(
         job_name=job_name,
         job_notes=job_notes,
         tags=tags,
+        upload_archive=upload_archive,
         calculation_type=CalculationType.scan,
         method=SCAN_WORKFLOW_METHOD,
         basis_set=SCAN_WORKFLOW_BASIS_SET,

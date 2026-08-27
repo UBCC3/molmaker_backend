@@ -11,9 +11,18 @@ from typing import Callable, Sequence
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
-from asset_service import JobResultValidationError, upsert_job_result
+from asset_service import (
+    JobResultValidationError,
+    set_job_archive_outcome,
+    upsert_job_result,
+)
 from database import get_session_local
-from enum_types import CalculationType, JobFailureReason, JobStatus
+from enum_types import (
+    ArchiveUploadStatus,
+    CalculationType,
+    JobFailureReason,
+    JobStatus,
+)
 from models import Job
 from orchestration.base_reconciler import BaseReconciler
 from orchestration.cluster_client import (
@@ -51,6 +60,7 @@ class FinalisationReconciler(BaseReconciler):
     session_factory: Callable[[], Session]
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
+    archive_upload_enabled: bool
     generate_upload_url: Callable[[str], str] = generate_archive_upload_url
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
@@ -61,8 +71,9 @@ class FinalisationReconciler(BaseReconciler):
         settings = backend_settings.orchestration
         return cls(
             session_factory=get_session_local(),
-            cluster_client=ClusterDispatchClient.from_settings(backend_settings),
+            cluster_client=ClusterDispatchClient.from_settings(settings),
             settings=settings,
+            archive_upload_enabled=backend_settings.archive_upload_enabled,
         )
 
     @property
@@ -97,7 +108,9 @@ class FinalisationReconciler(BaseReconciler):
 
         result_was_saved = False
         if job.job_result is None:
-            archive_upload_url = self.generate_upload_url(str(job.job_id))
+            archive_upload_url = None
+            if self.archive_upload_enabled and job.archive_upload_requested:
+                archive_upload_url = self.generate_upload_url(str(job.job_id))
             try:
                 result = self._upload_artifacts(
                     job,
@@ -105,12 +118,21 @@ class FinalisationReconciler(BaseReconciler):
                     terminal_status,
                     archive_upload_url,
                 )
+                archive_upload_status = self._archive_upload_status(
+                    archive_upload_url,
+                    result.archive_uploaded,
+                )
                 upsert_job_result(
                     db,
                     job,
                     result=result.calculation_result,
                     error=result.calculation_error,
                     artifacts=result.artifacts,
+                )
+                set_job_archive_outcome(
+                    job,
+                    archive_uploaded=result.archive_uploaded,
+                    archive_upload_status=archive_upload_status,
                 )
                 result_was_saved = True
             except (JobDispatchError, JobResultValidationError) as error:
@@ -137,7 +159,7 @@ class FinalisationReconciler(BaseReconciler):
         job: Job,
         calculation_type: CalculationType,
         terminal_status: JobStatus,
-        archive_upload_url: str,
+        archive_upload_url: str | None,
     ) -> FinalisationResult:
         return self.cluster_client.upload_artifacts(
             job_id=job.job_id,
@@ -149,6 +171,21 @@ class FinalisationReconciler(BaseReconciler):
                 and job.failure_reason != JobFailureReason.calculation_failed.value
             ),
         )
+
+    @staticmethod
+    def _archive_upload_status(
+        archive_upload_url: str | None,
+        archive_uploaded: bool,
+    ) -> ArchiveUploadStatus:
+        if archive_upload_url is None:
+            if archive_uploaded:
+                raise JobResultValidationError(
+                    "Cluster reported an upload without an archive destination"
+                )
+            return ArchiveUploadStatus.disabled
+        if archive_uploaded:
+            return ArchiveUploadStatus.uploaded
+        return ArchiveUploadStatus.unavailable
 
     def _record_job_failure(self, db: Session, job: Job, message: str) -> None:
         job.attempt_count += 1

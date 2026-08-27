@@ -111,6 +111,7 @@ def test_api_job_moves_through_all_three_reconcilers(
     assert finalising.terminal_status == JobStatus.completed.value
 
     cluster_client.upload_artifacts.return_value = FinalisationResult(
+        archive_uploaded=True,
         calculation_result={"energy": -75.2},
         calculation_error=None,
         artifacts={},
@@ -120,6 +121,7 @@ def test_api_job_moves_through_all_three_reconcilers(
         session_factory=TestingSessionLocal,
         cluster_client=cluster_client,
         settings=settings,
+        archive_upload_enabled=True,
         generate_upload_url=Mock(return_value="https://upload.test/archive"),
         sleep=Mock(),
         clock=Mock(return_value=0.0),

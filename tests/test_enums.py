@@ -1,4 +1,5 @@
 from enum_types import (
+    ArchiveUploadStatus,
     CalculationType,
     JobFailureReason,
     JobStatus,
@@ -9,6 +10,15 @@ from enum_types import (
     optimization_types,
     wave_functional_theories,
 )
+
+
+def test_archive_upload_status_values_match_the_database_contract():
+    assert {status.value for status in ArchiveUploadStatus} == {
+        "pending",
+        "disabled",
+        "uploaded",
+        "unavailable",
+    }
 
 
 def test_job_status_values_match_the_orchestration_contract():

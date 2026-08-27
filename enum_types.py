@@ -34,6 +34,13 @@ class JobFailureReason(str, Enum):
     unknown = "unknown"
 
 
+class ArchiveUploadStatus(str, Enum):
+    pending = "pending"
+    disabled = "disabled"
+    uploaded = "uploaded"
+    unavailable = "unavailable"
+
+
 class AssetOwnership(str, Enum):
     user = "user"
     group = "group"

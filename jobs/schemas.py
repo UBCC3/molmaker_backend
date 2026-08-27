@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from enum_types import CalculationType, JobFailureReason
+from enum_types import ArchiveUploadStatus, CalculationType, JobFailureReason
 from structures.schemas import StructureResponse
 
 
@@ -41,6 +41,9 @@ class JobResponse(BaseModel):
     cancel_requested: bool
     failure_reason: Optional[JobFailureReason] = None
     failure_message: Optional[str] = None
+    upload_archive: bool
+    archive_uploaded: bool
+    archive_upload_status: ArchiveUploadStatus
     tags: List[str]
     structures: List[StructureResponse]
 

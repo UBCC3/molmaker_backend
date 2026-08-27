@@ -7,7 +7,12 @@ import pytest
 from conftest import TestingSessionLocal
 
 from asset_service import serialize_job, upsert_job_result
-from enum_types import CalculationType, JobFailureReason, JobStatus
+from enum_types import (
+    ArchiveUploadStatus,
+    CalculationType,
+    JobFailureReason,
+    JobStatus,
+)
 from models import Job
 from orchestration.cluster_client import (
     ClusterDispatchClient,
@@ -48,6 +53,7 @@ def make_reconciler(settings, user_factory):
         client=None,
         current_settings=None,
         generate_upload_url=None,
+        archive_upload_enabled=True,
         sleep=None,
         clock=None,
     ):
@@ -58,6 +64,7 @@ def make_reconciler(settings, user_factory):
             session_factory=TestingSessionLocal,
             cluster_client=client,
             settings=current_settings or settings,
+            archive_upload_enabled=archive_upload_enabled,
             generate_upload_url=generate_upload_url
             or Mock(return_value="https://upload.test/archive"),
             sleep=sleep or Mock(),
@@ -84,6 +91,7 @@ def finalising_job(job_factory, **overrides):
 
 def completed_result(**overrides):
     values = {
+        "archive_uploaded": True,
         "calculation_result": {"energy": -75.2},
         "calculation_error": None,
         "artifacts": {},
@@ -194,6 +202,8 @@ def test_success_publishes_each_terminal_status(
     assert saved.status == terminal_status.value
     assert saved.terminal_status == terminal_status.value
     assert saved.is_uploaded is True
+    assert saved.archive_uploaded is True
+    assert saved.archive_upload_status == ArchiveUploadStatus.uploaded.value
     assert saved.completed_at is not None
     assert saved.attempt_count == 0
     assert saved.failure_reason == failure_reason
@@ -205,6 +215,120 @@ def test_success_publishes_each_terminal_status(
         archive_upload_url="https://upload.test/archive",
         allow_missing_error=allow_missing_error,
     )
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "failure_reason", "calculation_result", "calculation_error"),
+    [
+        (JobStatus.completed, None, {"energy": -75.2}, None),
+        (
+            JobStatus.failed,
+            JobFailureReason.calculation_failed.value,
+            None,
+            {"message": "calculation failed"},
+        ),
+        (JobStatus.cancelled, None, None, None),
+    ],
+)
+def test_archive_disabled_publishes_results_without_s3(
+    db,
+    job_factory,
+    make_reconciler,
+    terminal_status,
+    failure_reason,
+    calculation_result,
+    calculation_error,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result(
+        archive_uploaded=False,
+        calculation_result=calculation_result,
+        calculation_error=calculation_error,
+    )
+    generate = Mock(side_effect=AssertionError("S3 must not be used"))
+    reconciler = make_reconciler(
+        client=client,
+        generate_upload_url=generate,
+        archive_upload_enabled=False,
+    )
+    job = finalising_job(
+        job_factory,
+        terminal_status=terminal_status.value,
+        failure_reason=failure_reason,
+    )
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == terminal_status.value
+    assert saved.terminal_status == terminal_status.value
+    assert saved.is_uploaded is True
+    assert saved.archive_uploaded is False
+    assert saved.archive_upload_status == ArchiveUploadStatus.disabled.value
+    assert saved.job_result is not None
+    generate.assert_not_called()
+    client.upload_artifacts.assert_called_once_with(
+        job_id=job.job_id,
+        calculation_type=CalculationType.energy,
+        terminal_status=terminal_status,
+        archive_upload_url=None,
+        allow_missing_error=(terminal_status == JobStatus.cancelled),
+    )
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
+
+
+def test_job_archive_opt_out_skips_s3_when_uploads_are_globally_enabled(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result(archive_uploaded=False)
+    generate = Mock(side_effect=AssertionError("S3 must not be used"))
+    reconciler = make_reconciler(
+        client=client,
+        generate_upload_url=generate,
+        archive_upload_enabled=True,
+    )
+    job = finalising_job(job_factory, archive_upload_requested=False)
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert saved.archive_upload_requested is False
+    assert saved.archive_uploaded is False
+    assert saved.archive_upload_status == ArchiveUploadStatus.disabled.value
+    generate.assert_not_called()
+    client.upload_artifacts.assert_called_once_with(
+        job_id=job.job_id,
+        calculation_type=CalculationType.energy,
+        terminal_status=JobStatus.completed,
+        archive_upload_url=None,
+        allow_missing_error=False,
+    )
+    client.acknowledge_finalisation.assert_called_once_with(job.job_id)
+
+
+def test_returned_archive_unavailability_does_not_fail_the_job(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result(archive_uploaded=False)
+    reconciler = make_reconciler(client=client)
+    job = finalising_job(job_factory)
+
+    reconciler.run_round()
+
+    saved = refresh(db, job)
+    assert saved.status == JobStatus.completed.value
+    assert saved.is_uploaded is True
+    assert saved.archive_uploaded is False
+    assert saved.archive_upload_status == ArchiveUploadStatus.unavailable.value
+    assert saved.failure_reason is None
     client.acknowledge_finalisation.assert_called_once_with(job.job_id)
 
 
@@ -291,6 +415,8 @@ def test_saved_result_retries_acknowledgement_without_reuploading(
         error=None,
         artifacts={},
     )
+    job.archive_uploaded = True
+    job.archive_upload_status = ArchiveUploadStatus.uploaded.value
     db.commit()
 
     reconciler.run_round()

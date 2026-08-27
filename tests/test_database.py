@@ -29,6 +29,10 @@ def test_init_db_creates_the_current_schema(db, monkeypatch):
     assert structure_columns["content"]["nullable"] is False
     assert structure_columns["thumbnail"]["nullable"] is False
     assert structure_columns["thumbnail_media_type"]["nullable"] is False
+    job_columns = {column["name"]: column for column in inspector.get_columns("jobs")}
+    assert job_columns["archive_upload_requested"]["nullable"] is False
+    assert job_columns["archive_uploaded"]["nullable"] is False
+    assert job_columns["archive_upload_status"]["nullable"] is False
 
 
 def test_database_module_entrypoint_creates_the_current_schema():

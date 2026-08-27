@@ -7,6 +7,7 @@ from sqlalchemy.engine import make_url
 import orchestration.finalisation_reconciler as finalisation_module
 import orchestration.status_reconciler as status_module
 import orchestration.submission_reconciler as submission_module
+import settings as settings_module
 import storage
 from main import create_app
 from orchestration.cluster_client import ClusterDispatchClient
@@ -16,6 +17,7 @@ from orchestration.submission_reconciler import SubmissionReconciler
 from settings import (
     APPLICATION_DEFAULTS,
     CALCULATION_DEFAULTS,
+    ENV_FILE_VARIABLE,
     SUPPORTED_ENVIRONMENT_VARIABLES,
     BackendSettings,
     get_settings,
@@ -59,6 +61,92 @@ def test_scan_point_limit_is_configurable(monkeypatch):
     monkeypatch.setenv("MAX_SCAN_POINTS", "321")
 
     assert BackendSettings.from_env().max_scan_points == 321
+
+
+def test_archive_upload_switch_is_strict_and_defaults_to_enabled(monkeypatch):
+    monkeypatch.delenv("ARCHIVE_UPLOAD_ENABLED", raising=False)
+    assert BackendSettings.from_env().archive_upload_enabled is True
+
+    monkeypatch.setenv("ARCHIVE_UPLOAD_ENABLED", "false")
+    assert BackendSettings.from_env().archive_upload_enabled is False
+
+    monkeypatch.setenv("ARCHIVE_UPLOAD_ENABLED", "yes")
+    with pytest.raises(ValueError, match="ARCHIVE_UPLOAD_ENABLED"):
+        BackendSettings.from_env()
+
+
+def test_explicit_env_file_loads_without_overriding_process_values(
+    monkeypatch,
+    tmp_path,
+):
+    env_file = tmp_path / "backend.env"
+    env_file.write_text(
+        "CLUSTER_SSH_HOST=file-host\n"
+        "CLUSTER_DISPATCH_PATH=/cluster/from-file/dispatch.py\n"
+        "ARCHIVE_UPLOAD_ENABLED=false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_FILE_VARIABLE, str(env_file))
+    monkeypatch.setenv("CLUSTER_SSH_HOST", "process-host")
+    monkeypatch.delenv("CLUSTER_DISPATCH_PATH", raising=False)
+    monkeypatch.delenv("ARCHIVE_UPLOAD_ENABLED", raising=False)
+
+    settings = get_settings()
+
+    assert settings.orchestration.cluster_ssh_host == "process-host"
+    assert settings.orchestration.cluster_dispatch_path == Path(
+        "/cluster/from-file/dispatch.py"
+    )
+    assert settings.archive_upload_enabled is False
+
+
+def test_repository_env_file_is_the_fallback(monkeypatch, tmp_path):
+    env_file = tmp_path / "fallback.env"
+    env_file.write_text("ARCHIVE_UPLOAD_ENABLED=false\n", encoding="utf-8")
+    monkeypatch.delenv(ENV_FILE_VARIABLE, raising=False)
+    monkeypatch.delenv("ARCHIVE_UPLOAD_ENABLED", raising=False)
+    monkeypatch.setattr(settings_module, "DEFAULT_ENV_FILE", env_file)
+
+    assert get_settings().archive_upload_enabled is False
+
+
+@pytest.mark.parametrize("configured_path", ["relative.env", "missing.env"])
+def test_explicit_env_file_must_be_absolute_and_exist(
+    monkeypatch,
+    tmp_path,
+    configured_path,
+):
+    path = configured_path
+    if configured_path == "missing.env":
+        path = str(tmp_path / configured_path)
+    monkeypatch.setenv(ENV_FILE_VARIABLE, path)
+
+    with pytest.raises(ValueError, match=ENV_FILE_VARIABLE):
+        get_settings()
+
+
+def test_cluster_dispatch_requires_independent_host_and_absolute_path(monkeypatch):
+    monkeypatch.delenv("CLUSTER_SSH_HOST", raising=False)
+    monkeypatch.delenv("CLUSTER_DISPATCH_PATH", raising=False)
+
+    with pytest.raises(EnvironmentError) as error:
+        BackendSettings.from_env().orchestration.require_cluster_dispatch()
+
+    assert "CLUSTER_SSH_HOST" in str(error.value)
+    assert "CLUSTER_DISPATCH_PATH" in str(error.value)
+
+    monkeypatch.setenv("CLUSTER_SSH_HOST", "cluster-test")
+    monkeypatch.setenv("CLUSTER_DISPATCH_PATH", "relative/dispatch.py")
+    with pytest.raises(ValueError, match="CLUSTER_DISPATCH_PATH"):
+        BackendSettings.from_env()
+
+
+@pytest.mark.parametrize("host", ["-unsafe", "two hosts", "host\ncommand"])
+def test_cluster_ssh_host_rejects_option_and_whitespace_values(monkeypatch, host):
+    monkeypatch.setenv("CLUSTER_SSH_HOST", host)
+
+    with pytest.raises(ValueError, match="CLUSTER_SSH_HOST"):
+        BackendSettings.from_env()
 
 
 @pytest.mark.parametrize("invalid_limit", ["invalid", "0", "1", "10001"])
@@ -162,7 +250,12 @@ def test_api_and_reconcilers_use_the_same_settings(
     monkeypatch,
     mocker,
 ):
-    monkeypatch.setenv("CLUSTER_WORK_DIR", "/cluster/molmaker")
+    monkeypatch.setenv("CLUSTER_SSH_HOST", "cluster-test")
+    monkeypatch.setenv(
+        "CLUSTER_DISPATCH_PATH",
+        "/cluster/molmaker/Cluster-API-QC/runner/dispatch.py",
+    )
+    monkeypatch.setenv("ARCHIVE_UPLOAD_ENABLED", "true")
     get_settings.cache_clear()
     settings = get_settings()
     session_factory = Mock()
@@ -193,10 +286,11 @@ def test_api_and_reconcilers_use_the_same_settings(
     assert all(
         reconciler.settings is settings.orchestration for reconciler in reconcilers
     )
+    assert reconcilers[-1].archive_upload_enabled is True
     assert cluster_factory.call_args_list == [
-        call(settings),
-        call(settings),
-        call(settings),
+        call(settings.orchestration),
+        call(settings.orchestration),
+        call(settings.orchestration),
     ]
 
 
@@ -218,3 +312,12 @@ def test_application_modules_do_not_read_environment_directly():
                 )
 
     assert violations == []
+
+
+def test_reconciler_service_selects_the_backend_env_file_explicitly():
+    service = (
+        PROJECT_ROOT / "deploy" / "systemd" / "molmaker-reconciler@.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Environment=BACKEND_ENV_FILE=/etc/molmaker/backend.env" in service
+    assert "EnvironmentFile=" not in service

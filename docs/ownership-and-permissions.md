@@ -183,16 +183,17 @@ Request history cleanup after user or group deletion is described in
 
 Permission to read a job also controls access to its related data:
 
-- fresh links for individually available S3 artifacts from
-  `GET /storage/jobs/{job_id}`
-- the S3 archive link from `GET /storage/jobs/{job_id}/archive`
+- parsed results and retained frontend artifacts from the `/jobs/{job_id}`
+  result and artifact endpoints; and
+- the optional S3 archive link from `GET /storage/jobs/{job_id}/archive`.
 
 An endpoint that exposes new job files or results must use the same job read
 permission. Checking only that the caller is authenticated is not enough.
 
-Both endpoints require a publicly terminal job whose files finished uploading.
-They return `409` while files are unavailable. Soft-deleted jobs are hidden and
-therefore cannot be used to fetch artifact links through the API.
+Result endpoints require saved PostgreSQL result data. Archive download also
+requires `archive_uploaded=true`; disabled or unavailable archives return `409`
+without hiding the result. Soft-deleted jobs are hidden and therefore cannot be
+used to fetch result or archive data through the API.
 
 ## User and Group Management
 

@@ -8,7 +8,13 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from enum_types import AssetOwnership, CalculationType, JobFailureReason, JobStatus
+from enum_types import (
+    ArchiveUploadStatus,
+    AssetOwnership,
+    CalculationType,
+    JobFailureReason,
+    JobStatus,
+)
 from models import (
     Asset,
     Group,
@@ -122,6 +128,38 @@ JOB_RESULT_ARTIFACTS_BY_CALCULATION = {
 
 class JobResultValidationError(ValueError):
     """A database-bound job result does not match the finished job."""
+
+
+def _validated_archive_outcome(
+    *,
+    archive_uploaded: bool,
+    archive_upload_status: str | ArchiveUploadStatus,
+) -> ArchiveUploadStatus:
+    if type(archive_uploaded) is not bool:
+        raise JobResultValidationError("Archive upload outcome must be a boolean")
+    try:
+        upload_status = ArchiveUploadStatus(archive_upload_status)
+    except (TypeError, ValueError) as error:
+        raise JobResultValidationError("Archive upload status is invalid") from error
+    if archive_uploaded != (upload_status == ArchiveUploadStatus.uploaded):
+        raise JobResultValidationError("Archive upload outcome is inconsistent")
+    return upload_status
+
+
+def set_job_archive_outcome(
+    job: Job,
+    *,
+    archive_uploaded: bool,
+    archive_upload_status: str | ArchiveUploadStatus,
+) -> None:
+    """Stage one internally consistent archive outcome on a job."""
+
+    upload_status = _validated_archive_outcome(
+        archive_uploaded=archive_uploaded,
+        archive_upload_status=archive_upload_status,
+    )
+    job.archive_uploaded = archive_uploaded
+    job.archive_upload_status = upload_status.value
 
 
 def _published_job_status(job: Job) -> str | None:
@@ -310,6 +348,10 @@ def publish_job_result(
     result: Any,
     error: Any,
     artifacts: Any,
+    archive_uploaded: bool = False,
+    archive_upload_status: str | ArchiveUploadStatus = (
+        ArchiveUploadStatus.unavailable
+    ),
     completed_at: datetime | None = None,
 ) -> JobResult:
     """Persist result data and publish the terminal job in one transaction."""
@@ -320,6 +362,10 @@ def publish_job_result(
         raise JobResultValidationError("Terminal status is invalid") from exc
     if job.status not in {JobStatus.finalising.value, terminal_status.value}:
         raise JobResultValidationError("Job is not ready for result publication")
+    validated_archive_status = _validated_archive_outcome(
+        archive_uploaded=archive_uploaded,
+        archive_upload_status=archive_upload_status,
+    )
 
     job_result = upsert_job_result(
         db,
@@ -330,6 +376,11 @@ def publish_job_result(
     )
     job.status = terminal_status.value
     job.is_uploaded = True
+    set_job_archive_outcome(
+        job,
+        archive_uploaded=archive_uploaded,
+        archive_upload_status=validated_archive_status,
+    )
     job.completed_at = job.completed_at or completed_at or datetime.now(timezone.utc)
     job.attempt_count = 0
     if terminal_status != JobStatus.failed:
@@ -391,6 +442,9 @@ def serialize_job(
         "cancel_requested": job.cancel_requested,
         "failure_reason": job.failure_reason,
         "failure_message": job.failure_message,
+        "upload_archive": job.archive_upload_requested,
+        "archive_uploaded": job.archive_uploaded,
+        "archive_upload_status": job.archive_upload_status,
     }
     return result
 

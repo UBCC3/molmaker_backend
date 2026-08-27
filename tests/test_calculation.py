@@ -103,7 +103,16 @@ def test_openapi_documents_durable_calculation_submission_contract(client):
         ]
         request_schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
         request_properties = components[request_schema_name]["properties"]
-        assert {"file", "structure_id", "job_name"}.issubset(request_properties)
+        assert {
+            "file",
+            "structure_id",
+            "job_name",
+            "upload_archive",
+        }.issubset(request_properties)
+        assert request_properties["upload_archive"]["default"] is True
+        assert "upload_archive" not in components[request_schema_name].get(
+            "required", []
+        )
         if path.endswith("bond_angle_scan"):
             assert "scan" in request_properties
 
@@ -162,6 +171,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
             job_name="  Optimise water  ",
             job_notes="  transition search  ",
             tags=["EXISTING", "New", "new"],
+            upload_archive="false",
         ),
         files={
             "file": (
@@ -190,6 +200,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert result["charge"] == -1
     assert result["multiplicity"] == 2
     assert result["optimization_type"] == "ts"
+    assert result["upload_archive"] is False
     assert result["user_sub"] == user.user_sub
     assert result["group_id"] == str(group.group_id)
     assert sorted(result["tags"]) == ["existing", "new"]
@@ -208,6 +219,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert job.attempt_count == 0
     assert job.cancel_requested is False
     assert job.is_uploaded is False
+    assert job.archive_upload_requested is False
     assert job.is_deleted is False
     assert job.is_public is False
     assert job.user_sub == user.user_sub
@@ -251,9 +263,11 @@ def test_standard_submission_uses_workflow_defaults(
     assert result["multiplicity"] == 2
     assert result["optimization_type"] == "ground"
     assert result["status"] == "submitting"
+    assert result["upload_archive"] is True
 
     job = db.query(Job).filter_by(job_id=job_id).one()
     assert job.optimization_type == "ground"
+    assert job.archive_upload_requested is True
     assert job.job_input.input_xyz == "standard xyz input"
     assert job.job_input.keywords is None
 

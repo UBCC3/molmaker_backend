@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from asset_service import get_asset_or_404, set_asset_tags
 from calculation.scan_spec import ScanSpecValidationError, validate_scan_spec
-from enum_types import CalculationType, JobStatus
+from enum_types import ArchiveUploadStatus, CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
 from permissions import can_read_asset
 from settings import get_settings
@@ -189,6 +189,7 @@ def create_calculation_job(
     job_name: str,
     job_notes: Optional[str],
     tags: Iterable[str],
+    upload_archive: bool,
     calculation_type: CalculationType,
     method: str,
     basis_set: str,
@@ -291,6 +292,9 @@ def create_calculation_job(
         is_deleted=False,
         is_public=False,
         is_uploaded=False,
+        archive_upload_requested=upload_archive,
+        archive_uploaded=False,
+        archive_upload_status=ArchiveUploadStatus.pending.value,
         attempt_count=0,
         cancel_requested=False,
     )

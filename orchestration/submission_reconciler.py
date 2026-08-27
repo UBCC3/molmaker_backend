@@ -49,7 +49,7 @@ class SubmissionReconciler(BaseReconciler):
         settings = backend_settings.orchestration
         return cls(
             session_factory=get_session_local(),
-            cluster_client=ClusterDispatchClient.from_settings(backend_settings),
+            cluster_client=ClusterDispatchClient.from_settings(settings),
             settings=settings,
         )
 

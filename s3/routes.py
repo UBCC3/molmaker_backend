@@ -33,11 +33,16 @@ class JobArchiveResponse(BaseModel):
     url: str
 
 
-def _require_job_files_ready(job: Job) -> None:
+def _require_job_archive_ready(job: Job) -> None:
     if not is_job_result_ready(job):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Job files are not ready",
+            detail="Job archive is not ready",
+        )
+    if not job.archive_uploaded:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job archive is unavailable",
         )
 
 
@@ -45,7 +50,9 @@ def _require_job_files_ready(job: Job) -> None:
     "/jobs/{job_id}/archive",
     response_model=JobArchiveResponse,
     responses={
-        status.HTTP_409_CONFLICT: {"description": "Job files are not ready."},
+        status.HTTP_409_CONFLICT: {
+            "description": "Job archive is not ready or unavailable."
+        },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "description": "File storage is temporarily unavailable."
         },
@@ -67,7 +74,7 @@ def get_job_archive(
     job = get_asset_or_404(db, Job, job_id)
     user = get_user_or_404(db, get_user_sub(current_user))
     require_asset_permission(user, job, can_read_asset)
-    _require_job_files_ready(job)
+    _require_job_archive_ready(job)
 
     try:
         url = presign_zip_download_url(str(job.job_id))

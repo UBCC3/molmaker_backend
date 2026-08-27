@@ -11,9 +11,8 @@ from typing import Any, Iterable, Literal
 from uuid import UUID
 
 from enum_types import CalculationType, JobStatus
-from settings import BackendSettings
+from settings import OrchestrationSettings
 
-SSH_HOST = "cluster"
 PROTOCOL_VERSION = 1
 MAX_CLUSTER_RESPONSE_BYTES = 64 * 1024 * 1024
 COMMAND_REJECTION = "Command rejected by allowed_commands.sh"
@@ -84,8 +83,9 @@ class SlurmJobStatus:
 
 @dataclass(frozen=True)
 class FinalisationResult:
-    """Validated database-bound data returned after the archive upload."""
+    """Validated database-bound data returned after artifact finalisation."""
 
+    archive_uploaded: bool
     calculation_result: dict[str, Any] | None
     calculation_error: dict[str, Any] | None
     artifacts: dict[str, str]
@@ -135,12 +135,16 @@ def _finalisation_result(
     result: dict[str, Any],
     *,
     expected_job_id: str,
+    archive_requested: bool,
 ) -> FinalisationResult:
     """Validate the transport-level finalisation response."""
 
     if result["job_id"] != expected_job_id:
         raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
-    if result["archive_uploaded"] is not True:
+    archive_uploaded = result["archive_uploaded"]
+    if type(archive_uploaded) is not bool:
+        raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
+    if not archive_requested and archive_uploaded:
         raise ClusterServiceError(INVALID_FINALISATION_RESPONSE)
     calculation_result = result["calculation_result"]
     calculation_error = result["calculation_error"]
@@ -167,6 +171,7 @@ def _finalisation_result(
             raise ClusterServiceError(INVALID_FINALISATION_RESPONSE) from None
 
     return FinalisationResult(
+        archive_uploaded=archive_uploaded,
         calculation_result=calculation_result,
         calculation_error=calculation_error,
         artifacts=dict(artifacts),
@@ -220,20 +225,22 @@ def _status_from_row(row: Any) -> SlurmJobStatus:
 class ClusterDispatchClient:
     """Send JSON requests to the cluster and validate their responses."""
 
-    cluster_work_dir: PurePosixPath
+    ssh_host: str
+    dispatch_path: PurePosixPath
     timeout_seconds: int
     storage_timeout_seconds: int
 
     @classmethod
     def from_settings(
         cls,
-        settings: BackendSettings,
+        settings: OrchestrationSettings,
     ) -> "ClusterDispatchClient":
-        orchestration = settings.orchestration
+        ssh_host, dispatch_path = settings.require_cluster_dispatch()
         return cls(
-            settings.require_cluster_work_dir(),
-            orchestration.slurm_command_timeout_seconds,
-            orchestration.storage_operation_timeout_seconds,
+            ssh_host,
+            dispatch_path,
+            settings.slurm_command_timeout_seconds,
+            settings.storage_operation_timeout_seconds,
         )
 
     def submit_job(
@@ -332,7 +339,7 @@ class ClusterDispatchClient:
         job_id: UUID | str,
         calculation_type: CalculationType,
         terminal_status: JobStatus,
-        archive_upload_url: str,
+        archive_upload_url: str | None,
         allow_missing_error: bool = False,
     ) -> FinalisationResult:
         """Upload one archive and return the content destined for PostgreSQL."""
@@ -350,7 +357,11 @@ class ClusterDispatchClient:
             "artifact finalisation",
             timeout_seconds=self.storage_timeout_seconds,
         )
-        return _finalisation_result(result, expected_job_id=normalized_job_id)
+        return _finalisation_result(
+            result,
+            expected_job_id=normalized_job_id,
+            archive_requested=archive_upload_url is not None,
+        )
 
     def acknowledge_finalisation(self, job_id: UUID | str) -> None:
         """Acknowledge a committed result so cluster cleanup can be repeated."""
@@ -394,13 +405,10 @@ class ClusterDispatchClient:
                 ) from None
             raise ValueError(f"Cluster {operation} request is invalid") from None
 
-        dispatch_path = (
-            self.cluster_work_dir / "Cluster-API-QC" / "runner" / "dispatch.py"
-        )
-        remote_command = shlex.join(["python3", str(dispatch_path)])
+        remote_command = shlex.join(["python3", str(self.dispatch_path)])
         try:
             completed = subprocess.run(
-                ["ssh", SSH_HOST, remote_command],
+                ["ssh", self.ssh_host, remote_command],
                 input=input_text,
                 check=False,
                 capture_output=True,
