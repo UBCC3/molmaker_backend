@@ -15,7 +15,7 @@ endpoint schemas, use Swagger. For access rules, see
 | Reconciler processes | Submit jobs, poll Slurm, request cancellation, and finalise artifacts. |
 | Alliance dispatch | Accepts one validated JSON request per cluster operation and provides the restricted boundary to Slurm. |
 | Alliance job directory | Holds the input, script, logs, and results while a calculation is being processed. |
-| S3 | Optionally stores ZIP archives uploaded during job finalisation. The backend exposes only archives explicitly recorded as uploaded. |
+| AWS S3 or Garage | Optionally stores ZIP archives uploaded during job finalisation. The backend exposes only archives explicitly recorded as uploaded. |
 
 ## Overall Flow
 
@@ -32,7 +32,7 @@ processes, not an active coordinator.
 
 PostgreSQL is authoritative for identity, ownership, metadata, structures, job
 state, exact calculation inputs, results, frontend artifacts, and archive
-availability. When enabled, S3 stores only job ZIP archives. Alliance job
+availability. When enabled, the selected object-storage service stores only job ZIP archives. Alliance job
 directories are temporary working storage created from a submission request
 and removed after the backend saves the returned result and acknowledges
 cleanup.
@@ -117,17 +117,18 @@ After creation, three processes use the job row as a durable queue:
 3. The status reconciler requests allocation states in batches and stores the
    public status and runtime.
 4. Terminal Slurm outcomes enter the internal `finalising` state.
-5. The finalisation reconciler sends one fresh S3 PUT URL only when the global
-   archive switch is enabled and the job requested an archive. Otherwise it
-   sends JSON null.
+5. The finalisation reconciler reads the storage service saved when the job was
+   created and sends one fresh presigned PUT URL only when the global archive
+   switch is enabled and the job requested an archive. Otherwise it sends JSON
+   null.
 6. The cluster optionally uploads the ZIP and always returns parsed results and
    frontend artifacts through SSH stdout. The backend saves that content and
    the archive outcome in PostgreSQL, makes the external terminal result
    available, and then acknowledges cluster cleanup.
    Scan jobs require the multi-frame `scan.xyz` artifact.
 7. Job endpoints return state, results, and artifacts from PostgreSQL. The
-   archive endpoint authorizes the caller and creates the only presigned S3
-   download URL.
+   archive endpoint authorizes the caller and creates a presigned download URL
+   from that same saved service.
 
 See [Job Orchestration](job-orchestration.md) for retries, cancellation, and
 recovery.
@@ -140,17 +141,26 @@ stored content and thumbnail. Structure text is limited to 4 MiB. Thumbnails
 are limited to 8 MiB and must have both the `image/png` media type and PNG file
 signature before the backend stores them.
 
-When enabled, S3 stores only the deterministic ZIP key below `S3_BUCKET_ROOT`:
+When enabled, AWS S3 or Garage stores only one deterministic ZIP per job:
 
 ```text
-{S3_BUCKET_ROOT}/archive/{job_id}.zip
+AWS S3: {S3_BUCKET_ROOT}/archive/{job_id}.zip
+Garage: {GARAGE_ARCHIVE_PREFIX}/{job_id}.zip
 ```
 
-The API and reconcilers use the same S3 bucket settings. AWS credentials are
-not copied into backend settings; boto3 uses its standard credential provider
-chain. With `ARCHIVE_UPLOAD_ENABLED=false` or `upload_archive=false`,
-finalisation does not instantiate an S3 client, create a URL, ZIP files, or
-perform an HTTP upload.
+`ARCHIVE_STORAGE_SERVICE` is copied onto each new job and is not changed later,
+so changing the deployment default cannot redirect an existing job. AWS
+credentials use boto3's standard credential provider chain; Garage has a
+separate explicit credential and endpoint profile. With
+`ARCHIVE_UPLOAD_ENABLED=false` or `upload_archive=false`, finalisation does not
+instantiate a storage client, create a URL, ZIP files, or perform an HTTP
+upload.
+
+The current Orcinus Garage proxy strips a routing prefix before Garage verifies
+the S3 signature. The Garage adapter therefore signs the short path Garage will
+receive and inserts `GARAGE_PROXY_PATH_PREFIX` afterward. The signing origin,
+encoded object path, and signing query are otherwise preserved. Set the prefix
+empty when the proxy is changed to forward the signed path unchanged.
 
 Presigned URLs are short-lived capabilities:
 
@@ -159,7 +169,7 @@ Presigned URLs are short-lived capabilities:
 - the archive endpoint creates a new GET URL for each download request; and
 - presigned URLs are never written to disk, stored in PostgreSQL, or logged.
 
-An archive can reach S3 before its matching database result is verified. If
+An archive can reach object storage before its matching database result is verified. If
 finalisation exhausts its attempts before saving that result, the backend does
 not expose the possibly uploaded ZIP. The archive becomes downloadable only
 after the matching result is validated and saved with

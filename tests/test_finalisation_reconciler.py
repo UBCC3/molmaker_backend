@@ -8,6 +8,7 @@ from conftest import TestingSessionLocal
 
 from asset_service import serialize_job, upsert_job_result
 from enum_types import (
+    ArchiveStorageService,
     ArchiveUploadStatus,
     CalculationType,
     JobFailureReason,
@@ -332,6 +333,36 @@ def test_returned_archive_unavailability_does_not_fail_the_job(
     client.acknowledge_finalisation.assert_called_once_with(job.job_id)
 
 
+def test_upload_url_uses_the_service_saved_on_the_job(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.upload_artifacts.return_value = completed_result()
+    generate = Mock(return_value="https://upload.test/garage-archive")
+    reconciler = make_reconciler(
+        client=client,
+        generate_upload_url=generate,
+    )
+    job = finalising_job(
+        job_factory,
+        archive_storage_service=ArchiveStorageService.garage.value,
+    )
+
+    reconciler.run_round()
+
+    generate.assert_called_once_with(
+        ArchiveStorageService.garage.value,
+        str(job.job_id),
+    )
+    client.upload_artifacts.assert_called_once()
+    assert (
+        client.upload_artifacts.call_args.kwargs["archive_upload_url"]
+        == "https://upload.test/garage-archive"
+    )
+
+
 def test_invalid_calculation_artifacts_are_not_saved_or_acknowledged(
     db,
     job_factory,
@@ -386,8 +417,8 @@ def test_each_retry_uses_a_fresh_archive_url_and_stays_publicly_running(
     assert published.status == JobStatus.completed.value
     assert published.attempt_count == 0
     assert generate.call_args_list == [
-        call(str(job.job_id)),
-        call(str(job.job_id)),
+        call(ArchiveStorageService.s3.value, str(job.job_id)),
+        call(ArchiveStorageService.s3.value, str(job.job_id)),
     ]
     assert [
         uploaded.kwargs["archive_upload_url"]

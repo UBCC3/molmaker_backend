@@ -29,7 +29,7 @@ from sqlalchemy.orm import (
 )
 
 from database import Base
-from enum_types import ArchiveUploadStatus
+from enum_types import ArchiveStorageService, ArchiveUploadStatus
 
 jobs_structures = Table(
     "jobs_structures",
@@ -157,6 +157,10 @@ class Job(Asset):
             "AND archive_uploaded = (archive_upload_status = 'uploaded')",
             name="ck_jobs_archive_upload_state",
         ),
+        CheckConstraint(
+            "archive_storage_service IN ('s3', 'garage')",
+            name="ck_jobs_archive_storage_service",
+        ),
         UniqueConstraint("slurm_id", name="uq_jobs_slurm_id"),
         Index(
             "idx_jobs_user_active_submitted", "user_sub", "is_deleted", "submitted_at"
@@ -207,6 +211,12 @@ class Job(Asset):
         nullable=False,
         default=ArchiveUploadStatus.pending.value,
         server_default=text("'pending'"),
+    )
+    archive_storage_service = Column(
+        String,
+        nullable=False,
+        default=ArchiveStorageService.s3.value,
+        server_default=text("'s3'"),
     )
     attempt_count = Column(
         Integer,

@@ -9,6 +9,7 @@ import orchestration.status_reconciler as status_module
 import orchestration.submission_reconciler as submission_module
 import settings as settings_module
 import storage
+from enum_types import ArchiveStorageService
 from main import create_app
 from orchestration.cluster_client import ClusterDispatchClient
 from orchestration.finalisation_reconciler import FinalisationReconciler
@@ -72,6 +73,100 @@ def test_archive_upload_switch_is_strict_and_defaults_to_enabled(monkeypatch):
 
     monkeypatch.setenv("ARCHIVE_UPLOAD_ENABLED", "yes")
     with pytest.raises(ValueError, match="ARCHIVE_UPLOAD_ENABLED"):
+        BackendSettings.from_env()
+
+
+def test_archive_storage_service_is_strict_and_defaults_to_s3(monkeypatch):
+    monkeypatch.delenv("ARCHIVE_STORAGE_SERVICE", raising=False)
+    assert (
+        BackendSettings.from_env().archive_storage_service == ArchiveStorageService.s3
+    )
+
+    monkeypatch.setenv("ARCHIVE_STORAGE_SERVICE", "invalid")
+    with pytest.raises(ValueError, match="ARCHIVE_STORAGE_SERVICE"):
+        BackendSettings.from_env()
+
+
+def test_garage_service_requires_its_complete_configuration(monkeypatch):
+    garage_names = {
+        "GARAGE_REGION",
+        "GARAGE_BUCKET_NAME",
+        "GARAGE_ARCHIVE_PREFIX",
+        "GARAGE_ACCESS_KEY_ID",
+        "GARAGE_SECRET_ACCESS_KEY",
+        "GARAGE_SIGNING_ORIGIN",
+    }
+    monkeypatch.setenv("ARCHIVE_STORAGE_SERVICE", "garage")
+    for name in garage_names:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(EnvironmentError) as error:
+        BackendSettings.from_env()
+
+    assert all(name in str(error.value) for name in garage_names)
+
+
+def test_disabled_archive_upload_does_not_require_garage_credentials(monkeypatch):
+    monkeypatch.setenv("ARCHIVE_UPLOAD_ENABLED", "false")
+    monkeypatch.setenv("ARCHIVE_STORAGE_SERVICE", "garage")
+    for name in (
+        "GARAGE_REGION",
+        "GARAGE_BUCKET_NAME",
+        "GARAGE_ARCHIVE_PREFIX",
+        "GARAGE_ACCESS_KEY_ID",
+        "GARAGE_SECRET_ACCESS_KEY",
+        "GARAGE_SIGNING_ORIGIN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = BackendSettings.from_env()
+
+    assert settings.archive_upload_enabled is False
+    assert settings.archive_storage_service == ArchiveStorageService.garage
+
+
+def test_garage_service_loads_proxy_signing_configuration(monkeypatch):
+    values = {
+        "ARCHIVE_STORAGE_SERVICE": "garage",
+        "GARAGE_REGION": "orcinus",
+        "GARAGE_BUCKET_NAME": "ubchemica",
+        "GARAGE_ARCHIVE_PREFIX": "/archive/",
+        "GARAGE_ACCESS_KEY_ID": "garage-access",
+        "GARAGE_SECRET_ACCESS_KEY": "garage-secret",
+        "GARAGE_SIGNING_ORIGIN": "https://orcinus.westgrid.ca/",
+        "GARAGE_PROXY_PATH_PREFIX": "/ubchemica/chemica_studio/bucket",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    settings = BackendSettings.from_env()
+
+    assert settings.archive_storage_service == ArchiveStorageService.garage
+    assert settings.garage.region == "orcinus"
+    assert settings.garage.bucket_name == "ubchemica"
+    assert settings.garage.archive_prefix == "archive"
+    assert settings.garage.access_key_id == "garage-access"
+    assert settings.garage.secret_access_key == "garage-secret"
+    assert settings.garage.signing_origin == "https://orcinus.westgrid.ca"
+    assert settings.garage.proxy_path_prefix == "/ubchemica/chemica_studio/bucket"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GARAGE_SIGNING_ORIGIN", "http://orcinus.westgrid.ca"),
+        (
+            "GARAGE_SIGNING_ORIGIN",
+            "https://orcinus.westgrid.ca/unsigned-prefix",
+        ),
+        ("GARAGE_PROXY_PATH_PREFIX", "relative/prefix"),
+        ("GARAGE_PROXY_PATH_PREFIX", "/prefix/"),
+    ],
+)
+def test_garage_url_configuration_is_validated(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
         BackendSettings.from_env()
 
 
@@ -230,7 +325,7 @@ def test_archive_storage_uses_the_configured_bucket_and_region(monkeypatch):
 
     monkeypatch.setattr(storage.boto3, "client", client)
 
-    storage.presign_zip_download_url("job-123")
+    storage.presign_zip_download_url(ArchiveStorageService.s3, "job-123")
 
     service_name, client_options = calls[0]
     assert service_name == "s3"

@@ -7,9 +7,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
+
+from enum_types import ArchiveStorageService
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
@@ -34,6 +37,7 @@ ORCHESTRATION_DEFAULTS = {
 APPLICATION_DEFAULTS = {
     "ALGORITHMS": "RS256",
     "ARCHIVE_UPLOAD_ENABLED": "true",
+    "ARCHIVE_STORAGE_SERVICE": ArchiveStorageService.s3.value,
     "S3_BUCKET_NAME": "ubchemica-bucket-1",
     "S3_REGION": "ca-central-1",
     "S3_BUCKET_ROOT": "ubchemica",
@@ -56,6 +60,13 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
         "AUTH0_CLIENT_SECRET",
         "CLUSTER_SSH_HOST",
         "CLUSTER_DISPATCH_PATH",
+        "GARAGE_REGION",
+        "GARAGE_BUCKET_NAME",
+        "GARAGE_ARCHIVE_PREFIX",
+        "GARAGE_ACCESS_KEY_ID",
+        "GARAGE_SECRET_ACCESS_KEY",
+        "GARAGE_SIGNING_ORIGIN",
+        "GARAGE_PROXY_PATH_PREFIX",
         *APPLICATION_DEFAULTS,
         *CALCULATION_DEFAULTS,
         *ORCHESTRATION_DEFAULTS,
@@ -117,6 +128,64 @@ def _text_with_default(name: str) -> str:
     if not value:
         raise ValueError(f"{name} must not be empty")
     return value
+
+
+def _archive_storage_service() -> ArchiveStorageService:
+    value = _text_with_default("ARCHIVE_STORAGE_SERVICE").lower()
+    try:
+        return ArchiveStorageService(value)
+    except ValueError as error:
+        choices = ", ".join(service.value for service in ArchiveStorageService)
+        raise ValueError(
+            f"ARCHIVE_STORAGE_SERVICE must be one of: {choices}"
+        ) from error
+
+
+def _garage_signing_origin() -> str | None:
+    value = _optional_text("GARAGE_SIGNING_ORIGIN")
+    if value is None:
+        return None
+
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("GARAGE_SIGNING_ORIGIN must be an HTTPS origin")
+    return f"https://{parsed.netloc}"
+
+
+def _garage_proxy_path_prefix() -> str:
+    value = _optional_text("GARAGE_PROXY_PATH_PREFIX")
+    if value is None:
+        return ""
+    if (
+        not value.startswith("/")
+        or value.endswith("/")
+        or "//" in value
+        or "?" in value
+        or "#" in value
+        or "\x00" in value
+    ):
+        raise ValueError(
+            "GARAGE_PROXY_PATH_PREFIX must be empty or a normalized absolute path"
+        )
+    return value
+
+
+def _garage_archive_prefix() -> str | None:
+    value = _optional_text("GARAGE_ARCHIVE_PREFIX")
+    if value is None:
+        return None
+    prefix = value.strip("/")
+    if not prefix or "//" in prefix or "\x00" in prefix:
+        raise ValueError("GARAGE_ARCHIVE_PREFIX is invalid")
+    return prefix
 
 
 def _boolean(name: str, default: str) -> bool:
@@ -215,6 +284,30 @@ class OrchestrationSettings:
 
 
 @dataclass(frozen=True)
+class GarageStorageSettings:
+    region: str | None
+    bucket_name: str | None
+    archive_prefix: str | None
+    access_key_id: str | None
+    secret_access_key: str | None
+    signing_origin: str | None
+    proxy_path_prefix: str
+
+    def require(self) -> "GarageStorageSettings":
+        _required(
+            {
+                "GARAGE_REGION": self.region,
+                "GARAGE_BUCKET_NAME": self.bucket_name,
+                "GARAGE_ARCHIVE_PREFIX": self.archive_prefix,
+                "GARAGE_ACCESS_KEY_ID": self.access_key_id,
+                "GARAGE_SECRET_ACCESS_KEY": self.secret_access_key,
+                "GARAGE_SIGNING_ORIGIN": self.signing_origin,
+            }
+        )
+        return self
+
+
+@dataclass(frozen=True)
 class BackendSettings:
     database_user: str | None
     database_password: str | None
@@ -227,9 +320,11 @@ class BackendSettings:
     auth0_client_id: str | None
     auth0_client_secret: str | None
     archive_upload_enabled: bool
+    archive_storage_service: ArchiveStorageService
     s3_bucket_name: str
     s3_region: str
     s3_bucket_root: str
+    garage: GarageStorageSettings
     max_scan_points: int
     orchestration: OrchestrationSettings
 
@@ -327,7 +422,7 @@ class BackendSettings:
                 f"STATUS_BATCH_SIZE must not exceed {MAX_STATUS_BATCH_SIZE}"
             )
 
-        return cls(
+        settings = cls(
             database_user=_optional_text("DATABASE_USER"),
             database_password=_optional_secret("DATABASE_PASSWORD"),
             database_host=_optional_text("DATABASE_HOST"),
@@ -342,12 +437,28 @@ class BackendSettings:
                 "ARCHIVE_UPLOAD_ENABLED",
                 APPLICATION_DEFAULTS["ARCHIVE_UPLOAD_ENABLED"],
             ),
+            archive_storage_service=_archive_storage_service(),
             s3_bucket_name=_text_with_default("S3_BUCKET_NAME"),
             s3_region=_text_with_default("S3_REGION"),
             s3_bucket_root=s3_bucket_root,
+            garage=GarageStorageSettings(
+                region=_optional_text("GARAGE_REGION"),
+                bucket_name=_optional_text("GARAGE_BUCKET_NAME"),
+                archive_prefix=_garage_archive_prefix(),
+                access_key_id=_optional_text("GARAGE_ACCESS_KEY_ID"),
+                secret_access_key=_optional_secret("GARAGE_SECRET_ACCESS_KEY"),
+                signing_origin=_garage_signing_origin(),
+                proxy_path_prefix=_garage_proxy_path_prefix(),
+            ),
             max_scan_points=max_scan_points,
             orchestration=orchestration,
         )
+        if (
+            settings.archive_upload_enabled
+            and settings.archive_storage_service == ArchiveStorageService.garage
+        ):
+            settings.garage.require()
+        return settings
 
     def database_url(self) -> str:
         values = {

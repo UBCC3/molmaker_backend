@@ -6,6 +6,7 @@ import pytest
 from conftest import make_auth0_payload
 
 import storage
+from enum_types import ArchiveStorageService
 from models import Job, JobInput, Tags
 from settings import get_settings
 
@@ -220,6 +221,7 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert job.cancel_requested is False
     assert job.is_uploaded is False
     assert job.archive_upload_requested is False
+    assert job.archive_storage_service == ArchiveStorageService.s3.value
     assert job.is_deleted is False
     assert job.is_public is False
     assert job.user_sub == user.user_sub
@@ -229,6 +231,39 @@ def test_custom_submission_persists_inputs_without_external_orchestration(
     assert job.job_input.input_xyz == "custom xyz input"
     assert job.job_input.keywords == {"scf": "tight"}
     assert db.query(Tags).filter_by(user_sub=user.user_sub, name="new").count() == 1
+
+
+def test_new_job_captures_the_configured_archive_storage_service(
+    client,
+    db,
+    monkeypatch,
+    user_factory,
+):
+    _forbid_cluster_and_upload_url_calls(monkeypatch)
+    garage_values = {
+        "ARCHIVE_STORAGE_SERVICE": "garage",
+        "GARAGE_REGION": "orcinus",
+        "GARAGE_BUCKET_NAME": "ubchemica",
+        "GARAGE_ARCHIVE_PREFIX": "archive",
+        "GARAGE_ACCESS_KEY_ID": "garage-access",
+        "GARAGE_SECRET_ACCESS_KEY": "garage-secret",
+        "GARAGE_SIGNING_ORIGIN": "https://orcinus.westgrid.ca",
+        "GARAGE_PROXY_PATH_PREFIX": "/ubchemica/chemica_studio/bucket",
+    }
+    for name, value in garage_values.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    user_factory(user_sub="auth0|testuser")
+
+    response = client.post(
+        "/calculation/custom",
+        data=_custom_data(),
+        files={"file": ("input.xyz", b"garage job", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
+    job = db.get(Job, uuid.UUID(response.json()["job_id"]))
+    assert job.archive_storage_service == ArchiveStorageService.garage.value
 
 
 def test_standard_submission_uses_workflow_defaults(

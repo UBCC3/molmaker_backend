@@ -41,6 +41,11 @@ class ArchiveUploadStatus(str, Enum):
     unavailable = "unavailable"
 
 
+class ArchiveStorageService(str, Enum):
+    s3 = "s3"
+    garage = "garage"
+
+
 class AssetOwnership(str, Enum):
     user = "user"
     group = "group"

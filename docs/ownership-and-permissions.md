@@ -185,7 +185,7 @@ Permission to read a job also controls access to its related data:
 
 - parsed results and retained frontend artifacts from the `/jobs/{job_id}`
   result and artifact endpoints; and
-- the optional S3 archive link from `GET /storage/jobs/{job_id}/archive`.
+- the optional archive link from `GET /storage/jobs/{job_id}/archive`.
 
 An endpoint that exposes new job files or results must use the same job read
 permission. Checking only that the caller is authenticated is not enough.
