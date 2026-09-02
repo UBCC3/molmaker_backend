@@ -274,6 +274,7 @@ def create_calculation_job(
             )
 
     job_id = uuid.uuid4()
+    archive_storage_service = get_settings().archive_storage_service
     job = Job(
         job_id=job_id,
         job_name=normalized_job_name,
@@ -295,6 +296,7 @@ def create_calculation_job(
         archive_upload_requested=upload_archive,
         archive_uploaded=False,
         archive_upload_status=ArchiveUploadStatus.pending.value,
+        archive_storage_service=archive_storage_service.value,
         attempt_count=0,
         cancel_requested=False,
     )

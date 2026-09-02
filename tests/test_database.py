@@ -33,6 +33,7 @@ def test_init_db_creates_the_current_schema(db, monkeypatch):
     assert job_columns["archive_upload_requested"]["nullable"] is False
     assert job_columns["archive_uploaded"]["nullable"] is False
     assert job_columns["archive_upload_status"]["nullable"] is False
+    assert job_columns["archive_storage_service"]["nullable"] is False
 
 
 def test_database_module_entrypoint_creates_the_current_schema():

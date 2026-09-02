@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from auth import verify_token
 from database import Base
 from dependencies import get_db
-from enum_types import ArchiveUploadStatus, JobStatus
+from enum_types import ArchiveStorageService, ArchiveUploadStatus, JobStatus
 from main import create_app
 from models import Group, Job, JobInput, JobResult, Request, Structure, Tags, User
 from settings import get_settings
@@ -284,6 +284,7 @@ def job_factory(db):
             "archive_upload_requested": True,
             "archive_uploaded": False,
             "archive_upload_status": ArchiveUploadStatus.pending.value,
+            "archive_storage_service": ArchiveStorageService.s3.value,
             "attempt_count": 0,
             "cancel_requested": False,
         }

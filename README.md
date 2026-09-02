@@ -8,7 +8,7 @@ calculation results.
 
 - [Backend data flow](docs/backend-data-flow.md) explains how requests move
   through authentication, services, PostgreSQL, the reconcilers, Alliance, and
-  S3.
+  archive storage.
 - [Job orchestration](docs/job-orchestration.md) explains job statuses, the
   three reconcilers, cluster dispatch, retries, and recovery.
 - [Ownership and permissions](docs/ownership-and-permissions.md) explains asset
@@ -106,12 +106,21 @@ when it is unset, the repository `.env` is loaded if present. Process
 environment values take precedence over file values. `BACKEND_ENV_FILE` cannot
 be placed inside the file it selects.
 
-AWS credentials are loaded through boto3's standard credential provider chain
-rather than stored in backend-specific settings. New archive uploads do not
-need AWS credentials when `ARCHIVE_UPLOAD_ENABLED=false`. This setting is the
-deployment-wide master switch. Each calculation submission may also set the
-optional multipart field `upload_archive=false`; it defaults to `true`, but
-cannot override a disabled master switch.
+`ARCHIVE_STORAGE_SERVICE` selects `s3` or `garage` for each newly created job;
+the saved value remains fixed for that job's later upload and download. AWS
+credentials use boto3's standard credential provider chain. Garage uses its
+explicit access key, secret, region, bucket, signing origin, and archive prefix
+settings. Keep both services configured while jobs for both services exist.
+
+`ARCHIVE_UPLOAD_ENABLED` is the deployment-wide master switch. Each calculation
+submission may also set the optional multipart field `upload_archive=false`;
+it defaults to `true`, but cannot override a disabled master switch. Disabled
+uploads do not create a storage client or presigned URL.
+
+While Garage remains mounted below an Orcinus proxy path, the backend signs the
+short S3 path that Garage verifies and then inserts `GARAGE_PROXY_PATH_PREFIX`
+into the returned URL. Configure an empty prefix after the proxy exposes a
+dedicated Garage hostname or forwards the signed S3 path unchanged.
 
 Settings are loaded once and cached separately by the API and each reconciler
 process. Restart those processes after changing their environment configuration.
@@ -221,11 +230,11 @@ sudo journalctl -u molmaker-reconciler@status.service -f
 
 When diagnosing one job, inspect its saved status, attempt count, failure
 fields, and Slurm ID. If many jobs pause together, first check for a shared
-PostgreSQL, SSH, Slurm, or, when archive upload is enabled, S3 outage.
+PostgreSQL, SSH, Slurm, or, when archive upload is enabled, storage outage.
 
 Restarting a reconciler is safe because PostgreSQL retains the job state and
-calculation inputs, while cluster job directories and S3 artifacts use stable
-job-specific names.
+calculation inputs, while cluster job directories and archive objects use
+stable job-specific names.
 
 ## Tests
 

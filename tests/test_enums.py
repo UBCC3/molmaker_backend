@@ -1,4 +1,5 @@
 from enum_types import (
+    ArchiveStorageService,
     ArchiveUploadStatus,
     CalculationType,
     JobFailureReason,
@@ -18,6 +19,13 @@ def test_archive_upload_status_values_match_the_database_contract():
         "disabled",
         "uploaded",
         "unavailable",
+    }
+
+
+def test_archive_storage_service_values_match_the_database_contract():
+    assert {service.value for service in ArchiveStorageService} == {
+        "s3",
+        "garage",
     }
 
 

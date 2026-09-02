@@ -18,6 +18,7 @@ from asset_service import (
 )
 from database import get_session_local
 from enum_types import (
+    ArchiveStorageService,
     ArchiveUploadStatus,
     CalculationType,
     JobFailureReason,
@@ -61,7 +62,9 @@ class FinalisationReconciler(BaseReconciler):
     cluster_client: ClusterDispatchClient
     settings: OrchestrationSettings
     archive_upload_enabled: bool
-    generate_upload_url: Callable[[str], str] = generate_archive_upload_url
+    generate_upload_url: Callable[[str | ArchiveStorageService, str], str] = (
+        generate_archive_upload_url
+    )
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
 
@@ -110,7 +113,10 @@ class FinalisationReconciler(BaseReconciler):
         if job.job_result is None:
             archive_upload_url = None
             if self.archive_upload_enabled and job.archive_upload_requested:
-                archive_upload_url = self.generate_upload_url(str(job.job_id))
+                archive_upload_url = self.generate_upload_url(
+                    job.archive_storage_service,
+                    str(job.job_id),
+                )
             try:
                 result = self._upload_artifacts(
                     job,

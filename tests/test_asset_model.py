@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
+from enum_types import ArchiveStorageService
 from models import Asset, Job, JobResult, Request, Structure, Tags
 
 
@@ -72,6 +73,7 @@ class TestAssetModel:
         assert job.archive_upload_requested is True
         assert job.archive_uploaded is False
         assert job.archive_upload_status == "pending"
+        assert job.archive_storage_service == ArchiveStorageService.s3.value
 
     def test_archive_upload_fields_must_remain_consistent(
         self,
@@ -86,6 +88,18 @@ class TestAssetModel:
                 archive_uploaded=True,
                 archive_upload_status="unavailable",
             )
+        db.rollback()
+
+    def test_archive_storage_service_is_constrained(
+        self,
+        db,
+        user_factory,
+        job_factory,
+    ):
+        user_factory(user_sub="auth0|testuser")
+
+        with pytest.raises(IntegrityError):
+            job_factory(archive_storage_service="unsupported")
         db.rollback()
 
     def test_job_has_partial_active_orchestration_index(self):

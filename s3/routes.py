@@ -77,7 +77,10 @@ def get_job_archive(
     _require_job_archive_ready(job)
 
     try:
-        url = presign_zip_download_url(str(job.job_id))
+        url = presign_zip_download_url(
+            job.archive_storage_service,
+            str(job.job_id),
+        )
     except StorageServiceError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

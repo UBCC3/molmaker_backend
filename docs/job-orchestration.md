@@ -107,8 +107,9 @@ terminal.
 `ARCHIVE_UPLOAD_ENABLED` is the deployment-wide master switch. Each submission
 also accepts optional multipart field `upload_archive`, which defaults to
 `true` and is saved with the job. The finalisation reconciler creates one fresh
-presigned PUT URL only when both values are true. Otherwise it does not create
-an S3 client or URL and sends JSON null. The cluster always returns parsed
+presigned PUT URL only when both values are true. The job's immutable
+`archive_storage_service` selects AWS S3 or Garage. Otherwise the reconciler
+does not create a storage client or URL and sends JSON null. The cluster always returns parsed
 result/error data and required frontend artifacts through SSH stdout. It
 creates and uploads the ZIP only when it receives a URL.
 
@@ -144,13 +145,13 @@ job becomes `failed` with `result_upload_failed`. The backend does not expose a
 possibly uploaded ZIP from that incomplete attempt because no verified result
 was saved. Disabling archive upload does not change a job's completed, failed,
 or cancelled calculation outcome. Result and artifact endpoints remain
-available, while the archive endpoint returns `409` without contacting S3.
+available, while the archive endpoint returns `409` without contacting storage.
 
 ## Retries, Outages, and Cancellation
 
 - A job-specific retryable failure increments that job's `attempt_count`; a
   successful stage resets it. Invalid job data can fail immediately.
-- A shared PostgreSQL, SSH, Slurm, or enabled-S3 failure stops the round without
+- A shared PostgreSQL, SSH, Slurm, or enabled-storage failure stops the round without
   consuming attempts for every affected job. The process exponentially backs
   off up to the configured maximum and resets after recovery.
 - Polling intervals are measured from the start of one round to the next, and

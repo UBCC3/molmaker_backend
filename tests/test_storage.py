@@ -6,81 +6,161 @@ from botocore.exceptions import EndpointConnectionError
 from conftest import make_auth0_payload
 
 import storage
-from enum_types import ArchiveUploadStatus, JobStatus
-from settings import get_settings
+from enum_types import ArchiveStorageService, ArchiveUploadStatus, JobStatus
 
 
-def _url(prefix, key):
-    return f"{prefix}:{key}"
-
-
-@pytest.fixture
-def mock_get_urls(monkeypatch):
-    calls = []
-
-    def fake_generate_presigned_get_url(key):
-        calls.append(key)
-        return _url("get", key)
-
-    monkeypatch.setattr(
-        storage,
-        "_generate_presigned_get_url",
-        fake_generate_presigned_get_url,
-    )
-    return calls
+def _set_garage_environment(monkeypatch, *, proxy_path=True):
+    values = {
+        "GARAGE_REGION": "orcinus",
+        "GARAGE_BUCKET_NAME": "ubchemica",
+        "GARAGE_ARCHIVE_PREFIX": "archive",
+        "GARAGE_ACCESS_KEY_ID": "garage-access",
+        "GARAGE_SECRET_ACCESS_KEY": "garage-secret",
+        "GARAGE_SIGNING_ORIGIN": "https://orcinus.westgrid.ca",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    if proxy_path:
+        monkeypatch.setenv(
+            "GARAGE_PROXY_PATH_PREFIX",
+            "/ubchemica/chemica_studio/bucket",
+        )
+    else:
+        monkeypatch.delenv("GARAGE_PROXY_PATH_PREFIX", raising=False)
 
 
 class TestArchiveStorage:
-    def test_archive_upload_url_uses_one_deterministic_key(self, monkeypatch):
+    def test_s3_archive_uses_existing_bucket_key_and_credentials(self, monkeypatch):
         calls = []
 
-        def generate(key):
-            calls.append(key)
-            return f"attempt-{len(calls)}:{key}"
+        class S3:
+            def generate_presigned_url(self, **kwargs):
+                calls.append(kwargs)
+                return "https://s3.example/archive"
 
-        monkeypatch.setattr(storage, "_generate_presigned_put_url", generate)
+        def client(service_name, **kwargs):
+            calls.append((service_name, kwargs))
+            return S3()
 
-        first = storage.generate_archive_upload_url("job-123")
-        second = storage.generate_archive_upload_url("job-123")
+        monkeypatch.setenv("S3_BUCKET_NAME", "shared-bucket")
+        monkeypatch.setenv("S3_BUCKET_ROOT", "ubchemica")
+        monkeypatch.setenv("S3_REGION", "ca-central-1")
+        monkeypatch.setattr(storage.boto3, "client", client)
 
-        archive_key = "ubchemica/archive/job-123.zip"
-        assert first == f"attempt-1:{archive_key}"
-        assert second == f"attempt-2:{archive_key}"
-        assert calls == [archive_key, archive_key]
+        result = storage.generate_archive_upload_url(
+            ArchiveStorageService.s3,
+            "job-123",
+        )
 
-    def test_archive_upload_presigning_failure_is_a_storage_error(
-        self,
-        monkeypatch,
+        assert result == "https://s3.example/archive"
+        service_name, options = calls[0]
+        assert service_name == "s3"
+        assert options["region_name"] == "ca-central-1"
+        assert options["config"].signature_version == "s3v4"
+        assert calls[1] == {
+            "ClientMethod": "put_object",
+            "Params": {
+                "Bucket": "shared-bucket",
+                "Key": "ubchemica/archive/job-123.zip",
+            },
+            "ExpiresIn": 3600,
+        }
+
+    def test_garage_archive_uses_path_style_and_external_proxy_route(self, monkeypatch):
+        _set_garage_environment(monkeypatch)
+        calls = []
+        signed_url = (
+            "https://orcinus.westgrid.ca/ubchemica/archive/job-123.zip"
+            "?X-Amz-Credential=garage%2Fcredential&X-Amz-Signature=secret"
+        )
+
+        class Garage:
+            def generate_presigned_url(self, **kwargs):
+                calls.append(kwargs)
+                return signed_url
+
+        def client(service_name, **kwargs):
+            calls.append((service_name, kwargs))
+            return Garage()
+
+        monkeypatch.setattr(storage.boto3, "client", client)
+
+        result = storage.generate_archive_upload_url("garage", "job-123")
+
+        assert result == signed_url.replace(
+            "/ubchemica/archive/",
+            "/ubchemica/chemica_studio/bucket/ubchemica/archive/",
+        )
+        service_name, options = calls[0]
+        assert service_name == "s3"
+        assert options["endpoint_url"] == "https://orcinus.westgrid.ca"
+        assert options["region_name"] == "orcinus"
+        assert options["aws_access_key_id"] == "garage-access"
+        assert options["aws_secret_access_key"] == "garage-secret"
+        assert options["config"].signature_version == "s3v4"
+        assert options["config"].s3["addressing_style"] == "path"
+        assert calls[1] == {
+            "ClientMethod": "put_object",
+            "Params": {
+                "Bucket": "ubchemica",
+                "Key": "archive/job-123.zip",
+            },
+            "ExpiresIn": 3600,
+        }
+
+    def test_garage_without_a_proxy_prefix_returns_the_signed_url(self, monkeypatch):
+        _set_garage_environment(monkeypatch, proxy_path=False)
+        signed_url = (
+            "https://orcinus.westgrid.ca/ubchemica/archive/job-123.zip"
+            "?X-Amz-Signature=secret"
+        )
+        client = type(
+            "Garage",
+            (),
+            {"generate_presigned_url": lambda _self, **_kwargs: signed_url},
+        )()
+        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: client)
+
+        assert storage.presign_zip_download_url("garage", "job-123") == signed_url
+
+    def test_proxy_rewrite_rejects_a_different_generated_origin(self, monkeypatch):
+        _set_garage_environment(monkeypatch)
+        client = type(
+            "Garage",
+            (),
+            {
+                "generate_presigned_url": lambda _self, **_kwargs: (
+                    "https://unexpected.example/ubchemica/archive/job.zip"
+                    "?X-Amz-Signature=secret"
+                )
+            },
+        )()
+        monkeypatch.setattr(storage.boto3, "client", lambda *_args, **_kwargs: client)
+
+        with pytest.raises(storage.StorageServiceError, match="invalid presigned URL"):
+            storage.presign_zip_download_url("garage", "job-123")
+
+    @pytest.mark.parametrize(
+        ("operation", "message"),
+        [
+            (storage.generate_archive_upload_url, "archive upload URL"),
+            (storage.presign_zip_download_url, "archive download URL"),
+        ],
+    )
+    def test_presigning_failure_is_a_storage_error(
+        self, monkeypatch, operation, message
     ):
-        def fail(_key):
+        def fail(*_args):
             raise EndpointConnectionError(endpoint_url="https://s3.example")
 
-        monkeypatch.setattr(storage, "_generate_presigned_put_url", fail)
+        monkeypatch.setattr(storage, "_generate_presigned_url", fail)
 
-        with pytest.raises(storage.StorageServiceError, match="archive upload URL"):
-            storage.generate_archive_upload_url("job-123")
+        with pytest.raises(storage.StorageServiceError, match=message):
+            operation("s3", "job-123")
 
-    def test_archive_download_uses_the_deterministic_key(
-        self,
-        mock_get_urls,
-    ):
-        result = storage.presign_zip_download_url("job-archive")
-
-        archive_key = f"{get_settings().s3_bucket_root}/archive/job-archive.zip"
-        assert result == _url("get", archive_key)
-        assert mock_get_urls == [archive_key]
-
-    def test_archive_download_presigning_failure_is_a_storage_error(
-        self,
-        monkeypatch,
-    ):
-        def fail(_key):
-            raise EndpointConnectionError(endpoint_url="https://s3.example")
-
-        monkeypatch.setattr(storage, "_generate_presigned_get_url", fail)
-
-        with pytest.raises(storage.StorageServiceError, match="archive download URL"):
-            storage.presign_zip_download_url("job-123")
+    def test_invalid_storage_service_is_rejected(self):
+        with pytest.raises(storage.StorageServiceError, match="service is invalid"):
+            storage.generate_archive_upload_url("unsupported", "job-123")
 
 
 class TestJobArchiveEndpoint:
@@ -88,8 +168,8 @@ class TestJobArchiveEndpoint:
     def mock_archive_url(self, monkeypatch):
         calls = []
 
-        def archive(job_id):
-            calls.append(job_id)
+        def archive(service, job_id):
+            calls.append((service, job_id))
             return f"https://example.test/{job_id}.zip"
 
         monkeypatch.setattr("s3.routes.presign_zip_download_url", archive)
@@ -282,7 +362,7 @@ class TestJobArchiveEndpoint:
             "job_id": str(job.job_id),
             "url": f"https://example.test/{job.job_id}.zip",
         }
-        assert mock_archive_url == [str(job.job_id)]
+        assert mock_archive_url == [("s3", str(job.job_id))]
 
     def test_archive_is_available_while_cluster_cleanup_is_pending(
         self,
@@ -305,6 +385,31 @@ class TestJobArchiveEndpoint:
         response = client.get(f"/storage/jobs/{job.job_id}/archive")
 
         assert response.status_code == 200
+
+    def test_archive_download_uses_the_service_saved_on_the_job(
+        self,
+        client,
+        user_factory,
+        job_factory,
+        job_result_factory,
+        mock_archive_url,
+    ):
+        user_factory(user_sub="auth0|testuser")
+        job = job_factory(
+            status=JobStatus.completed.value,
+            is_uploaded=True,
+            archive_uploaded=True,
+            archive_upload_status=ArchiveUploadStatus.uploaded.value,
+            archive_storage_service=ArchiveStorageService.garage.value,
+        )
+        job_result_factory(job=job)
+
+        response = client.get(f"/storage/jobs/{job.job_id}/archive")
+
+        assert response.status_code == 200
+        assert mock_archive_url == [
+            (ArchiveStorageService.garage.value, str(job.job_id))
+        ]
 
     def test_presigning_failure_returns_503(
         self,
