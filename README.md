@@ -269,8 +269,20 @@ python -m pre_commit run --all-files
 
 ## Database Schema
 
-The SQLAlchemy models are the authoritative schema. This change assumes the
-database will be reset rather than migrated. Stop the API and reconcilers,
-recreate the empty database using the deployment procedure, and run
-`python -m database` before restarting them. No data migration or backfill is
-included.
+The SQLAlchemy models are the authoritative schema. For a fresh database, run
+`python -m database` as part of the deployment procedure.
+
+For a database created before archive-provider selection was added, stop the
+API and reconciler services and apply the migration before starting the new
+code:
+
+```zsh
+psql "<database-url>" --set ON_ERROR_STOP=1 --single-transaction \
+  --file migrations/20260902_add_archive_storage_service.sql
+```
+
+The migration preserves existing jobs and assigns their archive storage
+service to Garage. This does not claim that an archive exists: availability
+continues to be controlled independently by `archive_uploaded` and
+`archive_upload_status`. The migration is safe to run again if deployment is
+interrupted.
