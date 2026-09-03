@@ -6,6 +6,7 @@ import pytest
 from conftest import make_auth0_payload
 
 import storage
+from calculation.job_creation_service import JOB_SUBMISSION_FORBIDDEN_DETAIL
 from enum_types import ArchiveStorageService
 from models import Job, JobInput, Tags
 from settings import get_settings
@@ -144,6 +145,101 @@ def test_calculation_endpoints_reject_unsupported_multiplicity(
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "contents"),
+    [
+        ("/calculation/custom", _custom_data(), b"custom xyz input"),
+        (
+            "/calculation/workflow/standard_analysis",
+            _standard_data(),
+            b"standard xyz input",
+        ),
+        (
+            "/calculation/workflow/bond_angle_scan",
+            _scan_data(),
+            VALID_XYZ.encode(),
+        ),
+    ],
+)
+def test_restricted_submission_rejects_non_group_members(
+    client,
+    db,
+    monkeypatch,
+    user_factory,
+    path,
+    data,
+    contents,
+):
+    monkeypatch.setenv("RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS", "true")
+    get_settings.cache_clear()
+    user_factory(user_sub="auth0|testuser")
+
+    response = client.post(
+        path,
+        data=data,
+        files={"file": ("input.xyz", contents, "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": JOB_SUBMISSION_FORBIDDEN_DETAIL}
+    assert db.query(Job).count() == 0
+
+
+def test_restricted_submission_allows_group_members(
+    client,
+    monkeypatch,
+    group_factory,
+    user_factory,
+):
+    monkeypatch.setenv("RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS", "true")
+    get_settings.cache_clear()
+    user_factory(group=group_factory(), user_sub="auth0|testuser")
+
+    response = client.post(
+        "/calculation/workflow/standard_analysis",
+        data=_standard_data(),
+        files={"file": ("input.xyz", b"group job", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
+
+
+def test_restricted_submission_allows_overall_admins(
+    client,
+    monkeypatch,
+    user_factory,
+):
+    monkeypatch.setenv("RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS", "true")
+    get_settings.cache_clear()
+    user_factory(user_sub="auth0|testuser", role="admin")
+
+    response = client.post(
+        "/calculation/workflow/standard_analysis",
+        data=_standard_data(),
+        files={"file": ("input.xyz", b"admin job", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
+
+
+def test_disabled_submission_restriction_allows_non_group_members(
+    client,
+    monkeypatch,
+    user_factory,
+):
+    monkeypatch.setenv("RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS", "false")
+    get_settings.cache_clear()
+    user_factory(user_sub="auth0|testuser")
+
+    response = client.post(
+        "/calculation/workflow/standard_analysis",
+        data=_standard_data(),
+        files={"file": ("input.xyz", b"individual job", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
 
 
 def test_custom_submission_persists_inputs_without_external_orchestration(

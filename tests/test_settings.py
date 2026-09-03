@@ -76,6 +76,19 @@ def test_archive_upload_switch_is_strict_and_defaults_to_enabled(monkeypatch):
         BackendSettings.from_env()
 
 
+def test_job_submission_restriction_is_strict_and_defaults_to_disabled(monkeypatch):
+    name = "RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS"
+    monkeypatch.delenv(name, raising=False)
+    assert BackendSettings.from_env().restrict_job_submission_to_group_members is False
+
+    monkeypatch.setenv(name, "true")
+    assert BackendSettings.from_env().restrict_job_submission_to_group_members is True
+
+    monkeypatch.setenv(name, "yes")
+    with pytest.raises(ValueError, match=name):
+        BackendSettings.from_env()
+
+
 def test_archive_storage_service_is_strict_and_defaults_to_s3(monkeypatch):
     monkeypatch.delenv("ARCHIVE_STORAGE_SERVICE", raising=False)
     assert (

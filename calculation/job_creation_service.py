@@ -11,7 +11,7 @@ from asset_service import get_asset_or_404, set_asset_tags
 from calculation.scan_spec import ScanSpecValidationError, validate_scan_spec
 from enum_types import ArchiveUploadStatus, CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
-from permissions import can_read_asset
+from permissions import can_read_asset, is_admin
 from settings import get_settings
 from utils import commit_or_rollback, read_bounded_upload
 
@@ -22,6 +22,23 @@ SCAN_WORKFLOW_METHOD = "ccsd(t)"
 SCAN_WORKFLOW_BASIS_SET = STANDARD_ANALYSIS_BASIS_SET
 MAX_INPUT_XYZ_BYTES = 4 * 1024 * 1024
 MAX_KEYWORDS_BYTES = 256 * 1024
+JOB_SUBMISSION_FORBIDDEN_DETAIL = (
+    "Job submission is limited to users who belong to a group. "
+    "Please join a group or contact an administrator."
+)
+
+
+def _require_job_submission_permission(user: User) -> None:
+    settings = get_settings()
+    if (
+        settings.restrict_job_submission_to_group_members
+        and user.group_id is None
+        and not is_admin(user)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=JOB_SUBMISSION_FORBIDDEN_DETAIL,
+        )
 
 
 def _normalized_required_text(value: str, field_name: str) -> str:
@@ -201,6 +218,8 @@ def create_calculation_job(
     Save immutable calculation inputs and a submitting job together.
     No cluster submission or result-upload URL generation occurs here.
     """
+    _require_job_submission_permission(user)
+
     # Validate and normalize the request.
     normalized_job_name = _normalized_required_text(job_name, "job_name")
     normalized_method = _normalized_required_text(method, "method")

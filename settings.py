@@ -38,6 +38,7 @@ APPLICATION_DEFAULTS = {
     "ALGORITHMS": "RS256",
     "ARCHIVE_UPLOAD_ENABLED": "true",
     "ARCHIVE_STORAGE_SERVICE": ArchiveStorageService.s3.value,
+    "RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS": "false",
     "S3_BUCKET_NAME": "ubchemica-bucket-1",
     "S3_REGION": "ca-central-1",
     "S3_BUCKET_ROOT": "ubchemica",
@@ -319,6 +320,7 @@ class BackendSettings:
     algorithms: tuple[str, ...]
     auth0_client_id: str | None
     auth0_client_secret: str | None
+    restrict_job_submission_to_group_members: bool
     archive_upload_enabled: bool
     archive_storage_service: ArchiveStorageService
     s3_bucket_name: str
@@ -433,6 +435,10 @@ class BackendSettings:
             algorithms=algorithms,
             auth0_client_id=_optional_text("AUTH0_CLIENT_ID"),
             auth0_client_secret=_optional_secret("AUTH0_CLIENT_SECRET"),
+            restrict_job_submission_to_group_members=_boolean(
+                "RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS",
+                APPLICATION_DEFAULTS["RESTRICT_JOB_SUBMISSION_TO_GROUP_MEMBERS"],
+            ),
             archive_upload_enabled=_boolean(
                 "ARCHIVE_UPLOAD_ENABLED",
                 APPLICATION_DEFAULTS["ARCHIVE_UPLOAD_ENABLED"],
