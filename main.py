@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
 from admin.routes import router as admin_router
 from calculation.routes import router as calculation_router
@@ -14,7 +16,25 @@ from users.routes import router as user_router
 
 
 def create_app(create_tables: bool = False) -> FastAPI:
-    app = FastAPI()
+    app = FastAPI(
+        docs_url=None,
+        redoc_url=None,
+        servers=[{"url": "."}],
+    )
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url="openapi.json",
+            title=f"{app.title} - Swagger UI",
+        )
+
+    @app.get("/redoc", include_in_schema=False)
+    async def redoc() -> HTMLResponse:
+        return get_redoc_html(
+            openapi_url="openapi.json",
+            title=f"{app.title} - ReDoc",
+        )
 
     app.add_middleware(
         CORSMiddleware,
