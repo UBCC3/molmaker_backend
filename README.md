@@ -17,6 +17,8 @@ calculation results.
   requests, de-member requests, expiry, and history.
 - Swagger UI documents the available API endpoints and their request and response fields. After starting the backend, open
   [http://localhost:8000/docs](http://localhost:8000/docs).
+  Its schema and API server URLs are relative so the same page also works when
+  the backend is deployed below a reverse-proxy path prefix.
 
 ## Requirements
 

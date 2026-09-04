@@ -26,6 +26,18 @@ REPLACEMENT_OPERATIONS = {
 }
 
 
+def test_api_docs_use_proxy_relative_urls(client):
+    swagger = client.get("/docs")
+    redoc = client.get("/redoc")
+    schema = client.get("/openapi.json").json()
+
+    assert swagger.status_code == 200
+    assert "url: 'openapi.json'" in swagger.text
+    assert redoc.status_code == 200
+    assert 'spec-url="openapi.json"' in redoc.text
+    assert schema["servers"] == [{"url": "."}]
+
+
 def test_openapi_exposes_only_the_job_oriented_calculation_contract(client):
     schema = client.get("/openapi.json").json()
     paths = schema["paths"]
