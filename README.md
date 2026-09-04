@@ -127,10 +127,14 @@ dedicated Garage hostname or forwards the signed S3 path unchanged.
 Settings are loaded once and cached separately by the API and each reconciler
 process. Restart those processes after changing their environment configuration.
 
-`SLURM_JOB_TIME_LIMIT_MINUTES` and `SLURM_JOB_MEMORY_MB` control the resources
-the submission reconciler requests for each new Slurm job. The backend passes
-these integer values to cluster dispatch; they are not client API fields. Time
-may be 1–10,080 minutes and memory may be 256–262,144 MiB.
+`SLURM_JOB_TIME_LIMIT_MINUTES` and `SLURM_JOB_MEMORY_MB` are the defaults for
+new Slurm jobs. `SLURM_JOB_MIN_TIME_LIMIT_MINUTES`,
+`SLURM_JOB_MAX_TIME_LIMIT_MINUTES`, `SLURM_JOB_MIN_MEMORY_MB`, and
+`SLURM_JOB_MAX_MEMORY_MB` bound optional per-job overrides. Admins and group
+admins may send `time_limit_minutes` and `memory_mb` to any calculation
+submission endpoint; other users always receive the defaults. The effective
+values are saved with the job before asynchronous submission. Deployment bounds
+must remain within the dispatch protocol's 1–10,080 minutes and 256–262,144 MiB.
 
 ### 4. Start the API and reconcilers
 
@@ -274,17 +278,20 @@ python -m pre_commit run --all-files
 The SQLAlchemy models are the authoritative schema. For a fresh database, run
 `python -m database` as part of the deployment procedure.
 
-For a database created before archive-provider selection was added, stop the
-API and reconciler services and apply the migration before starting the new
-code:
+For a database created before newer job fields were added, stop the API and
+reconciler services and apply any unapplied scripts in `migrations/` before
+starting the new code.
 
 ```zsh
 psql "<database-url>" --set ON_ERROR_STOP=1 --single-transaction \
   --file migrations/20260902_add_archive_storage_service.sql
+psql "<database-url>" --set ON_ERROR_STOP=1 --single-transaction \
+  --file migrations/20260904_add_job_resource_settings.sql
 ```
 
-The migration preserves existing jobs and assigns their archive storage
+The archive migration preserves existing jobs and assigns their archive storage
 service to Garage. This does not claim that an archive exists: availability
 continues to be controlled independently by `archive_uploaded` and
-`archive_upload_status`. The migration is safe to run again if deployment is
-interrupted.
+`archive_upload_status`. The resource migration leaves older job inputs unset,
+so any queued legacy job uses the deployment defaults; new jobs always store a
+snapshot. Both migrations are safe to run again if deployment is interrupted.

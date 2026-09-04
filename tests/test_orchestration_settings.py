@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from settings import (
+    JOB_RESOURCE_LIMIT_DEFAULTS,
     ORCHESTRATION_DEFAULTS,
     BackendSettings,
     OrchestrationSettings,
@@ -12,6 +13,7 @@ SETTING_NAMES = tuple(ORCHESTRATION_DEFAULTS)
 ORCHESTRATION_ENVIRONMENT_NAMES = (
     "CLUSTER_SSH_HOST",
     "CLUSTER_DISPATCH_PATH",
+    *JOB_RESOURCE_LIMIT_DEFAULTS,
     *SETTING_NAMES,
 )
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +55,18 @@ def test_env_example_contains_every_orchestration_default():
     }
 
 
+def test_env_example_contains_every_job_resource_limit_default():
+    example_values = {}
+    for line in (PROJECT_ROOT / ".env.example").read_text().splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name in JOB_RESOURCE_LIMIT_DEFAULTS:
+            example_values[name] = value
+
+    assert example_values == {
+        name: str(default) for name, default in JOB_RESOURCE_LIMIT_DEFAULTS.items()
+    }
+
+
 def test_orchestration_settings_read_environment_overrides(monkeypatch):
     values = {name: position for position, name in enumerate(SETTING_NAMES, start=1)}
     values["SLURM_JOB_MEMORY_MB"] = 8192
@@ -74,6 +88,24 @@ def test_orchestration_settings_read_environment_overrides(monkeypatch):
     assert settings.slurm_job_memory_mb == 8192
     assert settings.slurm_command_timeout_seconds == 12
     assert settings.storage_operation_timeout_seconds == 13
+
+
+def test_job_resource_bounds_read_environment_overrides(monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_MIN_TIME_LIMIT_MINUTES", "5")
+    monkeypatch.setenv("SLURM_JOB_MAX_TIME_LIMIT_MINUTES", "600")
+    monkeypatch.setenv("SLURM_JOB_TIME_LIMIT_MINUTES", "30")
+    monkeypatch.setenv("SLURM_JOB_MIN_MEMORY_MB", "1024")
+    monkeypatch.setenv("SLURM_JOB_MAX_MEMORY_MB", "32768")
+    monkeypatch.setenv("SLURM_JOB_MEMORY_MB", "8192")
+
+    settings = BackendSettings.from_env().orchestration
+
+    assert settings.slurm_job_min_time_limit_minutes == 5
+    assert settings.slurm_job_max_time_limit_minutes == 600
+    assert settings.slurm_job_time_limit_minutes == 30
+    assert settings.slurm_job_min_memory_mb == 1024
+    assert settings.slurm_job_max_memory_mb == 32768
+    assert settings.slurm_job_memory_mb == 8192
 
 
 @pytest.mark.parametrize("invalid_value", ["not-a-number", "1.5"])
@@ -138,4 +170,86 @@ def test_slurm_job_resources_must_stay_within_dispatch_bounds(
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=f"{name} must be between"):
+        BackendSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SLURM_JOB_MIN_TIME_LIMIT_MINUTES", "0"),
+        ("SLURM_JOB_MAX_TIME_LIMIT_MINUTES", "10081"),
+        ("SLURM_JOB_MIN_MEMORY_MB", "255"),
+        ("SLURM_JOB_MAX_MEMORY_MB", "262145"),
+    ],
+)
+def test_configurable_resource_bounds_stay_within_dispatch_bounds(
+    monkeypatch,
+    name,
+    value,
+):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=f"{name} must be"):
+        BackendSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("lower_name", "lower", "upper_name", "upper"),
+    [
+        (
+            "SLURM_JOB_MIN_TIME_LIMIT_MINUTES",
+            "60",
+            "SLURM_JOB_MAX_TIME_LIMIT_MINUTES",
+            "30",
+        ),
+        (
+            "SLURM_JOB_MIN_MEMORY_MB",
+            "8192",
+            "SLURM_JOB_MAX_MEMORY_MB",
+            "4096",
+        ),
+    ],
+)
+def test_resource_minimum_cannot_exceed_maximum(
+    monkeypatch,
+    lower_name,
+    lower,
+    upper_name,
+    upper,
+):
+    monkeypatch.setenv(lower_name, lower)
+    monkeypatch.setenv(upper_name, upper)
+
+    with pytest.raises(ValueError, match=f"{lower_name} must be less than"):
+        BackendSettings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("default_name", "default", "bound_name", "bound"),
+    [
+        (
+            "SLURM_JOB_TIME_LIMIT_MINUTES",
+            "15",
+            "SLURM_JOB_MIN_TIME_LIMIT_MINUTES",
+            "30",
+        ),
+        (
+            "SLURM_JOB_MEMORY_MB",
+            "4096",
+            "SLURM_JOB_MAX_MEMORY_MB",
+            "2048",
+        ),
+    ],
+)
+def test_resource_default_must_be_inside_configured_bounds(
+    monkeypatch,
+    default_name,
+    default,
+    bound_name,
+    bound,
+):
+    monkeypatch.setenv(default_name, default)
+    monkeypatch.setenv(bound_name, bound)
+
+    with pytest.raises(ValueError, match=f"{default_name} must be between"):
         BackendSettings.from_env()

@@ -83,8 +83,10 @@ All calculation endpoints call `create_calculation_job`:
    preference, archive status `pending`, ownership, tags, and at most one
    linked source structure. The optional multipart field `upload_archive`
    defaults to `true`.
-6. Create the one-to-one `job_inputs` row with `input_xyz` and optional
-   `keywords`.
+6. Create the one-to-one `job_inputs` row with `input_xyz`, optional `keywords`,
+   and the effective Slurm time and memory request. Admins and group admins may
+   override either resource within the backend-configured range; omitted values
+   use the configured defaults.
 7. Commit the job, inputs, tags, and relationship together, then return
    `201 Created`.
 

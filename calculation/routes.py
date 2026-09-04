@@ -22,13 +22,40 @@ from calculation.job_creation_service import (
     create_calculation_job,
 )
 from calculation.scan_spec import ScanSpecValidationError, parse_scan_spec
+from calculation.schemas import JobResourceSettingsResponse
 from dependencies import get_db
 from enum_types import CalculationType
 from jobs.schemas import JobResponse
+from permissions import is_admin_or_group_admin
+from settings import get_settings
 from user_service import get_user_or_404
 from utils import get_user_sub
 
 router = APIRouter(prefix="/calculation", tags=["calculation"])
+
+
+@router.get("/resource-settings", response_model=JobResourceSettingsResponse)
+def get_job_resource_settings(
+    current_user=Depends(verify_token),
+    db: Session = Depends(get_db),
+):
+    """Return effective job-resource defaults, limits, and caller access."""
+
+    user = get_user_or_404(db, get_user_sub(current_user))
+    settings = get_settings().orchestration
+    return JobResourceSettingsResponse(
+        can_customize=is_admin_or_group_admin(user),
+        time_limit_minutes={
+            "default": settings.slurm_job_time_limit_minutes,
+            "minimum": settings.slurm_job_min_time_limit_minutes,
+            "maximum": settings.slurm_job_max_time_limit_minutes,
+        },
+        memory_mb={
+            "default": settings.slurm_job_memory_mb,
+            "minimum": settings.slurm_job_min_memory_mb,
+            "maximum": settings.slurm_job_max_memory_mb,
+        },
+    )
 
 
 @router.post(
@@ -50,6 +77,8 @@ def submit_custom_calculation(
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
     upload_archive: bool = Form(True),
+    time_limit_minutes: Optional[int] = Form(None),
+    memory_mb: Optional[int] = Form(None),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -74,6 +103,8 @@ def submit_custom_calculation(
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
     :param upload_archive: Whether to request a ZIP archive for this job.
+    :param time_limit_minutes: Optional admin-selected job runtime limit.
+    :param memory_mb: Optional admin-selected job memory in MiB.
     :return: The created job.
     """
     if calculation_type == CalculationType.standard:
@@ -101,6 +132,8 @@ def submit_custom_calculation(
         charge=charge,
         multiplicity=multiplicity,
         optimization_type=optimization_type,
+        time_limit_minutes=time_limit_minutes,
+        memory_mb=memory_mb,
     )
 
     return serialize_job(job)
@@ -121,6 +154,8 @@ def submit_standard_analysis(
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
     upload_archive: bool = Form(True),
+    time_limit_minutes: Optional[int] = Form(None),
+    memory_mb: Optional[int] = Form(None),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -140,6 +175,8 @@ def submit_standard_analysis(
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
     :param upload_archive: Whether to request a ZIP archive for this job.
+    :param time_limit_minutes: Optional admin-selected job runtime limit.
+    :param memory_mb: Optional admin-selected job memory in MiB.
     :return: The created job.
     """
     user = get_user_or_404(db, get_user_sub(current_user))
@@ -159,6 +196,8 @@ def submit_standard_analysis(
         charge=charge,
         multiplicity=multiplicity,
         optimization_type=optimization_type,
+        time_limit_minutes=time_limit_minutes,
+        memory_mb=memory_mb,
     )
 
     return serialize_job(job)
@@ -179,6 +218,8 @@ def submit_bond_angle_scan(
     job_notes: Optional[str] = Form(None),
     tags: List[str] = Form([]),
     upload_archive: bool = Form(True),
+    time_limit_minutes: Optional[int] = Form(None),
+    memory_mb: Optional[int] = Form(None),
     current_user=Depends(verify_token),
     db: Session = Depends(get_db),
 ):
@@ -200,6 +241,8 @@ def submit_bond_angle_scan(
     :param job_notes: Notes for the job.
     :param tags: Case-insensitive job tags.
     :param upload_archive: Whether to request a ZIP archive for this job.
+    :param time_limit_minutes: Optional admin-selected job runtime limit.
+    :param memory_mb: Optional admin-selected job memory in MiB.
     :return: The created job.
     """
     try:
@@ -227,6 +270,8 @@ def submit_bond_angle_scan(
         basis_set=SCAN_WORKFLOW_BASIS_SET,
         charge=charge,
         multiplicity=multiplicity,
+        time_limit_minutes=time_limit_minutes,
+        memory_mb=memory_mb,
     )
 
     return serialize_job(job)

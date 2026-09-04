@@ -6,7 +6,10 @@ import pytest
 from conftest import make_auth0_payload
 
 import storage
-from calculation.job_creation_service import JOB_SUBMISSION_FORBIDDEN_DETAIL
+from calculation.job_creation_service import (
+    CUSTOM_JOB_RESOURCES_FORBIDDEN_DETAIL,
+    JOB_SUBMISSION_FORBIDDEN_DETAIL,
+)
 from enum_types import ArchiveStorageService
 from models import Job, JobInput, Tags
 from settings import get_settings
@@ -110,13 +113,187 @@ def test_openapi_documents_durable_calculation_submission_contract(client):
             "structure_id",
             "job_name",
             "upload_archive",
+            "time_limit_minutes",
+            "memory_mb",
         }.issubset(request_properties)
         assert request_properties["upload_archive"]["default"] is True
         assert "upload_archive" not in components[request_schema_name].get(
             "required", []
         )
+        assert "time_limit_minutes" not in components[request_schema_name].get(
+            "required", []
+        )
+        assert "memory_mb" not in components[request_schema_name].get("required", [])
         if path.endswith("bond_angle_scan"):
             assert "scan" in request_properties
+
+
+@pytest.mark.parametrize(
+    ("role", "can_customize"),
+    [("member", False), ("admin", True), ("group_admin", True)],
+)
+def test_resource_settings_expose_defaults_limits_and_access(
+    client,
+    monkeypatch,
+    group_factory,
+    user_factory,
+    role,
+    can_customize,
+):
+    monkeypatch.setenv("SLURM_JOB_MIN_TIME_LIMIT_MINUTES", "5")
+    monkeypatch.setenv("SLURM_JOB_MAX_TIME_LIMIT_MINUTES", "600")
+    monkeypatch.setenv("SLURM_JOB_TIME_LIMIT_MINUTES", "30")
+    monkeypatch.setenv("SLURM_JOB_MIN_MEMORY_MB", "1024")
+    monkeypatch.setenv("SLURM_JOB_MAX_MEMORY_MB", "32768")
+    monkeypatch.setenv("SLURM_JOB_MEMORY_MB", "8192")
+    get_settings.cache_clear()
+    group = group_factory() if role == "group_admin" else None
+    user_factory(group=group, user_sub="auth0|testuser", role=role)
+
+    response = client.get("/calculation/resource-settings")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "can_customize": can_customize,
+        "time_limit_minutes": {"default": 30, "minimum": 5, "maximum": 600},
+        "memory_mb": {"default": 8192, "minimum": 1024, "maximum": 32768},
+    }
+
+
+@pytest.mark.parametrize("role", ["admin", "group_admin"])
+@pytest.mark.parametrize(
+    ("path", "data", "contents"),
+    [
+        ("/calculation/custom", _custom_data(), b"custom xyz input"),
+        (
+            "/calculation/workflow/standard_analysis",
+            _standard_data(),
+            b"standard xyz input",
+        ),
+        (
+            "/calculation/workflow/bond_angle_scan",
+            _scan_data(),
+            VALID_XYZ.encode(),
+        ),
+    ],
+)
+def test_admin_roles_can_customize_resources_for_every_submission_endpoint(
+    client,
+    db,
+    group_factory,
+    user_factory,
+    role,
+    path,
+    data,
+    contents,
+):
+    group = group_factory() if role == "group_admin" else None
+    user_factory(group=group, user_sub="auth0|testuser", role=role)
+    data = {**data, "time_limit_minutes": "90", "memory_mb": "12288"}
+
+    response = client.post(
+        path,
+        data=data,
+        files={"file": ("input.xyz", contents, "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
+    job = db.get(Job, uuid.UUID(response.json()["job_id"]))
+    assert job.job_input.time_limit_minutes == 90
+    assert job.job_input.memory_mb == 12288
+
+
+def test_admin_can_override_one_resource_and_keep_the_other_default(
+    client,
+    db,
+    user_factory,
+):
+    user_factory(user_sub="auth0|testuser", role="admin")
+
+    response = client.post(
+        "/calculation/custom",
+        data=_custom_data(time_limit_minutes="45"),
+        files={"file": ("input.xyz", b"xyz", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 201
+    job = db.get(Job, uuid.UUID(response.json()["job_id"]))
+    assert job.job_input.time_limit_minutes == 45
+    assert job.job_input.memory_mb == 4096
+
+
+@pytest.mark.parametrize(
+    ("path", "data", "contents"),
+    [
+        ("/calculation/custom", _custom_data(), b"custom xyz input"),
+        (
+            "/calculation/workflow/standard_analysis",
+            _standard_data(),
+            b"standard xyz input",
+        ),
+        (
+            "/calculation/workflow/bond_angle_scan",
+            _scan_data(),
+            VALID_XYZ.encode(),
+        ),
+    ],
+)
+def test_members_cannot_customize_job_resources(
+    client,
+    db,
+    user_factory,
+    path,
+    data,
+    contents,
+):
+    user_factory(user_sub="auth0|testuser", role="member")
+    data = {**data, "time_limit_minutes": "30"}
+
+    response = client.post(
+        path,
+        data=data,
+        files={"file": ("input.xyz", contents, "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": CUSTOM_JOB_RESOURCES_FORBIDDEN_DETAIL}
+    assert db.query(Job).count() == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_detail"),
+    [
+        ("time_limit_minutes", "4", "time_limit_minutes must be between 5 and 600"),
+        ("memory_mb", "32769", "memory_mb must be between 1024 and 32768"),
+    ],
+)
+def test_custom_resources_must_be_inside_configured_bounds(
+    client,
+    db,
+    monkeypatch,
+    user_factory,
+    field,
+    value,
+    expected_detail,
+):
+    monkeypatch.setenv("SLURM_JOB_MIN_TIME_LIMIT_MINUTES", "5")
+    monkeypatch.setenv("SLURM_JOB_MAX_TIME_LIMIT_MINUTES", "600")
+    monkeypatch.setenv("SLURM_JOB_TIME_LIMIT_MINUTES", "30")
+    monkeypatch.setenv("SLURM_JOB_MIN_MEMORY_MB", "1024")
+    monkeypatch.setenv("SLURM_JOB_MAX_MEMORY_MB", "32768")
+    monkeypatch.setenv("SLURM_JOB_MEMORY_MB", "8192")
+    get_settings.cache_clear()
+    user_factory(user_sub="auth0|testuser", role="admin")
+
+    response = client.post(
+        "/calculation/custom",
+        data=_custom_data(**{field: value}),
+        files={"file": ("input.xyz", b"xyz", "chemical/x-xyz")},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": expected_detail}
+    assert db.query(Job).count() == 0
 
 
 @pytest.mark.parametrize(
@@ -401,6 +578,8 @@ def test_standard_submission_uses_workflow_defaults(
     assert job.archive_upload_requested is True
     assert job.job_input.input_xyz == "standard xyz input"
     assert job.job_input.keywords is None
+    assert job.job_input.time_limit_minutes == 15
+    assert job.job_input.memory_mb == 4096
 
 
 def test_scan_workflow_persists_specification_and_fixed_theory(

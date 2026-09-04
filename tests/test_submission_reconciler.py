@@ -221,6 +221,26 @@ def test_scan_submission_passes_the_stored_scan_specification(
     assert client.submit_job.call_args.kwargs["keywords"] == scan_spec
 
 
+def test_submission_uses_the_resources_snapshotted_with_the_job(
+    db,
+    job_factory,
+    make_reconciler,
+):
+    client = Mock(spec=ClusterDispatchClient)
+    client.submit_job.return_value = "45679"
+    reconciler = make_reconciler(client=client)
+    job = job_factory()
+    job.job_input.time_limit_minutes = 120
+    job.job_input.memory_mb = 16384
+    db.commit()
+
+    reconciler.run_round()
+
+    assert refresh(db, job).status == JobStatus.submitted.value
+    assert client.submit_job.call_args.kwargs["time_limit_minutes"] == 120
+    assert client.submit_job.call_args.kwargs["memory_mb"] == 16384
+
+
 def test_retry_uses_one_recovering_submission_request(
     db,
     job_factory,

@@ -263,6 +263,16 @@ class JobInput(Base):
     """Immutable calculation inputs retained with one job."""
 
     __tablename__ = "job_inputs"
+    __table_args__ = (
+        CheckConstraint(
+            "time_limit_minutes IS NULL OR time_limit_minutes > 0",
+            name="ck_job_inputs_time_limit_positive",
+        ),
+        CheckConstraint(
+            "memory_mb IS NULL OR memory_mb > 0",
+            name="ck_job_inputs_memory_positive",
+        ),
+    )
 
     job_id = Column(
         UUID(as_uuid=True),
@@ -271,6 +281,8 @@ class JobInput(Base):
     )
     input_xyz = Column(Text, nullable=False)
     keywords = Column(JSONB, nullable=True)
+    time_limit_minutes = Column(Integer, nullable=True)
+    memory_mb = Column(Integer, nullable=True)
 
     job = relationship("Job", back_populates="job_input")
 

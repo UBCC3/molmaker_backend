@@ -128,8 +128,16 @@ class SubmissionReconciler(BaseReconciler):
                 optimization_type=job.optimization_type,
                 input_xyz=job_input.input_xyz,
                 keywords=job_input.keywords,
-                time_limit_minutes=self.settings.slurm_job_time_limit_minutes,
-                memory_mb=self.settings.slurm_job_memory_mb,
+                time_limit_minutes=(
+                    job_input.time_limit_minutes
+                    if job_input.time_limit_minutes is not None
+                    else self.settings.slurm_job_time_limit_minutes
+                ),
+                memory_mb=(
+                    job_input.memory_mb
+                    if job_input.memory_mb is not None
+                    else self.settings.slurm_job_memory_mb
+                ),
                 recover_existing=recover_existing,
             )
         except JobDispatchError as error:

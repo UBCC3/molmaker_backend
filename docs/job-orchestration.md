@@ -47,8 +47,9 @@ is available.
 The submission reconciler selects `submitting` jobs and loads their immutable
 input from `job_inputs`. Before it calls the cluster, it commits the increased
 `attempt_count`. It then sends one `submit` request containing the calculation
-settings, `input_xyz`, optional keywords, backend-configured Slurm time and
-memory limits, and whether recovery is required.
+settings, `input_xyz`, optional keywords, the Slurm time and memory limits
+snapshotted with that job, and whether recovery is required. Older queued jobs
+without a resource snapshot use the current backend defaults.
 
 On the cluster, `dispatch.py`:
 

@@ -11,7 +11,7 @@ from asset_service import get_asset_or_404, set_asset_tags
 from calculation.scan_spec import ScanSpecValidationError, validate_scan_spec
 from enum_types import ArchiveUploadStatus, CalculationType, JobStatus
 from models import Job, JobInput, Structure, User
-from permissions import can_read_asset, is_admin
+from permissions import can_read_asset, is_admin, is_admin_or_group_admin
 from settings import get_settings
 from utils import commit_or_rollback, read_bounded_upload
 
@@ -26,6 +26,9 @@ JOB_SUBMISSION_FORBIDDEN_DETAIL = (
     "Job submission is limited to users who belong to a group. "
     "Please join a group or contact an administrator."
 )
+CUSTOM_JOB_RESOURCES_FORBIDDEN_DETAIL = (
+    "Custom job resource settings are limited to admins and group admins."
+)
 
 
 def _require_job_submission_permission(user: User) -> None:
@@ -39,6 +42,55 @@ def _require_job_submission_permission(user: User) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail=JOB_SUBMISSION_FORBIDDEN_DETAIL,
         )
+
+
+def _resolve_job_resources(
+    user: User,
+    time_limit_minutes: Optional[int],
+    memory_mb: Optional[int],
+) -> tuple[int, int]:
+    settings = get_settings().orchestration
+    if (
+        time_limit_minutes is not None or memory_mb is not None
+    ) and not is_admin_or_group_admin(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=CUSTOM_JOB_RESOURCES_FORBIDDEN_DETAIL,
+        )
+
+    resolved_time_limit = (
+        settings.slurm_job_time_limit_minutes
+        if time_limit_minutes is None
+        else time_limit_minutes
+    )
+    resolved_memory = settings.slurm_job_memory_mb if memory_mb is None else memory_mb
+    if not (
+        settings.slurm_job_min_time_limit_minutes
+        <= resolved_time_limit
+        <= settings.slurm_job_max_time_limit_minutes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "time_limit_minutes must be between "
+                f"{settings.slurm_job_min_time_limit_minutes} and "
+                f"{settings.slurm_job_max_time_limit_minutes}"
+            ),
+        )
+    if not (
+        settings.slurm_job_min_memory_mb
+        <= resolved_memory
+        <= settings.slurm_job_max_memory_mb
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "memory_mb must be between "
+                f"{settings.slurm_job_min_memory_mb} and "
+                f"{settings.slurm_job_max_memory_mb}"
+            ),
+        )
+    return resolved_time_limit, resolved_memory
 
 
 def _normalized_required_text(value: str, field_name: str) -> str:
@@ -213,12 +265,19 @@ def create_calculation_job(
     charge: int,
     multiplicity: int,
     optimization_type: Optional[str] = None,
+    time_limit_minutes: Optional[int] = None,
+    memory_mb: Optional[int] = None,
 ) -> Job:
     """
     Save immutable calculation inputs and a submitting job together.
     No cluster submission or result-upload URL generation occurs here.
     """
     _require_job_submission_permission(user)
+    resolved_time_limit, resolved_memory = _resolve_job_resources(
+        user,
+        time_limit_minutes,
+        memory_mb,
+    )
 
     # Validate and normalize the request.
     normalized_job_name = _normalized_required_text(job_name, "job_name")
@@ -323,6 +382,8 @@ def create_calculation_job(
         job_id=job_id,
         input_xyz=input_xyz,
         keywords=keyword_values,
+        time_limit_minutes=resolved_time_limit,
+        memory_mb=resolved_memory,
     )
 
     try:

@@ -34,6 +34,13 @@ ORCHESTRATION_DEFAULTS = {
     "STORAGE_OPERATION_TIMEOUT_SECONDS": 120,
 }
 
+JOB_RESOURCE_LIMIT_DEFAULTS = {
+    "SLURM_JOB_MIN_TIME_LIMIT_MINUTES": 1,
+    "SLURM_JOB_MAX_TIME_LIMIT_MINUTES": 7 * 24 * 60,
+    "SLURM_JOB_MIN_MEMORY_MB": 256,
+    "SLURM_JOB_MAX_MEMORY_MB": 256 * 1024,
+}
+
 APPLICATION_DEFAULTS = {
     "ALGORITHMS": "RS256",
     "ARCHIVE_UPLOAD_ENABLED": "true",
@@ -70,16 +77,17 @@ SUPPORTED_ENVIRONMENT_VARIABLES = frozenset(
         "GARAGE_PROXY_PATH_PREFIX",
         *APPLICATION_DEFAULTS,
         *CALCULATION_DEFAULTS,
+        *JOB_RESOURCE_LIMIT_DEFAULTS,
         *ORCHESTRATION_DEFAULTS,
     }
 )
 
 MAX_STATUS_BATCH_SIZE = 1_000
 MAX_CONFIGURED_SCAN_POINTS = 10_000
-MIN_SLURM_JOB_TIME_LIMIT_MINUTES = 1
-MAX_SLURM_JOB_TIME_LIMIT_MINUTES = 7 * 24 * 60
-MIN_SLURM_JOB_MEMORY_MB = 256
-MAX_SLURM_JOB_MEMORY_MB = 256 * 1024
+DISPATCH_MIN_TIME_LIMIT_MINUTES = 1
+DISPATCH_MAX_TIME_LIMIT_MINUTES = 7 * 24 * 60
+DISPATCH_MIN_MEMORY_MB = 256
+DISPATCH_MAX_MEMORY_MB = 256 * 1024
 
 
 class BackendConfigurationError(ValueError):
@@ -271,6 +279,18 @@ class OrchestrationSettings:
         "SLURM_JOB_TIME_LIMIT_MINUTES"
     ]
     slurm_job_memory_mb: int = ORCHESTRATION_DEFAULTS["SLURM_JOB_MEMORY_MB"]
+    slurm_job_min_time_limit_minutes: int = JOB_RESOURCE_LIMIT_DEFAULTS[
+        "SLURM_JOB_MIN_TIME_LIMIT_MINUTES"
+    ]
+    slurm_job_max_time_limit_minutes: int = JOB_RESOURCE_LIMIT_DEFAULTS[
+        "SLURM_JOB_MAX_TIME_LIMIT_MINUTES"
+    ]
+    slurm_job_min_memory_mb: int = JOB_RESOURCE_LIMIT_DEFAULTS[
+        "SLURM_JOB_MIN_MEMORY_MB"
+    ]
+    slurm_job_max_memory_mb: int = JOB_RESOURCE_LIMIT_DEFAULTS[
+        "SLURM_JOB_MAX_MEMORY_MB"
+    ]
     cluster_ssh_host: str | None = None
     cluster_dispatch_path: PurePosixPath | None = None
 
@@ -351,6 +371,41 @@ class BackendSettings:
             MAX_CONFIGURED_SCAN_POINTS,
         )
 
+        min_time_limit_minutes = _bounded_positive_integer(
+            "SLURM_JOB_MIN_TIME_LIMIT_MINUTES",
+            JOB_RESOURCE_LIMIT_DEFAULTS["SLURM_JOB_MIN_TIME_LIMIT_MINUTES"],
+            DISPATCH_MIN_TIME_LIMIT_MINUTES,
+            DISPATCH_MAX_TIME_LIMIT_MINUTES,
+        )
+        max_time_limit_minutes = _bounded_positive_integer(
+            "SLURM_JOB_MAX_TIME_LIMIT_MINUTES",
+            JOB_RESOURCE_LIMIT_DEFAULTS["SLURM_JOB_MAX_TIME_LIMIT_MINUTES"],
+            DISPATCH_MIN_TIME_LIMIT_MINUTES,
+            DISPATCH_MAX_TIME_LIMIT_MINUTES,
+        )
+        min_memory_mb = _bounded_positive_integer(
+            "SLURM_JOB_MIN_MEMORY_MB",
+            JOB_RESOURCE_LIMIT_DEFAULTS["SLURM_JOB_MIN_MEMORY_MB"],
+            DISPATCH_MIN_MEMORY_MB,
+            DISPATCH_MAX_MEMORY_MB,
+        )
+        max_memory_mb = _bounded_positive_integer(
+            "SLURM_JOB_MAX_MEMORY_MB",
+            JOB_RESOURCE_LIMIT_DEFAULTS["SLURM_JOB_MAX_MEMORY_MB"],
+            DISPATCH_MIN_MEMORY_MB,
+            DISPATCH_MAX_MEMORY_MB,
+        )
+        if min_time_limit_minutes > max_time_limit_minutes:
+            raise ValueError(
+                "SLURM_JOB_MIN_TIME_LIMIT_MINUTES must be less than or equal to "
+                "SLURM_JOB_MAX_TIME_LIMIT_MINUTES"
+            )
+        if min_memory_mb > max_memory_mb:
+            raise ValueError(
+                "SLURM_JOB_MIN_MEMORY_MB must be less than or equal to "
+                "SLURM_JOB_MAX_MEMORY_MB"
+            )
+
         orchestration = OrchestrationSettings(
             submission_poll_interval_seconds=_positive_integer(
                 "SUBMISSION_POLL_INTERVAL_SECONDS",
@@ -391,15 +446,19 @@ class BackendSettings:
             slurm_job_time_limit_minutes=_bounded_positive_integer(
                 "SLURM_JOB_TIME_LIMIT_MINUTES",
                 ORCHESTRATION_DEFAULTS["SLURM_JOB_TIME_LIMIT_MINUTES"],
-                MIN_SLURM_JOB_TIME_LIMIT_MINUTES,
-                MAX_SLURM_JOB_TIME_LIMIT_MINUTES,
+                min_time_limit_minutes,
+                max_time_limit_minutes,
             ),
             slurm_job_memory_mb=_bounded_positive_integer(
                 "SLURM_JOB_MEMORY_MB",
                 ORCHESTRATION_DEFAULTS["SLURM_JOB_MEMORY_MB"],
-                MIN_SLURM_JOB_MEMORY_MB,
-                MAX_SLURM_JOB_MEMORY_MB,
+                min_memory_mb,
+                max_memory_mb,
             ),
+            slurm_job_min_time_limit_minutes=min_time_limit_minutes,
+            slurm_job_max_time_limit_minutes=max_time_limit_minutes,
+            slurm_job_min_memory_mb=min_memory_mb,
+            slurm_job_max_memory_mb=max_memory_mb,
             slurm_command_timeout_seconds=_positive_integer(
                 "SLURM_COMMAND_TIMEOUT_SECONDS",
                 ORCHESTRATION_DEFAULTS["SLURM_COMMAND_TIMEOUT_SECONDS"],
